@@ -1,99 +1,43 @@
 # Initial End-to-End Codex Build
 
-Assume responsibility for implementing Modular CRM from the repository source of truth.
+Build Modular CRM end to end from this repository.
 
-Read `AGENTS.md` and `docs/INDEX.md`, then read the linked V1 specifications needed to understand the complete application.
+The repository already contains the product definition, architecture, domain model, schema target, state machines, business rules, UX, connector model, Pet Waste Removal reference Industry Pack, seed scenarios, and acceptance criteria. Read `AGENTS.md` and `docs/INDEX.md`, then use the linked documents as the source of truth.
 
-## Goal
+## Mission
 
-Build the entire initial locally runnable Modular CRM application end to end: backend, frontend, worker, database, connector framework, Pet Waste Removal reference Industry Pack, public website, business application, technician application, customer portal, seed data, and automated tests.
+Produce a complete locally runnable V1 that the project owner can actually operate as a pet-waste-removal business: business/admin app, office workflows, technician experience, customer portal, public website/signup, backend, worker, database, routing, billing, communications, automations, payroll/time, inventory, reporting, multi-location/franchise support, connector marketplace, import/export, public API/webhooks, seed data, and tests.
 
-This is not a scaffolding task and not an architecture-writing task. The repository documentation already defines the product.
+This is an implementation task, not a planning or scaffolding task.
 
-The completed result should be something the project owner can start locally, log into as each seeded role, operate like a real pet-waste-removal company, and use for hands-on product evaluation.
+## Autonomy
 
-## Implementation approach
+Make the implementation decisions needed to deliver the product.
 
-Use `docs/V1_IMPLEMENTATION_ARCHITECTURE.md` as the default technical direction.
+Do not stop for routine approval, split the work into owner-gated milestones, or ask questions that can be resolved from the repository, reference implementations, provider documentation, or reasonable engineering judgment.
 
-Use the existing documentation as product requirements rather than repeatedly asking the owner to reconfirm decisions.
+If the documentation leaves a minor detail open, choose the simplest coherent solution and continue. If implementation exposes a better technical approach that preserves the documented product behavior, use it and update the affected documentation.
 
-Where a small implementation detail is unspecified, choose the simplest solution consistent with the documented architecture and continue.
+Use subagents, tools, repository research, and reference implementations as useful. The projects in `docs/REFERENCE_IMPLEMENTATIONS.md` are architectural references; do not copy code whose license is incompatible with this project.
 
-Do not stop after individual modules for approval. Work through the application end to end and test it.
+## Hard guardrails
 
-## Reference implementations
+- Keep the application portable and locally runnable without production third-party credentials.
+- Use the documented mock/test connector path so every core workflow can be exercised locally.
+- Keep provider-specific behavior behind connector/capability boundaries.
+- Preserve tenant isolation, permissions, auditability, idempotency, and historical financial/state integrity.
+- Do not leave required V1 behavior as fake buttons, static mock screens, dead navigation, or TODO placeholders.
+- Do not narrow the documented V1 scope merely to finish faster.
+- Do not invent a separate architecture or product when the repository already defines one.
 
-Study the current reference projects in `docs/REFERENCE_IMPLEMENTATIONS.md` when their production patterns can reduce reinvention:
+## Completion standard
 
-- Twenty CRM
-- Cal.com
-- Chatwoot
-- Dub
-- Webstudio
+Keep implementing, running, inspecting, and correcting the application until it is genuinely usable locally and the intent of `docs/V1_ACCEPTANCE_CRITERIA.md` is satisfied.
 
-Use them as architectural references, not as permission to copy incompatible licensed code.
+Run the relevant build, type, lint, unit, integration, and end-to-end checks; exercise the seeded owner, office, technician, customer, and public-signup workflows; fix failures you find; and leave the repository in a coherent runnable state.
 
-Verify provider-specific implementation behavior against current provider documentation.
+Only stop early for a genuine blocker that cannot be solved with the repository, available tools, public documentation, mocks, or reasonable engineering judgment.
 
-## Required result
+At the end, provide a concise evidence-based handoff describing what was built, what was actually verified, and any genuine remaining limitation.
 
-At completion:
-
-- local infrastructure starts from documented commands
-- schema/migrations are complete
-- realistic seed data loads
-- owner/admin application works
-- office/manager workflows work
-- technician/PWA workflow works
-- customer portal works
-- public pet-waste website/signup works
-- recurring service/job generation works
-- routing works with deterministic local mock
-- billing/payments work with deterministic local mock
-- email/SMS work in local/mock mode
-- automation recipes and custom rule builder work
-- payroll/time tracking works
-- inventory/parts and purchasing basics work
-- multi-location/franchise scope works
-- advanced reports have real seeded output
-- connector marketplace works
-- critical connector packages are mock-complete and documented credentials-ready where specified
-- import/export works
-- public API/webhooks work
-- audit/security/tenant boundaries are enforced
-- automated tests cover critical scenarios
-- `docs/V1_ACCEPTANCE_CRITERIA.md` is satisfied or any genuine blocker is explicitly documented
-
-## Local usability
-
-No production Stripe, Square, QuickBooks, Xero, Google, Microsoft, Twilio, routing, AI, or other external credential is required to run or evaluate the application.
-
-External provider adapters must fail gracefully as "not configured" and the local mock implementations must allow the entire product to be exercised.
-
-## Quality bar
-
-Do not leave:
-
-- fake buttons
-- dead navigation
-- unimplemented placeholder pages for required V1 features
-- core flows that only exist as static UI
-- unsafe cross-tenant shortcuts
-- generated demo metrics disconnected from seeded records
-- provider-specific logic scattered through core domain code
-
-Use realistic seeded records and make the UI coherent enough for actual playtesting, not merely technical verification.
-
-## Final handoff
-
-Before considering the task complete:
-
-1. run formatting/lint/type checks
-2. run unit/integration tests
-3. run end-to-end tests
-4. exercise the seeded owner, technician, customer, and public-signup flows
-5. update README/local setup
-6. update documentation for any implementation decision that materially changed the documented design
-
-Then leave the repository in a runnable state and provide a concise implementation/handoff summary.
+Begin.
