@@ -28,6 +28,11 @@ This repository is the authoritative source for product decisions, architecture,
 
 Start with:
 
+- [docs/INDEX.md](./docs/INDEX.md)
+- [.agents/tasks/INITIAL_END_TO_END_BUILD.md](./.agents/tasks/INITIAL_END_TO_END_BUILD.md)
+
+Core references:
+
 - [AGENTS.md](./AGENTS.md)
 - [docs/PRODUCT_SCOPE.md](./docs/PRODUCT_SCOPE.md)
 - [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)
