@@ -4,6 +4,14 @@ This catalog preserves substantial Modular CRM feature concepts before or while 
 
 Accepted behavior should also be represented in the appropriate authoritative product or architecture document.
 
+### V1 product spine
+
+- **State:** Proposed
+- **Problem:** Codex needs a stable set of actors and primary workflows before it can build the backend schema and frontend navigation end to end without repeated clarification.
+- **Behavior:** Center V1 on the complete small-service-business lifecycle: owner signup and guided setup, customer creation/import, lead intake, estimate/approval, scheduling, job execution, invoice/payment, recurring follow-up, and dashboard visibility. Proposed internal roles are Owner/Admin and Staff/Technician. Customers primarily interact through the public website, forms, approval/payment links, and messages rather than a full customer portal in the first build.
+- **Industry scope:** Core
+- **Dependencies:** Authentication, tenancy, permissions, CRM entities, jobs, scheduling, billing, communications, website capability
+
 ### Connector marketplace
 
 - **State:** Accepted
