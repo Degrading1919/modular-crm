@@ -111,6 +111,15 @@ Completion updates office/customer views and route progress.
 - Refund produces linked immutable refund record.
 - Historical issued invoice remains unchanged after later service-price edits.
 
+## Customer documents
+
+- estimate renders for browser/print/download
+- invoice renders with payments/credits/balance
+- payment receipt renders
+- customer account statement reconciles seeded activity
+- service completion report includes configured proof
+- historical issued documents render from preserved snapshots
+
 ## Customer portal
 
 Customer can:
