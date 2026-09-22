@@ -8,9 +8,13 @@ Modular CRM is a reusable SaaS platform for niche service businesses. It should 
 
 The project owner prefers end-to-end implementation after scope is well defined.
 
-Do not default to architecture-only scaffolding, placeholder pages, or repeated stop-and-confirm loops. When a task authorizes implementation, carry the requested slice through to a usable local result, test the primary flows, and document how to run it.
+Detailed product requirements belong in repository documentation. Autonomous implementation prompts should stay compact: define the mission, source of truth, hard guardrails, and completion standard, then allow the agent to solve the implementation.
 
-Human evaluation happens by operating the product locally or live, identifying friction, and iterating from real use.
+Do not default to architecture-only scaffolding, placeholder pages, repeated stop-and-confirm loops, owner-gated milestones, or micro-instructions that merely restate repository specifications. When a task authorizes implementation, carry it through to a usable local result, inspect and test the result, correct failures, and continue until the requested outcome is achieved.
+
+Ask the project owner only when a material requirement is genuinely contradictory or a blocker cannot be resolved from the repository, available tools, public documentation, mocks, or reasonable engineering judgment.
+
+Human evaluation happens after substantial working software exists: operate the product locally or live, identify friction, and iterate from real use.
 
 ## Product constraints
 
