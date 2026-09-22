@@ -4,6 +4,15 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-09-22 — V1 specification is ready for end-to-end implementation
+
+- **Status:** Accepted
+- **Area:** Implementation
+- **Decision:** The V1 product, backend, frontend, reference Industry Pack, local development model, seed scenarios, and acceptance criteria are sufficiently defined for Codex to begin the initial end-to-end build without further routine product clarification.
+- **Rationale:** Remaining undecided items concern production launch/commercialization rather than the locally runnable application and do not block implementation.
+- **Authoritative doc:** `docs/V1_BUILD_READINESS.md`
+
+
 ## 2026-09-22 — Portable PostgreSQL-first implementation stack
 
 - **Status:** Accepted
