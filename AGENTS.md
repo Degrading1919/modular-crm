@@ -51,6 +51,17 @@ When implementing a major capability:
 
 Current reference applications are documented in `docs/REFERENCE_IMPLEMENTATIONS.md`.
 
+## Documentation discipline
+
+Every meaningful product concept, proposed feature, accepted decision, superseded decision, architecture change, connector rule, industry-pack rule, or UX requirement must be recorded in the repository as part of the same work.
+
+Use `.agents/skills/modular-crm-decision-sync/SKILL.md` as the deterministic routing and update procedure.
+
+- Accepted or superseded decisions must be summarized in `docs/DECISION_LOG.md`.
+- Substantial unaccepted feature concepts belong in `docs/FEATURE_CATALOG.md`.
+- Update the appropriate authoritative document rather than creating duplicate prose.
+- Do not interrupt normal product discussion with unnecessary documentation confirmations.
+
 ## Source of truth
 
 Repository documentation and accepted code supersede older chat assumptions when they conflict. Update documentation when a product decision changes.
