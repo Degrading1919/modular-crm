@@ -33,6 +33,14 @@ The external experience is verticalized through Industry Packs.
 
 A septic company should feel that the product was built for septic work. A chimney sweep, hood cleaner, appliance repair company, or small-engine shop should receive different language and workflow defaults while still using the same platform.
 
+## Core business lifecycle
+
+The default service-business lifecycle is:
+
+`Lead → Customer → Estimate → Approval → Schedule → Job → Completion → Invoice → Payment → Recurring follow-up`
+
+The platform must also support shortened paths where steps are unnecessary, such as direct booking without an estimate, recurring jobs that generate automatically, or payment collected at job completion.
+
 ## V1 account surfaces
 
 ### Owner / Admin
