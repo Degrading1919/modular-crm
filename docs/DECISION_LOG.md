@@ -4,6 +4,15 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-09-22 — Portable PostgreSQL-first implementation stack
+
+- **Status:** Accepted
+- **Area:** Architecture
+- **Decision:** The first end-to-end build will use a pnpm TypeScript workspace with Next.js, PostgreSQL/Drizzle, Better Auth, a PostgreSQL-backed worker using pg-boss, S3-compatible object storage, mock-first connector implementations, and Docker-compatible deployment. Provider-specific services remain behind replaceable capability boundaries.
+- **Rationale:** This keeps local setup and starting capital low, supports the broad V1 operational scope without unnecessary infrastructure, and avoids locking the product to a single hosting/provider ecosystem.
+- **Authoritative doc:** `docs/V1_IMPLEMENTATION_ARCHITECTURE.md`
+
+
 ## 2026-09-22 — V1 scope includes full field operations and business operations
 
 - **Status:** Accepted
