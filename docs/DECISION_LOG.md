@@ -4,6 +4,22 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-09-22 — V1 uses role templates backed by granular permissions
+
+- **Status:** Accepted
+- **Area:** Architecture
+- **Decision:** V1 will provide Owner/Admin, Office/Manager, and Field Technician role templates backed by granular server-enforced permissions rather than authorization based only on hard-coded role names. Customer access is a separate portal identity/surface.
+- **Rationale:** Small businesses need simple defaults, while the underlying authorization model must be flexible enough to support accountants, dispatchers, crew leaders, franchises, and custom roles later without redesigning the backend.
+- **Authoritative doc:** `docs/ARCHITECTURE.md`
+
+## 2026-09-22 — Persistent customer portal is part of V1
+
+- **Status:** Accepted
+- **Area:** Product
+- **Decision:** V1 will include a persistent customer portal for profile/location data, service history, estimates, billing/payment interactions, recurring-service information, notification preferences, change requests, support interactions, and intentionally shared files/forms. Secure links remain available for low-friction individual actions.
+- **Rationale:** The Sweep&Go feature audit showed that customer self-service is part of the core operating model, not merely an optional convenience.
+- **Authoritative doc:** `docs/PRODUCT_SCOPE.md`
+
 ## 2026-09-22 — Define scope before the first full Codex build
 
 - **Status:** Accepted
