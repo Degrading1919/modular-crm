@@ -21,7 +21,8 @@ A business owner should be able to:
 - connect accounting, calendar, email, storage, payments, and other tools
 - publish a simple professional website
 - capture website leads directly into the CRM
-- manage basic staff access and roles
+- manage staff access and roles
+- give customers a self-service portal
 - see the state of the business without technical setup
 
 ## Product model
@@ -31,6 +32,99 @@ The internal product is one shared platform.
 The external experience is verticalized through Industry Packs.
 
 A septic company should feel that the product was built for septic work. A chimney sweep, hood cleaner, appliance repair company, or small-engine shop should receive different language and workflow defaults while still using the same platform.
+
+## V1 account surfaces
+
+### Owner / Admin
+
+Full control of the tenant.
+
+Primary capabilities:
+
+- dashboard and reporting
+- customer and lead management
+- scheduling and dispatch
+- estimates, invoices, payments, refunds
+- service catalog and pricing
+- recurring-service configuration
+- staff invitations, roles, and permissions
+- integrations and connector marketplace
+- website setup and publishing
+- automation settings
+- business settings
+- exports and audit/history views
+
+### Office / Manager
+
+Runs day-to-day operations without necessarily controlling ownership-level settings.
+
+Primary capabilities:
+
+- customers and leads
+- estimates
+- scheduling and dispatch
+- jobs
+- invoices and payment collection
+- communications
+- support/tickets
+- reports appropriate to granted permissions
+- technician assignment and operational changes
+
+Sensitive business configuration, subscription ownership, destructive tenant actions, and security administration are owner-controlled by default.
+
+### Field Technician
+
+Mobile-first operational surface.
+
+Primary capabilities:
+
+- today's/assigned jobs
+- route and navigation links
+- customer/location access details needed for the job
+- job instructions and safety notices
+- start, pause, complete, skip, or flag a job
+- notes, photos, forms, checklists, and signatures
+- job-related customer communication
+- payment collection when permission is granted
+- time/mileage capture when enabled
+
+The technician experience should hide unrelated office functionality by default.
+
+### Customer
+
+Persistent self-service portal plus secure action links.
+
+Primary capabilities:
+
+- profile and contact information
+- service addresses/locations
+- industry-specific asset/profile information exposed by the Industry Pack
+- upcoming and historical services
+- service status and completion proof
+- estimates and approvals
+- invoices, balances, payments, and saved payment methods where supported
+- recurring-service details
+- notification preferences
+- service/change requests
+- pause/cancel requests subject to business rules
+- support/ticket interactions
+- documents, photos, and forms intentionally shared with the customer
+
+Secure links may still be used for low-friction actions such as estimate approval, invoice payment, form completion, or first-time account activation.
+
+## Access-control model
+
+V1 should ship with simple role templates rather than forcing businesses to design permissions from scratch.
+
+Default templates:
+
+- Owner / Admin
+- Office / Manager
+- Field Technician
+
+These templates are backed by granular permissions so later versions can add custom roles, accountants, crew leaders, dispatchers, franchise users, or other combinations without rewriting authorization.
+
+Customer access is a separate portal surface tied to the customer's relationship with a tenant.
 
 ## Non-goals for the initial product
 
