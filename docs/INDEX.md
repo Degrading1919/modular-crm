@@ -35,6 +35,8 @@ This repository is the source of truth. New implementation work should begin her
 - [V1_PUBLIC_API.md](./V1_PUBLIC_API.md)
 - [V1_FIELD_APP.md](./V1_FIELD_APP.md)
 - [V1_SECURITY_BASELINE.md](./V1_SECURITY_BASELINE.md)
+- [V1_DOCUMENTS.md](./V1_DOCUMENTS.md)
+- [V1_DEVELOPER_WORKFLOW.md](./V1_DEVELOPER_WORKFLOW.md)
 
 ## Industry Packs
 
