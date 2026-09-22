@@ -94,3 +94,40 @@ Business logic should depend on capabilities rather than providers.
 For example, the CRM should ask a payments capability to create a payment request rather than contain Stripe-specific logic throughout the application.
 
 Provider-specific logic belongs in connector packages/modules.
+
+
+## Organizational hierarchy
+
+V1 must support multi-location and franchise operation without creating separate codebases.
+
+The data model should distinguish:
+
+- platform account / tenant
+- business organization
+- optional franchise or parent organization
+- operating locations/branches
+- staff memberships scoped to the organization and, where needed, selected locations
+- customers and jobs associated with the appropriate operating location
+
+Permissions and reporting should support both local-location views and rolled-up parent/franchise views.
+
+## Automation architecture
+
+V1 supports both predefined recipes and user-configurable rules.
+
+The automation engine should model:
+
+- trigger
+- optional conditions
+- one or more actions
+- enabled/disabled state
+- execution history
+- retry/error state
+
+Industry Packs may install default recipes without preventing owners from creating their own rules.
+
+## Routing and field operations
+
+Routing is a first-class V1 capability rather than a later add-on.
+
+The shared core should support route stops, technician assignment, stop ordering, geocoded locations, estimated drive time, service duration, route optimization requests, and persisted route plans. Mapping/routing providers should remain behind connector/provider boundaries.
