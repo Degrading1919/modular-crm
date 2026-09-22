@@ -23,6 +23,9 @@ A business owner should be able to:
 - capture website leads directly into the CRM
 - manage staff access and roles
 - give customers a self-service portal
+- plan routes and dispatch field work
+- track time, payroll inputs, inventory/parts, and advanced reporting
+- operate multiple locations or franchise units
 - see the state of the business without technical setup
 
 ## Product model
@@ -41,6 +44,31 @@ The default service-business lifecycle is:
 
 The platform must also support shortened paths where steps are unnecessary, such as direct booking without an estimate, recurring jobs that generate automatically, or payment collected at job completion.
 
+## V1 operational depth
+
+V1 is intended to be a complete operating product rather than a narrow CRM proof of concept.
+
+It includes:
+
+- route optimization
+- interactive maps
+- drive-time planning
+- dispatch and technician assignment
+- outbound email notifications
+- outbound SMS notifications
+- predefined automation recipes
+- user-configurable automation rules
+- payroll/time tracking
+- inventory and parts tracking
+- advanced reporting
+- multi-location operation
+- franchise operation
+- customer portal
+- connector marketplace
+- template-driven public websites
+
+A unified inbound customer conversation inbox is not required for V1. Customer communication in V1 may rely on outbound email/SMS plus portal requests, forms, and support/ticket interactions.
+
 ## V1 account surfaces
 
 ### Owner / Admin
@@ -51,14 +79,16 @@ Primary capabilities:
 
 - dashboard and reporting
 - customer and lead management
-- scheduling and dispatch
+- scheduling, routing, and dispatch
 - estimates, invoices, payments, refunds
 - service catalog and pricing
 - recurring-service configuration
-- staff invitations, roles, and permissions
+- staff invitations, roles, permissions, time, and payroll inputs
+- inventory and parts
 - integrations and connector marketplace
 - website setup and publishing
-- automation settings
+- automation recipes and rule builder
+- location/franchise administration
 - business settings
 - exports and audit/history views
 
@@ -70,11 +100,12 @@ Primary capabilities:
 
 - customers and leads
 - estimates
-- scheduling and dispatch
+- scheduling, routing, and dispatch
 - jobs
 - invoices and payment collection
-- communications
+- outbound communications
 - support/tickets
+- inventory/parts where permitted
 - reports appropriate to granted permissions
 - technician assignment and operational changes
 
@@ -87,14 +118,16 @@ Mobile-first operational surface.
 Primary capabilities:
 
 - today's/assigned jobs
-- route and navigation links
+- optimized route and drive-time plan
+- navigation links
 - customer/location access details needed for the job
 - job instructions and safety notices
 - start, pause, complete, skip, or flag a job
 - notes, photos, forms, checklists, and signatures
-- job-related customer communication
+- job-related outbound customer communication
 - payment collection when permission is granted
-- time/mileage capture when enabled
+- time/mileage capture
+- inventory/part usage when relevant
 
 The technician experience should hide unrelated office functionality by default.
 
@@ -142,6 +175,7 @@ Customer access is a separate portal surface tied to the customer's relationship
 - building a completely separate codebase for every industry
 - competing feature-for-feature with ServiceTitan on day one
 - building a general-purpose website editor comparable to Webflow
+- building a full omnichannel customer-service inbox in V1
 
 ## Website capability
 
