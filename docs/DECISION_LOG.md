@@ -4,6 +4,22 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-09-22 — V1 scope includes full field operations and business operations
+
+- **Status:** Accepted
+- **Area:** Product
+- **Decision:** V1 includes route optimization/maps/drive-time planning, outbound email/SMS, both automation recipes and a rule builder, payroll/time tracking, inventory/parts, advanced reporting, and usable multi-location/franchise functionality.
+- **Rationale:** The first usable build should function as an end-to-end operating system for the target small service business rather than a limited CRM demo.
+- **Authoritative doc:** `docs/PRODUCT_SCOPE.md`
+
+## 2026-09-22 — Pet waste removal is the first reference Industry Pack
+
+- **Status:** Accepted
+- **Area:** Industry Packs
+- **Decision:** Pet waste removal will be the first fully implemented Industry Pack and the reference vertical used to validate shared CRM, recurring service, routing, field-tech, billing, customer portal, and website behavior.
+- **Rationale:** Sweep&Go provides a mature reference workflow and the industry exercises many of the platform capabilities we want to generalize.
+- **Authoritative doc:** `docs/INDUSTRY_PACKS.md`
+
 ## 2026-09-22 — Core service-business lifecycle is accepted
 
 - **Status:** Accepted
@@ -11,7 +27,6 @@ Newest entries go first.
 - **Decision:** The default lifecycle is Lead → Customer → Estimate → Approval → Schedule → Job → Completion → Invoice → Payment → Recurring follow-up, with optional shortcuts where a business does not require every step.
 - **Rationale:** This accurately reflects the intended small-service-business operating flow and should now guide data modeling and frontend navigation rather than remain an open design question.
 - **Authoritative doc:** `docs/PRODUCT_SCOPE.md`
-
 
 ## 2026-09-22 — V1 uses role templates backed by granular permissions
 
