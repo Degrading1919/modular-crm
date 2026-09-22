@@ -34,6 +34,7 @@ The initial frontend should provide four distinct experiences: business administ
 - communications
 - tickets
 - files/photos
+- ratings/feedback
 - activity timeline
 
 ### Schedule
@@ -77,6 +78,8 @@ The initial frontend should provide four distinct experiences: business administ
 - refunds
 - billing schedules
 - open balances
+- customer credits / credit memos
+- account statements
 - tax configuration
 - payout/payment-provider reconciliation views
 
@@ -97,6 +100,8 @@ The initial frontend should provide four distinct experiences: business administ
 - movements/transfers
 - job material usage
 - reorder alerts
+- vendors
+- purchase orders / receiving
 
 ### Automations
 - recommended recipes
@@ -145,6 +150,16 @@ The initial frontend should provide four distinct experiences: business administ
 - reconnect/repair
 - resource mappings
 - sync history/errors
+
+### Developer
+
+Advanced/optional surface:
+
+- API credentials
+- scopes
+- outbound webhook subscriptions
+- webhook delivery logs/test/retry
+- API documentation links
 
 ### Organization
 - locations/branches
