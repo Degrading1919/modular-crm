@@ -180,6 +180,12 @@ Provider-safe reference to a customer's stored payment method. Never store raw c
 ### Tip
 One-time or recurring tip attributable to customer/job/staff.
 
+### Customer Credit
+Stored customer account credit resulting from overpayment, credit memo, or authorized adjustment.
+
+### Credit Memo
+Auditable credit issued against a customer/account/invoice.
+
 ### Tax Rule
 Tenant/location/service/customer tax configuration.
 
@@ -217,6 +223,12 @@ Receive, transfer, consume, adjust, return, or sell inventory.
 
 ### Job Material Usage
 Inventory consumed by a job.
+
+### Vendor
+Supplier used to purchase inventory/parts.
+
+### Purchase Order
+Order for inventory/parts with ordered/received quantities and status history.
 
 ### Reorder Rule
 Threshold/target information for low-stock reporting and automation.
