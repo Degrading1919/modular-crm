@@ -24,8 +24,47 @@ A pack may define:
 - recommended capabilities
 - website copy/content defaults
 - website template preferences
+- inventory/part defaults where relevant
+- route/service-duration assumptions
 
-## Example: septic service
+## First reference Industry Pack: Pet Waste Removal
+
+Pet waste removal is the first complete reference implementation and should prove that the shared platform can support a route-dense recurring service business end to end.
+
+The pack should cover at minimum:
+
+- residential and commercial customers
+- service addresses
+- yards/work areas
+- pets/dogs, including names, photos, and safety flags
+- gate/access instructions
+- recurring service frequencies
+- one-time/initial cleanups
+- route-oriented scheduling
+- service-day assignment
+- completion proof/photos
+- skip/missed/reclean handling
+- weather or operational bulk changes
+- zone/service-area pricing
+- payment method capture
+- recurring billing
+- customer notification preferences
+- on-the-way and completion notifications
+- customer pause/change/cancel requests
+- technician notes
+- time/mileage tracking
+- tips
+- customer ratings/comments
+- referral source tracking
+- cross-sells/add-on services
+- commercial multi-location support
+- pet-waste-specific website signup/onboarding defaults
+
+The reference pack should demonstrate Industry Pack configuration rather than introduce pet-waste-specific tables unless a shared configurable entity cannot reasonably represent the requirement.
+
+## Future examples
+
+### Septic service
 
 Possible configuration:
 
@@ -35,7 +74,7 @@ Possible configuration:
 - Job types: pump, inspection, repair
 - Recommended capabilities: payments, accounting, SMS reminders, maps, calendar, photo storage
 
-## Example: appliance repair
+### Appliance repair
 
 Possible configuration:
 
