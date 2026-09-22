@@ -30,6 +30,17 @@ An owner can:
 - publish a basic generated website
 - invite staff
 
+## Import and migration
+
+- Owner can upload a customer CSV.
+- High-confidence columns map automatically.
+- Ambiguous mappings are surfaced for confirmation.
+- Duplicate candidates are shown rather than merged blindly.
+- Import is idempotent on retry.
+- Import summary and error rows are available.
+- Tenant-scoped CSV export works.
+- Full business-data export excludes secrets and protected payment credentials.
+
 ## Public website/signup
 
 A visitor can:
@@ -134,6 +145,7 @@ Customer can:
 - manage notification preferences
 - request pause/change/cancel
 - create support/reclean ticket
+- submit service feedback/rating
 
 Controlled changes require office approval and preserve before/after history.
 
@@ -162,6 +174,8 @@ Controlled changes require office approval and preserve before/after history.
 - Technician consumes material on job.
 - Balance updates via stock movements.
 - Low-stock threshold can trigger alert/automation.
+- Owner can create vendor and purchase order.
+- Partial and full receiving update stock through immutable movements.
 
 ## Time and payroll
 
@@ -178,6 +192,8 @@ Controlled changes require office approval and preserve before/after history.
 - Customers/jobs/routes can belong to a location.
 - Location manager sees only scoped operation.
 - Parent reporting rolls up both locations.
+- Parent can configure a sample franchise royalty rule.
+- A royalty statement can be calculated for a seeded period from child-unit activity.
 - Configuration supports inherited defaults with location overrides where defined.
 
 ## Reporting
@@ -196,6 +212,18 @@ At minimum, seeded/demo reports prove:
 - multi-location rollup
 
 CSV export works for appropriate lists/reports.
+
+## Developer API and webhooks
+
+- Owner can create and revoke a scoped API credential.
+- API can list/create/update at least the documented high-value CRM resources.
+- Tenant scope comes from credential and cannot be overridden by request input.
+- Cursor pagination and normalized errors work.
+- Idempotency key prevents duplicate create where required.
+- Owner can register an outbound webhook endpoint.
+- Test event can be sent.
+- Deliveries are signed, logged, retried, and manually retryable.
+- Duplicate domain-event delivery remains safe.
 
 ## Connector marketplace
 
