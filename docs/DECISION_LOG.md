@@ -4,6 +4,15 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-09-22 — Autonomous build prompts stay mission-oriented
+
+- **Status:** Accepted
+- **Area:** Implementation
+- **Decision:** Detailed product and architecture requirements belong in the repository source of truth. Major Codex implementation prompts should define the mission, hard guardrails, autonomy, and completion standard without restating the entire specification or requiring staged approvals.
+- **Rationale:** The agentic-ai project demonstrated that a single broad, well-bounded prompt paired with strong repository context can produce a large coherent implementation more effectively than prescriptive milestone tasking.
+- **Authoritative doc:** `AGENTS.md`
+
+
 ## 2026-09-22 — V1 specification is ready for end-to-end implementation
 
 - **Status:** Accepted
