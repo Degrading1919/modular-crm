@@ -4,6 +4,15 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-09-22 — Core service-business lifecycle is accepted
+
+- **Status:** Accepted
+- **Area:** Product
+- **Decision:** The default lifecycle is Lead → Customer → Estimate → Approval → Schedule → Job → Completion → Invoice → Payment → Recurring follow-up, with optional shortcuts where a business does not require every step.
+- **Rationale:** This accurately reflects the intended small-service-business operating flow and should now guide data modeling and frontend navigation rather than remain an open design question.
+- **Authoritative doc:** `docs/PRODUCT_SCOPE.md`
+
+
 ## 2026-09-22 — V1 uses role templates backed by granular permissions
 
 - **Status:** Accepted
