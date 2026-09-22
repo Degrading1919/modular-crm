@@ -1121,6 +1121,43 @@ Unique: tenant_id + idempotency_key
 - occurred_at
 - payload jsonb
 
+
+## Customer feedback and communication consent
+
+### service_feedback
+
+- id
+- tenant_id
+- customer_id
+- job_id
+- membership_id nullable
+- rating integer nullable
+- comment nullable
+- visibility: internal | customer_shared | public_candidate
+- submitted_at
+- source
+- resolved_ticket_id nullable
+
+Unique where desired: tenant_id + customer_id + job_id + source
+
+### consent_records
+
+Immutable preference/consent history.
+
+- id
+- tenant_id
+- customer_id
+- channel
+- category
+- state: opted_in | opted_out | unknown
+- source
+- captured_at
+- actor_type
+- actor_id nullable
+- evidence jsonb nullable
+
+Index: tenant_id + customer_id + channel + category + captured_at
+
 ## Tickets
 
 ### ticket_type_definitions
@@ -1277,6 +1314,42 @@ Unique: connector_installation_id + sync_type
 
 Unique: connector_key + provider_event_id
 
+
+## Import staging
+
+### import_batches
+
+- id
+- tenant_id
+- source_type
+- connector_installation_id nullable
+- file_id nullable
+- entity_type
+- status
+- mapping jsonb
+- total_rows integer
+- valid_rows integer
+- imported_rows integer
+- failed_rows integer
+- created_by_membership_id
+- committed_at nullable
+- error_summary jsonb nullable
+
+### import_rows
+
+- id
+- tenant_id
+- import_batch_id
+- row_number integer
+- source_payload jsonb
+- normalized_payload jsonb nullable
+- status
+- matched_entity_type nullable
+- matched_entity_id nullable
+- errors jsonb nullable
+
+Unique: import_batch_id + row_number
+
 ## Website
 
 ### sites
@@ -1368,6 +1441,52 @@ Unique: site_id + idempotency_key
 - accepted_at
 - ip_address nullable
 - user_agent nullable
+
+
+## Developer API and outbound webhooks
+
+### api_credentials
+
+- id
+- tenant_id
+- name
+- token_hash
+- token_prefix
+- scopes text[]
+- status
+- expires_at nullable
+- last_used_at nullable
+- created_by_membership_id
+- revoked_at nullable
+
+### webhook_subscriptions
+
+- id
+- tenant_id
+- name
+- url
+- event_patterns text[]
+- secret_reference
+- status
+- created_by_membership_id
+- last_success_at nullable
+- last_failure_at nullable
+
+### webhook_deliveries
+
+- id
+- tenant_id
+- webhook_subscription_id
+- domain_event_id
+- status
+- attempt_count integer
+- response_status nullable
+- response_excerpt nullable
+- next_retry_at nullable
+- last_attempt_at nullable
+- delivered_at nullable
+
+Unique: webhook_subscription_id + domain_event_id
 
 ## Reporting and operations
 
