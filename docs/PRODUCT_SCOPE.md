@@ -6,6 +6,8 @@ Create a simple, highly configurable operating platform for small service busine
 
 The system should let a business owner go from signup to a usable business stack with minimal assistance.
 
+The product should be specified deeply enough before the first major Codex implementation task that Codex can build the initial backend and frontend end to end with minimal clarification or architectural rework.
+
 ## Core customer outcomes
 
 A business owner should be able to:
