@@ -249,6 +249,12 @@ History entry for sent/delivered/failed communication.
 
 A full omnichannel inbound conversation inbox is outside V1.
 
+### Service Feedback
+Customer rating/comment linked to completed service and optionally technician.
+
+### Consent Record
+Immutable history of customer communication preference/consent state.
+
 ## Support and requests
 
 ### Ticket
@@ -302,6 +308,22 @@ Cursor/status for imported or synchronized data.
 
 ### Webhook Event
 Verified, idempotently processed provider event.
+
+## Import and portability
+
+### Import Batch
+Auditable staged customer/business-data import with mappings, row results, and provenance.
+
+## Developer extensibility
+
+### API Credential
+Tenant-scoped, permissioned machine credential for the public API.
+
+### Webhook Subscription
+Tenant-configured outbound event destination.
+
+### Webhook Delivery
+Attempt/result history for one domain event delivered to one subscription.
 
 ## Website
 
