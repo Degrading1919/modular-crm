@@ -909,6 +909,42 @@ Unique: payment_id + invoice_id
 - tip_type: one_time | recurring
 - created_at
 
+### customer_credits
+
+- id
+- tenant_id
+- customer_id
+- source_type
+- source_entity_id nullable
+- original_amount_minor
+- remaining_amount_minor
+- currency
+- status: active | exhausted | void
+- created_at
+- expires_at nullable
+
+### credit_allocations
+
+- id
+- tenant_id
+- customer_credit_id
+- invoice_id
+- amount_minor
+- allocated_at
+
+### credit_memos
+
+- id
+- tenant_id
+- customer_id
+- invoice_id nullable
+- amount_minor
+- currency
+- reason
+- status
+- issued_at
+- applied_at nullable
+
 ### tax_rules
 
 - id
@@ -1047,6 +1083,48 @@ Immutable.
 - inventory_location_id
 - quantity numeric
 - stock_movement_id
+
+### vendors
+
+- id
+- tenant_id
+- name
+- contact_name nullable
+- email nullable
+- phone nullable
+- website nullable
+- address jsonb nullable
+- account_reference nullable
+- active boolean
+
+### purchase_orders
+
+- id
+- tenant_id
+- vendor_id
+- organization_location_id nullable
+- status: draft | ordered | partially_received | received | canceled
+- order_number
+- ordered_at nullable
+- expected_at nullable
+- received_at nullable
+- subtotal_minor
+- tax_minor
+- total_minor
+- currency
+- notes nullable
+
+### purchase_order_items
+
+- id
+- tenant_id
+- purchase_order_id
+- inventory_item_id
+- description
+- quantity_ordered numeric
+- quantity_received numeric
+- unit_cost_minor
+- total_minor
 
 ### reorder_rules
 
