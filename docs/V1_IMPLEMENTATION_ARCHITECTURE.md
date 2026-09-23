@@ -111,6 +111,7 @@ Define an ObjectStorage capability.
 Local development:
 
 - MinIO or another S3-compatible local service
+- A durable, tenant-separated filesystem adapter may be used when Docker is unavailable; it must keep the same `ObjectStorage` boundary and enforce signed, short-lived access to protected files.
 
 Production-compatible targets:
 

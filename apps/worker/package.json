@@ -1,0 +1,15 @@
+{
+  "name": "@modular-crm/worker",
+  "private": true,
+  "type": "module",
+  "scripts": {"dev": "tsx watch src/index.ts", "start": "tsx src/index.ts", "typecheck": "tsc --noEmit", "build": "tsc --noEmit", "test": "vitest run --passWithNoTests"},
+  "dependencies": {
+    "@modular-crm/automations": "workspace:*",
+    "@modular-crm/connectors": "workspace:*",
+    "@modular-crm/db": "workspace:*",
+    "@modular-crm/domain": "workspace:*",
+    "drizzle-orm": "0.45.3",
+    "pg-boss": "12.33.6"
+  },
+  "devDependencies": {"@types/node": "^24.0.0", "tsx": "^4.20.0", "typescript": "^5.9.0", "vitest": "^3.2.0"}
+}

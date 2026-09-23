@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-09-23 — Durable local file adapter for Docker-free development
+
+- **Status:** Accepted
+- **Area:** Architecture
+- **Decision:** Local development may use a durable tenant-separated filesystem `ObjectStorage` adapter when MinIO is unavailable. Protected file access remains authorized or short-lived signed, and S3-compatible storage remains the deployment target.
+- **Rationale:** The local build must remain operable on machines without Docker while preserving the same storage boundary.
+- **Authoritative doc:** `docs/V1_IMPLEMENTATION_ARCHITECTURE.md`
+
 ## 2026-09-22 — Autonomous build prompts stay mission-oriented
 
 - **Status:** Accepted

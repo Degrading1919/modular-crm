@@ -1,0 +1,90 @@
+import { describe, expect, it } from "vitest";
+import { CAPABILITY_LABELS, ConnectorError, createMockConnectorRegistry, mockWebhookSignature, validateConnectorManifest } from "./index.ts";
+
+describe("connector contract", () => {
+  it("validates a capability-first manifest catalog", () => {
+    const registry = createMockConnectorRegistry({ includePlannedProviders: true });
+    for (const manifest of registry.listCatalog()) validateConnectorManifest(manifest);
+    expect(registry.listByCapability().payments.some((item) => item.key === "mock-payments")).toBe(true);
+    expect(CAPABILITY_LABELS.payments).toBe("Accept payments");
+    expect(registry.listCatalog("accounting").some((item) => item.key === "quickbooks" && item.availability === "planned")).toBe(true);
+    expect(() => registry.connectMock("tenant-a", "quickbooks")).toThrow(ConnectorError);
+  });
+  it("verifies authorization state and does not expose credentials in health views", () => {
+    const registry = createMockConnectorRegistry();
+    const begin = registry.beginAuthorization("tenant-a", "mock-payments");
+    expect(registry.getInstallation("tenant-a", "mock-payments").state).toBe("authorizing");
+    expect(() => registry.completeAuthorization("tenant-a", "mock-payments", { state: "bad", code: "mock-approved" })).toThrow("Invalid authorization");
+    const installed = registry.completeAuthorization("tenant-a", "mock-payments", { state: begin.state, code: "mock-approved" });
+    expect(installed.state).toBe("connected");
+    expect(JSON.stringify(installed)).not.toContain(begin.state);
+    expect(registry.healthCheck("tenant-a", "mock-payments").health).toBe("healthy");
+    expect(registry.disconnect("tenant-a", "mock-payments").state).toBe("not_connected");
+  });
+  it("isolates tenant scoped payment references, retries and refunds", async () => {
+    const registry = createMockConnectorRegistry();
+    registry.connectMock("tenant-a", "mock-payments");
+    registry.connectMock("tenant-b", "mock-payments");
+    const a = registry.getCapability("tenant-a", "payments")!;
+    const b = registry.getCapability("tenant-b", "payments")!;
+    const method = await a.createPaymentMethod({ customerId: "customer-a" });
+    const first = await a.charge({ paymentMethodReference: method.reference, amountMinor: 2500, currency: "USD", idempotencyKey: "invoice-1" });
+    const repeat = await a.charge({ paymentMethodReference: method.reference, amountMinor: 2500, currency: "USD", idempotencyKey: "invoice-1" });
+    expect(repeat.reference).toBe(first.reference);
+    await expect(a.charge({ paymentMethodReference: method.reference, amountMinor: 3000, currency: "USD", idempotencyKey: "invoice-1" })).rejects.toMatchObject({ code: "invalid_request" });
+    expect(await b.getPayment(first.reference)).toBeUndefined();
+    await expect(b.charge({ paymentMethodReference: method.reference, amountMinor: 2500, currency: "USD", idempotencyKey: "invoice-1" })).rejects.toMatchObject({ code: "invalid_request" });
+    const refund = await a.refund({ paymentReference: first.reference, amountMinor: 500, idempotencyKey: "refund-1" });
+    expect((await a.refund({ paymentReference: first.reference, amountMinor: 500, idempotencyKey: "refund-1" })).reference).toBe(refund.reference);
+    await expect(a.refund({ paymentReference: first.reference, amountMinor: 200, idempotencyKey: "refund-1" })).rejects.toMatchObject({ code: "invalid_request" });
+    await expect(a.refund({ paymentReference: first.reference, amountMinor: 2500, idempotencyKey: "refund-2" })).rejects.toMatchObject({ code: "invalid_request" });
+  });
+  it("supports deterministic failures and recovery", async () => {
+    const registry = createMockConnectorRegistry();
+    registry.connectMock("tenant-a", "mock-communication");
+    const sms = registry.getCapability("tenant-a", "sms")!;
+    registry.setScenario("tenant-a", "mock-communication", "timeout");
+    expect(registry.healthCheck("tenant-a", "mock-communication").health).toBe("degraded");
+    await expect(sms.sendSms({ to: "+15555550100", body: "On the way", idempotencyKey: "j1" })).rejects.toMatchObject({ code: "timeout", retryable: true });
+    registry.setScenario("tenant-a", "mock-communication", "authorization_expired");
+    await expect(sms.sendSms({ to: "+15555550100", body: "On the way", idempotencyKey: "j1" })).rejects.toMatchObject({ code: "authorization_expired", retryable: false });
+    registry.setScenario("tenant-a", "mock-communication", "success");
+    const sent = await sms.sendSms({ to: "+15555550100", body: "On the way", idempotencyKey: "j1" });
+    expect((await sms.sendSms({ to: "+15555550100", body: "On the way", idempotencyKey: "j1" })).reference).toBe(sent.reference);
+  });
+  it("verifies and deduplicates mock webhooks", () => {
+    const registry = createMockConnectorRegistry();
+    registry.connectMock("tenant-a", "mock-payments");
+    const request = { tenantId: "tenant-a", connectorKey: "mock-payments", eventId: "evt-1", signature: mockWebhookSignature("tenant-a", "mock-payments", "evt-1"), payload: { status: "paid" } };
+    expect(registry.handleMockWebhook(request).duplicate).toBe(false);
+    expect(registry.handleMockWebhook(request).duplicate).toBe(true);
+    expect(() => registry.handleMockWebhook({ ...request, eventId: "evt-2" })).toThrow("signature");
+  });
+  it("covers routing, storage, accounting, calendar, payroll, AI and import mocks", async () => {
+    const registry = createMockConnectorRegistry();
+    for (const key of ["mock-routing", "mock-storage", "mock-accounting", "mock-calendar", "mock-payroll", "mock-ai", "mock-import"]) registry.connectMock("tenant-a", key);
+    const geocode = registry.getCapability("tenant-a", "geocoding")!;
+    expect(await geocode.geocode("123 Main Street")).toEqual(await geocode.geocode("123 Main Street"));
+    const routing = registry.getCapability("tenant-a", "routing")!;
+    const start = { latitude: 33.47, longitude: -81.97 };
+    const route = await routing.optimizeRoute({ start, stops: [{ id: "a", coordinates: { latitude: 33.48, longitude: -81.97 } }, { id: "b", coordinates: { latitude: 33.50, longitude: -81.97 } }] });
+    expect(route.stopIds).toEqual(["a", "b"]);
+    expect(route.durationMinutes).toBeGreaterThan(0);
+    const locked = await routing.optimizeRoute({ start, stops: [{ id: "far", coordinates: { latitude: 33.60, longitude: -81.97 } }, { id: "fixed", coordinates: { latitude: 33.55, longitude: -81.97 }, locked: true }, { id: "near", coordinates: { latitude: 33.48, longitude: -81.97 } }] });
+    expect(locked.stopIds).toEqual(["near", "fixed", "far"]);
+    const storage = registry.getCapability("tenant-a", "storage")!;
+    await storage.putObject({ key: "proof/1.jpg", content: new Uint8Array([1, 2, 3]), contentType: "image/jpeg" });
+    expect((await storage.getObject("proof/1.jpg"))?.content).toEqual(new Uint8Array([1, 2, 3]));
+    const accounting = registry.getCapability("tenant-a", "accounting")!;
+    expect((await accounting.discoverResources())[0]?.label).toBe("Test accounting company");
+    const synced = await accounting.syncCustomer({ customerId: "c1", name: "Carter", idempotencyKey: "c1" });
+    expect((await accounting.syncCustomer({ customerId: "c1", name: "Carter", idempotencyKey: "c1" })).externalReference).toBe(synced.externalReference);
+    const calendar = registry.getCapability("tenant-a", "calendar")!;
+    const event = await calendar.createEvent({ calendarId: "mock-calendar", title: "Service", startsAt: "2026-09-24T10:00:00Z", endsAt: "2026-09-24T11:00:00Z", idempotencyKey: "j1" });
+    expect((await calendar.listEvents("mock-calendar"))[0]?.reference).toBe(event.reference);
+    const payroll = registry.getCapability("tenant-a", "payroll")!;
+    expect((await payroll.exportGrossPay({ periodId: "p1", rows: [{ staffId: "s1", grossMinor: 10000, currency: "USD" }], idempotencyKey: "p1" })).rowCount).toBe(1);
+    expect((await registry.getCapability("tenant-a", "ai")!.proposeStructuredContent({ businessName: "Happy Yards", industry: "pet waste" })).headline).toContain("Happy Yards");
+    expect((await registry.getCapability("tenant-a", "crm_import")!.importCustomers({ rows: [{ name: "Carter", email: "c@example.com" }], idempotencyKey: "batch-1" })).customers).toHaveLength(1);
+  });
+});
