@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1790166102266,
+      "tag": "0000_broad_trish_tilby",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790185644068,
+      "tag": "0001_repair_customer_assets_archived_at",
+      "breakpoints": true
+    }
+  ]
+}
