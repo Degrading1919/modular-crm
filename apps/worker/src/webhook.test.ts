@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { verifyWebhook } from "@modular-crm/domain";
-import { deliverWebhookAttempt, matchesEventPattern, nextWebhookRetryAt, validateWebhookUrl, webhookBody } from "./webhook.js";
+import { deliverWebhookAttempt, isPublicWebhookAddress, matchesEventPattern, nextWebhookRetryAt, validateWebhookUrl, webhookBody } from "./webhook.js";
 
 const event = { id: "event-1", tenantId: "tenant-a", eventType: "job.completed", eventVersion: 1, occurredAt: new Date("2026-09-23T12:00:00Z"), entityType: "job", entityId: "job-1", payload: { customerId: "customer-1", gateCode: "1234", nested: { accessInstructions: "back gate" } } };
 
@@ -10,6 +10,16 @@ it("matches exact and family webhook subscriptions", () => {
   expect(matchesEventPattern("job.completed", "job.completed")).toBe(true);
   expect(() => validateWebhookUrl("https://127.0.0.1/hook")).toThrow("private");
   expect(() => validateWebhookUrl("http://hooks.example.test/hook")).toThrow("HTTPS");
+});
+it("rejects private, metadata, and tunneled DNS answers before opening a socket", () => {
+  for (const address of ["127.0.0.1", "169.254.169.254", "10.0.0.5", "192.168.1.2", "100.64.0.3"]) {
+    expect(isPublicWebhookAddress(address, 4)).toBe(false);
+  }
+  for (const address of ["::1", "fc00::1", "fe80::1", "::ffff:127.0.0.1", "2002:c0a8:101::1", "64:ff9b::a9fe:a9fe"]) {
+    expect(isPublicWebhookAddress(address, 6)).toBe(false);
+  }
+  expect(isPublicWebhookAddress("8.8.8.8", 4)).toBe(true);
+  expect(isPublicWebhookAddress("2606:4700:4700::1111", 6)).toBe(true);
 });
 it("signs a bounded, redacted outbound event and classifies retries", async () => {
   const now = new Date("2026-09-23T12:05:00Z");

@@ -18,6 +18,7 @@ import { handleOnboardingSite } from "./onboarding-site";
 import { handleWebsiteDomains } from "./website-domains";
 import { handlePayroll } from "./payroll";
 import { handlePortal } from "./portal";
+import { handlePortalActivation, handlePortalLifecycle } from "./portal-lifecycle";
 import { handlePublicSite } from "./public-site";
 import { handlePublicApi } from "./public-api";
 import { handleSecureEstimateLink } from "./secure-estimate-links";
@@ -29,6 +30,8 @@ import { handleWorkflow } from "./workflows";
 
 export async function handleV1(request: Request, path: string[]): Promise<Response> {
   try {
+    const portalActivation = await handlePortalActivation(request, path);
+    if (portalActivation) return portalActivation;
     if (path[0] === "auth") return await handleAuthRoute(request, path);
     const publicApi = await handlePublicApi(request, path);
     if (publicApi) return publicApi;
@@ -46,6 +49,8 @@ export async function handleV1(request: Request, path: string[]): Promise<Respon
     if (onboarding) return onboarding;
     const portal = await handlePortal(request, path, actor);
     if (portal) return portal;
+    const portalLifecycle = await handlePortalLifecycle(request, path, actor);
+    if (portalLifecycle) return portalLifecycle;
     const document = await handleDocuments(request, path, actor);
     if (document) return document;
     const refund = await handleInvoiceRefund(request, path, actor);

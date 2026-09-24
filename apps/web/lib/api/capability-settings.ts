@@ -9,7 +9,7 @@ import {
 } from "@modular-crm/db";
 import { DomainError, requirePermission } from "@modular-crm/domain";
 import { z } from "zod";
-import { getRegistry, hydrateTenantConnectors, setConnectorState } from "../connectors";
+import { applyConnectorInstallationToRegistry, getRegistry, hydrateTenantConnectors, setConnectorState } from "../connectors";
 import { getDb } from "../db";
 import { requireStaff, type SessionActor } from "./actor";
 import { recordEvent } from "./events";
@@ -298,25 +298,42 @@ async function changeConnection(request: Request, path: string[], actor: Session
   const manifest = registry.listCatalog().find((candidate) => candidate.key === connectorKey);
   if (!manifest || manifest.availability === "planned" || manifest.platformManaged) throw new DomainError("NOT_FOUND", "Connection is not available yet.", 404);
   if (action !== "disconnect") await assertConnectorEntitlement(actor.tenantId, manifest);
-  const [prior] = await getDb().select().from(connectorInstallations)
-    .where(and(eq(connectorInstallations.tenantId, actor.tenantId), eq(connectorInstallations.connectorKey, connectorKey)))
-    .orderBy(desc(connectorInstallations.createdAt)).limit(1);
-  const state = await setConnectorState(actor.tenantId, connectorKey, action !== "disconnect");
-  const [installation] = await getDb().select().from(connectorInstallations)
-    .where(and(eq(connectorInstallations.tenantId, actor.tenantId), eq(connectorInstallations.connectorKey, connectorKey)))
-    .orderBy(desc(connectorInstallations.createdAt)).limit(1);
+  const db = getDb();
+  if (manifest.authType === "oauth2") {
+    if (action !== "disconnect") return setConnectorState(actor.tenantId, connectorKey, true).then((state) =>
+      json({ item: { key: connectorKey, name: manifest.name, status: state.state, health: state.health, mode: "live", environment: "production" } }));
+
+    // Provider revocation is an external best-effort action and cannot share the local DB transaction.
+    // If the following DB/event transaction fails, keep local credentials/status and runtime state intact.
+    const { persistOAuthDisconnect, prepareOAuthDisconnect } = await import("./connector-oauth");
+    const prepared = await prepareOAuthDisconnect(actor.tenantId, connectorKey);
+    await db.transaction((tx) => persistOAuthDisconnect(tx, actor, connectorKey, prepared));
+    const state = registry.disconnect(actor.tenantId, connectorKey);
+    return json({ item: { key: connectorKey, name: manifest.name, status: state.state, health: state.health, mode: "live", environment: "production" } });
+  }
+
+  const result = await db.transaction(async (tx) => {
+    const [before] = await tx.select().from(connectorInstallations)
+      .where(and(eq(connectorInstallations.tenantId, actor.tenantId), eq(connectorInstallations.connectorKey, connectorKey)))
+      .orderBy(desc(connectorInstallations.createdAt)).limit(1);
+    const nextState = await setConnectorState(actor.tenantId, connectorKey, action !== "disconnect", { writer: tx, deferRuntime: true });
+    const [stored] = await tx.select().from(connectorInstallations)
+      .where(and(eq(connectorInstallations.tenantId, actor.tenantId), eq(connectorInstallations.connectorKey, connectorKey)))
+      .orderBy(desc(connectorInstallations.createdAt)).limit(1);
+    if (stored) await recordEvent(actor, {
+      type: action === "disconnect" ? "connector.disconnected" : "connector.connected",
+      entityType: "connector_installation", entityId: stored.id,
+      payload: { connectorKey, mode: manifest.availability === "mock_complete" ? "mock" : manifest.availability === "credentials_ready" ? "live" : "local", health: nextState.health },
+      auditAction: action === "disconnect" ? "connector.disconnect" : action === "reconnect" ? "connector.reconnect" : "connector.connect",
+      before: before ? { status: before.status } : null,
+      after: { status: stored.status, mode: manifest.availability === "mock_complete" ? "mock" : manifest.availability === "credentials_ready" ? "live" : "local" },
+    }, tx);
+    return { installation: stored, state: nextState };
+  });
+  const state = result.installation ? applyConnectorInstallationToRegistry(result.installation) : result.state;
+  if (!state) throw new DomainError("EXTERNAL_SERVICE_ERROR", "The connection could not be saved.", 503);
   const mode = manifest.availability === "mock_complete" ? "mock" : manifest.availability === "credentials_ready" ? "live" : "local";
   const environment = manifest.availability === "mock_complete" ? "test" : manifest.availability === "credentials_ready" ? "production" : "local";
-  if (installation) {
-    await recordEvent(actor, {
-      type: action === "disconnect" ? "connector.disconnected" : "connector.connected",
-      entityType: "connector_installation", entityId: installation.id,
-      payload: { connectorKey, mode, health: state.health },
-      auditAction: action === "disconnect" ? "connector.disconnect" : action === "reconnect" ? "connector.reconnect" : "connector.connect",
-      before: prior ? { status: prior.status } : null,
-      after: { status: installation.status, mode },
-    });
-  }
   return json({ item: { key: connectorKey, name: manifest.name, status: state.state === "connected" ? "connected" : "not_connected", health: state.health, mode, environment } });
 }
 
@@ -384,32 +401,42 @@ async function retryAutomationRun(actor: SessionActor, runId: string): Promise<R
     : undefined;
   if (!actor.allLocations && !locationCondition) throw new DomainError("NOT_FOUND", "Automation run not found.", 404);
 
-  const scopeConditions: SQL[] = [
-    eq(automationRuns.id, runId), eq(automationRuns.tenantId, actor.tenantId),
-    eq(domainEvents.tenantId, actor.tenantId),
-  ];
-  if (locationCondition) scopeConditions.push(locationCondition);
-  const [scoped] = await db.select({ run: automationRuns })
-    .from(automationRuns).innerJoin(domainEvents, and(
-      eq(domainEvents.id, automationRuns.triggeringEventId), eq(domainEvents.tenantId, actor.tenantId),
-    ))
-    .where(and(...scopeConditions)).limit(1);
-  if (!scoped) throw new DomainError("NOT_FOUND", "Automation run not found.", 404);
-  if (scoped.run.status !== "retry") throw new DomainError("CONFLICT", "This automation run is not eligible for retry.", 409);
+  const run = await db.transaction(async (tx) => {
+    const scopeConditions: SQL[] = [
+      eq(automationRuns.id, runId), eq(automationRuns.tenantId, actor.tenantId),
+      eq(domainEvents.tenantId, actor.tenantId),
+    ];
+    if (locationCondition) scopeConditions.push(locationCondition);
+    const [scoped] = await tx.select({ run: automationRuns })
+      .from(automationRuns).innerJoin(domainEvents, and(
+        eq(domainEvents.id, automationRuns.triggeringEventId), eq(domainEvents.tenantId, actor.tenantId),
+      ))
+      .where(and(...scopeConditions)).limit(1);
+    if (!scoped) throw new DomainError("NOT_FOUND", "Automation run not found.", 404);
+    if (scoped.run.status !== "retry") throw new DomainError("CONFLICT", "This automation run is not eligible for retry.", 409);
 
-  // A null retry time is immediately eligible in enqueuePendingAutomationRuns.
-  // Keep the run snapshot unchanged so completedActionKeys and effect idempotency remain intact.
-  const updateConditions: SQL[] = [
-    eq(automationRuns.id, runId), eq(automationRuns.tenantId, actor.tenantId), eq(automationRuns.status, "retry"),
-  ];
-  const scopedEvent = db.select({ id: domainEvents.id }).from(domainEvents).where(and(
-    eq(domainEvents.id, automationRuns.triggeringEventId), eq(domainEvents.tenantId, actor.tenantId),
-    ...(locationCondition ? [locationCondition] : []),
-  ));
-  updateConditions.push(exists(scopedEvent));
-  const [run] = await db.update(automationRuns).set({ nextRetryAt: null, updatedAt: new Date() })
-    .where(and(...updateConditions)).returning();
-  if (!run) throw new DomainError("CONFLICT", "This automation run is no longer eligible for retry.", 409);
+    // A null retry time is immediately eligible in enqueuePendingAutomationRuns.
+    // Keep the run snapshot unchanged so completedActionKeys and effect idempotency remain intact.
+    const updateConditions: SQL[] = [
+      eq(automationRuns.id, runId), eq(automationRuns.tenantId, actor.tenantId), eq(automationRuns.status, "retry"),
+    ];
+    const scopedEvent = tx.select({ id: domainEvents.id }).from(domainEvents).where(and(
+      eq(domainEvents.id, automationRuns.triggeringEventId), eq(domainEvents.tenantId, actor.tenantId),
+      ...(locationCondition ? [locationCondition] : []),
+    ));
+    updateConditions.push(exists(scopedEvent));
+    const [updated] = await tx.update(automationRuns).set({ nextRetryAt: null, updatedAt: new Date() })
+      .where(and(...updateConditions)).returning();
+    if (!updated) throw new DomainError("CONFLICT", "This automation run is no longer eligible for retry.", 409);
+    await recordEvent(actor, {
+      type: "automation_run.retry_requested", entityType: "automation_run", entityId: updated.id,
+      payload: { ruleId: updated.automationRuleId, attempts: updated.attempts },
+      auditAction: "automation.run_retry",
+      before: { status: scoped.run.status, nextRetryAt: scoped.run.nextRetryAt?.toISOString() ?? null },
+      after: { status: updated.status, nextRetryAt: null },
+    }, tx);
+    return updated;
+  });
   return json({ item: {
     id: run.id, status: run.status, attempts: run.attempts,
     nextRetryAt: null, retryable: run.status === "retry",
@@ -553,6 +580,10 @@ async function listCommunications(request: Request, actor: SessionActor): Promis
     .orderBy(desc(communicationEvents.occurredAt)) : [];
   const eventsByMessage = new Map<string, typeof communicationEvents.$inferSelect[]>();
   for (const event of events) eventsByMessage.set(event.outboundMessageId, [...(eventsByMessage.get(event.outboundMessageId) ?? []), event]);
+  const installationIds = [...new Set(messages.map(({ message }) => message.connectorInstallationId).filter((id): id is string => !!id))];
+  const installationRows = installationIds.length ? await db.select({ id: connectorInstallations.id, connectorKey: connectorInstallations.connectorKey })
+    .from(connectorInstallations).where(and(eq(connectorInstallations.tenantId, actor.tenantId), inArray(connectorInstallations.id, installationIds))) : [];
+  const connectorKeys = new Map(installationRows.map((row) => [row.id, row.connectorKey]));
   return json({ items: messages.map(({ message, customerName, locationId }) => ({
     id: message.id, tenantId: message.tenantId, customerId: message.customerId, customerName: customerName ?? null,
     jobId: message.jobId, locationId, recipient: message.recipient, channel: message.channel,
@@ -561,7 +592,10 @@ async function listCommunications(request: Request, actor: SessionActor): Promis
     deliveredAt: message.deliveredAt?.toISOString() ?? null, failureCode: message.failureCode,
     errorMessage: message.failureCode ? safeRunError(message.failureCode) ?? "Delivery could not be completed." : null,
     history: (eventsByMessage.get(message.id) ?? []).map((event) => ({ type: event.eventType, occurredAt: event.occurredAt.toISOString() })),
-    mode: message.connectorInstallationId ? "connected" : "mock", environment: message.connectorInstallationId ? "production" : "test",
+    mode: message.status === "queued" || message.status === "sending" || message.status === "retry" ? "pending"
+      : message.connectorInstallationId && connectorKeys.get(message.connectorInstallationId)?.startsWith("mock-") === false ? "connected" : "mock",
+    environment: message.status === "queued" || message.status === "sending" || message.status === "retry" ? null
+      : message.connectorInstallationId && connectorKeys.get(message.connectorInstallationId)?.startsWith("mock-") === false ? "production" : "test",
   })) });
 }
 
@@ -645,12 +679,12 @@ async function queueCommunication(request: Request, actor: SessionActor): Promis
       }
       return { row: existing, isNew: false };
     }
-    await tx.insert(communicationEvents).values({ tenantId: actor.tenantId, outboundMessageId: created.id, eventType: "queued", occurredAt: new Date(), payload: { mode: "test" } });
+    await tx.insert(communicationEvents).values({ tenantId: actor.tenantId, outboundMessageId: created.id, eventType: "queued", occurredAt: new Date(), payload: {} });
     await recordEvent(actor, { type: "outbound_message.queued", entityType: "outbound_message", entityId: created.id, payload: { channel: body.channel, customerId: customerId ?? null, jobId: job?.id ?? null }, auditAction: "communication.message_queued", after: { channel: body.channel, status: "queued" }, locationId }, tx);
     return { row: created, isNew: true };
   });
   return json({ item: { id: inserted.row.id, channel: inserted.row.channel, recipient: inserted.row.recipient, status: inserted.row.status,
-    queuedAt: inserted.row.queuedAt.toISOString(), mode: "mock", environment: "test", ...(inserted.isNew ? {} : { idempotentReplay: true }) } }, inserted.isNew ? 201 : 200);
+    queuedAt: inserted.row.queuedAt.toISOString(), mode: "pending", environment: null, ...(inserted.isNew ? {} : { idempotentReplay: true }) } }, inserted.isNew ? 201 : 200);
 }
 
 function objectValue(value: unknown): Record<string, unknown> { return isRecord(value) ? value : {}; }

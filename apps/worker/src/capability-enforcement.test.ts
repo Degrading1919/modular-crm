@@ -23,6 +23,7 @@ import { generateRecurringJobs } from "./recurring-db.js";
 let pglite: PGlite;
 let db: Database;
 let tenantCounter = 0;
+let recurringPlanCounter = 0;
 
 beforeAll(async () => {
   pglite = new PGlite();
@@ -63,7 +64,7 @@ async function createRecurringPlan(tenantId: string): Promise<string> {
     tenantId, customerId: customer!.id, name: "Home", addressLine1: "1 Main Street", city: "Albany", region: "NY", postalCode: "12207",
   }).returning({ id: serviceLocations.id });
   const [service] = await db.insert(services).values({
-    tenantId, key: "weekly-service", name: "Weekly service", serviceType: "maintenance",
+    tenantId, key: `weekly-service-${++recurringPlanCounter}`, name: "Weekly service", serviceType: "maintenance",
   }).returning({ id: services.id });
   const [recurrence] = await db.insert(recurrenceRules).values({
     tenantId, frequencyType: "daily", interval: 1, timezone: "UTC",
@@ -98,13 +99,46 @@ it("skips recurring generation without the recurring service capability", async 
   const planId = await createRecurringPlan(tenantId);
   const now = new Date("2026-09-24T12:00:00.000Z");
 
-  expect(await generateRecurringJobs(db, { tenantId, planId, through: "2026-09-24", now })).toEqual({ created: 0, existing: 0 });
+  expect(await generateRecurringJobs(db, { tenantId, planId, through: "2026-09-24", now })).toEqual({ created: 0, existing: 0, invalid: [] });
   expect(await db.select().from(jobs).where(eq(jobs.tenantId, tenantId))).toHaveLength(0);
   expect(await db.select().from(recurringGenerationLedger).where(eq(recurringGenerationLedger.tenantId, tenantId))).toHaveLength(0);
 
   await grantFeatures(tenantId, ["recurring_service_management"]);
-  expect(await generateRecurringJobs(db, { tenantId, planId, through: "2026-09-24", now })).toEqual({ created: 1, existing: 0 });
+  expect(await generateRecurringJobs(db, { tenantId, planId, through: "2026-09-24", now })).toEqual({ created: 1, existing: 0, invalid: [] });
   expect(await db.select().from(jobs).where(eq(jobs.tenantId, tenantId))).toHaveLength(1);
+});
+
+it("skips a malformed recurrence plan without blocking other plans for the tenant", async () => {
+  const tenantId = await createTenant("Isolated recurring plan business");
+  await grantFeatures(tenantId, ["recurring_service_management"]);
+  const invalidPlanId = await createRecurringPlan(tenantId);
+  const validPlanId = await createRecurringPlan(tenantId);
+  const [invalidPlan] = await db.select({ recurrenceRuleId: servicePlans.recurrenceRuleId }).from(servicePlans).where(eq(servicePlans.id, invalidPlanId));
+  await db.update(recurrenceRules).set({ frequencyType: "unsupported" }).where(eq(recurrenceRules.id, invalidPlan!.recurrenceRuleId));
+
+  const result = await generateRecurringJobs(db, { tenantId, through: "2026-09-24", now: new Date("2026-09-24T12:00:00Z") });
+
+  expect(result).toMatchObject({ created: 1, existing: 0, invalid: [{ planId: invalidPlanId }] });
+  expect(await db.select().from(jobs).where(eq(jobs.tenantId, tenantId))).toMatchObject([{ servicePlanId: validPlanId }]);
+});
+
+it("snapshots the plan price effective on each generated service date", async () => {
+  const tenantId = await createTenant("Dated recurring price business");
+  await grantFeatures(tenantId, ["recurring_service_management"]);
+  const planId = await createRecurringPlan(tenantId);
+  await db.update(servicePlans).set({ pricingSnapshot: {
+    amountMinor: 1500, totalMinor: 1500, currency: "USD",
+    priceVersions: [
+      { effectiveFrom: "2026-09-24", snapshot: { amountMinor: 1000, totalMinor: 1000, currency: "USD" } },
+      { effectiveFrom: "2026-09-25", snapshot: { amountMinor: 1500, totalMinor: 1500, currency: "USD" } },
+    ],
+  } }).where(eq(servicePlans.id, planId));
+
+  const result = await generateRecurringJobs(db, { tenantId, planId, through: "2026-09-25", now: new Date("2026-09-24T12:00:00Z") });
+  const generated = await db.select({ date: jobs.scheduledDate, price: jobs.priceSnapshot }).from(jobs).where(and(eq(jobs.tenantId, tenantId), eq(jobs.servicePlanId, planId))).orderBy(jobs.scheduledDate);
+
+  expect(result).toMatchObject({ created: 2, existing: 0, invalid: [] });
+  expect(generated.map((job) => [job.date, job.price?.amountMinor])).toEqual([["2026-09-24", 1000], ["2026-09-25", 1500]]);
 });
 
 it("skips automation planning without its capability while still delivering matching webhooks", async () => {
@@ -147,8 +181,11 @@ it("fails a queued automation after its capability is revoked without retrying",
     tenantId, name: "Pending workflow", source: "tenant", status: "active",
     triggerConfig: { event: "job.created" }, actions: [],
   }).returning({ id: automationRules.id });
+  const [event] = await db.insert(domainEvents).values({
+    tenantId, eventType: "job.created", actorType: "system", entityType: "job", entityId: randomUUID(),
+  }).returning({ id: domainEvents.id });
   const [run] = await db.insert(automationRuns).values({
-    tenantId, automationRuleId: rule!.id, ruleVersion: 1, triggeringEventId: randomUUID(),
+    tenantId, automationRuleId: rule!.id, ruleVersion: 1, triggeringEventId: event!.id,
     idempotencyKey: "queued-run-loses-capability", status: "queued", contextSnapshot: {},
   }).returning({ id: automationRuns.id });
   const now = new Date("2026-09-24T12:00:00.000Z");

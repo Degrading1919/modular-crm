@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { PGlite } from "../../../packages/db/node_modules/@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
-import { schema, seedDevelopment, seedIds, type Database } from "@modular-crm/db";
+import { completionProofs, fileLinks, files, schema, seedDevelopment, seedIds, type Database } from "@modular-crm/db";
 import { permissionsForRole } from "@modular-crm/domain";
 import type { SessionActor } from "../lib/api/actor.ts";
 
@@ -26,7 +26,13 @@ const customer: SessionActor = {
   kind: "customer", userId: "demo-happy-customer", tenantId: seedIds.happyTenant, tenantName: "Happy Yards Pet Waste",
   packKey: "pet-waste-removal", email: "carter@example.test", name: "Carter Household",
   customerIds: new Set([seedIds.carter]), locationIds: new Set([seedIds.carterLocation]),
+  customerLocationIds: new Map([[seedIds.carter, new Set([seedIds.carterLocation])]]),
 };
+const terry: SessionActor = {
+  ...owner, userId: "demo-happy-tech", name: "Terry Tech", role: "technician", permissions: permissionsForRole("technician"),
+  locationIds: new Set([seedIds.augusta]), allLocations: false, membershipId: seedIds.terryMembership,
+};
+const unassignedTech: SessionActor = { ...terry, membershipId: seedIds.caseyMembership };
 
 beforeAll(async () => {
   pglite = new PGlite();
@@ -65,7 +71,7 @@ describe("authorized customer documents", () => {
     const statement = await getDocument(customer, "statement", seedIds.carter);
     expect(statement.lines.some((line) => line.description === "Invoice HY-1001")).toBe(true);
     expect(statement.period?.start).toMatch(/^\d{4}-\d{2}-01$/);
-    await expect(getDocument({ ...customer, locationIds: new Set() }, "invoice", seedIds.happyInvoice)).rejects.toMatchObject({ status: 404 });
+    await expect(getDocument({ ...customer, locationIds: new Set(), customerLocationIds: new Map([[seedIds.carter, new Set()]]) }, "invoice", seedIds.happyInvoice)).rejects.toMatchObject({ status: 404 });
   });
 
   it("calculates statement opening and closing balances from transactions in the selected month", async () => {
@@ -89,7 +95,7 @@ describe("authorized customer documents", () => {
   });
 
   it("hides statements when the customer actor has no authorized location", async () => {
-    await expect(getDocument({ ...customer, locationIds: new Set() }, "statement", seedIds.carter, { period: "2024-02" })).rejects.toMatchObject({ status: 404 });
+    await expect(getDocument({ ...customer, locationIds: new Set(), customerLocationIds: new Map([[seedIds.carter, new Set()]]) }, "statement", seedIds.carter, { period: "2024-02" })).rejects.toMatchObject({ status: 404 });
   });
 
   it("renders customer visible completion details and excludes cross-tenant records", async () => {
@@ -97,6 +103,53 @@ describe("authorized customer documents", () => {
     expect(report).toMatchObject({ kind: "completion", status: "completed", summary: "Yard cleanup completed" });
     expect(report.lines.map((line) => line.description)).toEqual(["Yard swept", "Gate secured"]);
     await expect(getDocument(owner, "invoice", seedIds.cleanInvoice)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("renders the recorded checklist and links a customer-visible proof photo", async () => {
+    const [photo] = await db.insert(files).values({ tenantId: seedIds.happyTenant, storageKey: `test-proof/${crypto.randomUUID()}`,
+      originalName: "service.jpg", mimeType: "image/jpeg", byteSize: 42, visibility: "customer", uploadedByActorType: "staff" }).returning();
+    await db.insert(fileLinks).values({ tenantId: seedIds.happyTenant, fileId: photo!.id, entityType: "job", entityId: seedIds.completedJob, purpose: "proof" });
+    await db.insert(completionProofs).values({ tenantId: seedIds.happyTenant, jobId: seedIds.completedJob, completedAt: new Date(),
+      completedByMembershipId: seedIds.terryMembership, snapshot: { checklist: { propertyConfirmed: true, gateSecured: true }, fileId: photo!.id } });
+    const report = await getDocument(customer, "completion", seedIds.completedJob);
+    expect(report.lines.map((line) => line.description).sort()).toEqual(["Gate Secured", "Property Confirmed"]);
+    expect(report.proofPhotoUrl).toBe(`/api/v1/files/${photo!.id}/download`);
+  });
+
+  it("limits technician completion documents to currently assigned jobs", async () => {
+    expect((await getDocument(terry, "completion", seedIds.completedJob)).status).toBe("completed");
+    await expect(getDocument(unassignedTech, "completion", seedIds.completedJob)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("limits customer documents to the exact granted service location when location evidence exists", async () => {
+    const siblingLocationId = crypto.randomUUID();
+    const siblingJobId = crypto.randomUUID();
+    const siblingInvoiceId = crypto.randomUUID();
+    const branchOnlyInvoiceId = crypto.randomUUID();
+    await db.insert(schema.serviceLocations).values({
+      id: siblingLocationId, tenantId: seedIds.happyTenant, customerId: seedIds.carter, organizationLocationId: seedIds.augusta,
+      name: "Unshared property", addressLine1: "91 Cedar Street", city: "Augusta", region: "GA", postalCode: "30901",
+    });
+    await db.insert(schema.jobs).values({
+      id: siblingJobId, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta,
+      customerId: seedIds.carter, serviceLocationId: siblingLocationId, serviceId: seedIds.weeklyService, status: "completed", scheduledDate: "2026-09-20",
+    });
+    await db.insert(schema.invoices).values({
+      id: siblingInvoiceId, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta,
+      customerId: seedIds.carter, status: "issued", invoiceNumber: `SIB-${siblingInvoiceId.slice(0, 8)}`, currency: "USD", totalMinor: 1500n,
+    });
+    await db.insert(schema.invoices).values({
+      id: branchOnlyInvoiceId, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta,
+      customerId: seedIds.carter, status: "issued", invoiceNumber: `BR-${branchOnlyInvoiceId.slice(0, 8)}`, currency: "USD", totalMinor: 1000n,
+    });
+    await db.insert(schema.invoiceItems).values({
+      tenantId: seedIds.happyTenant, invoiceId: siblingInvoiceId, jobId: siblingJobId,
+      description: "Unshared property service", quantity: "1", unitAmountMinor: 1500n, totalMinor: 1500n,
+    });
+
+    await expect(getDocument(customer, "completion", siblingJobId)).rejects.toMatchObject({ status: 404 });
+    await expect(getDocument(customer, "invoice", siblingInvoiceId)).rejects.toMatchObject({ status: 404 });
+    await expect(getDocument(customer, "invoice", branchOnlyInvoiceId)).rejects.toMatchObject({ status: 404 });
   });
 
   it("enforces staff location scope on invoice documents", async () => {

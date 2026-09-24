@@ -254,6 +254,14 @@ Actions:
 - create office alert/ticket after configured retry threshold
 - retry according to payment policy
 
+### Payment receipt
+Trigger: payment.succeeded
+
+Actions:
+- email the customer a receipt notice
+
+Install this recipe as a draft so each business can enable it after reviewing its messaging preferences.
+
 ### Customer pause request
 Trigger: customer_change_request submitted with type pause
 

@@ -2,6 +2,42 @@ import { DomainError } from "./errors.ts";
 
 export type Frequency = "daily" | "weekly" | "biweekly" | "monthly";
 
+export type NormalizedRecurrence = Readonly<{
+  frequencyType: "daily" | "weekly" | "monthly";
+  interval: number;
+  daysOfWeek: number[] | null;
+  dayOfMonth: number | null;
+}>;
+
+/** Convert the labels used by signup/forms into the database recurrence contract. */
+export function normalizeRecurrenceFrequency(
+  value: string,
+  options: { interval?: number; daysOfWeek?: readonly number[] | null; dayOfMonth?: number | null } = {},
+): NormalizedRecurrence {
+  const key = value.trim().toLowerCase().replaceAll("_", "-").replaceAll(" ", "-");
+  let recurrence: NormalizedRecurrence;
+  switch (key) {
+    case "daily": recurrence = { frequencyType: "daily", interval: 1, daysOfWeek: null, dayOfMonth: null }; break;
+    case "weekly": recurrence = { frequencyType: "weekly", interval: 1, daysOfWeek: null, dayOfMonth: null }; break;
+    case "biweekly": case "every-two-weeks": recurrence = { frequencyType: "weekly", interval: 2, daysOfWeek: null, dayOfMonth: null }; break;
+    case "every-four-weeks": recurrence = { frequencyType: "weekly", interval: 4, daysOfWeek: null, dayOfMonth: null }; break;
+    case "twice-weekly": recurrence = { frequencyType: "weekly", interval: 1, daysOfWeek: [1, 4], dayOfMonth: null }; break;
+    case "monthly": recurrence = { frequencyType: "monthly", interval: 1, daysOfWeek: null, dayOfMonth: null }; break;
+    default: throw new DomainError("VALIDATION_ERROR", "Choose a supported service frequency.", 422);
+  }
+  const interval = options.interval ?? recurrence.interval;
+  if (!Number.isSafeInteger(interval) || interval < 1 || interval > 52) throw new DomainError("VALIDATION_ERROR", "The recurrence interval must be between 1 and 52.", 422);
+  const days = options.daysOfWeek === undefined ? recurrence.daysOfWeek : options.daysOfWeek === null ? null : [...options.daysOfWeek];
+  if (days && (days.length === 0 || days.some((day) => !Number.isSafeInteger(day) || day < 0 || day > 6) || new Set(days).size !== days.length)) {
+    throw new DomainError("VALIDATION_ERROR", "Choose one or more valid weekdays.", 422);
+  }
+  const dayOfMonth = options.dayOfMonth === undefined ? recurrence.dayOfMonth : options.dayOfMonth;
+  if (dayOfMonth !== null && (!Number.isSafeInteger(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31)) {
+    throw new DomainError("VALIDATION_ERROR", "Choose a valid day of the month.", 422);
+  }
+  return { ...recurrence, interval, daysOfWeek: days ? [...days].sort((a, b) => a - b) : null, dayOfMonth };
+}
+
 export interface RecurrenceSchedule {
   planId: string;
   frequency: Frequency;

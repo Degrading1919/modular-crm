@@ -2,11 +2,12 @@ import { drizzle } from "drizzle-orm/pglite";
 import { PGlite } from "../../../packages/db/node_modules/@electric-sql/pglite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { permissionsForRole } from "@modular-crm/domain";
+import type { ConnectorDefinition } from "@modular-crm/connectors";
 import type { SessionActor } from "../lib/api/actor";
 
 const harness = vi.hoisted(() => ({
   db: undefined as unknown,
-  realGetRegistry: undefined as (() => { listCatalog: () => Array<Record<string, unknown>>; register: (definition: unknown) => void }) | undefined,
+  realGetRegistry: undefined as (() => { listCatalog: () => Array<Record<string, unknown>>; register: (definition: unknown) => void; getDefinition: (key: string) => ConnectorDefinition | undefined }) | undefined,
   events: [] as Array<Record<string, unknown>>,
   manifests: [] as Array<Record<string, unknown>>,
 }));
@@ -17,6 +18,7 @@ vi.mock("../lib/connectors", async (importOriginal) => {
   harness.realGetRegistry = original.getRegistry as unknown as typeof harness.realGetRegistry;
   return { ...original, getRegistry: () => ({
     listCatalog: (capability?: string) => harness.manifests.filter((manifest) => !capability || (manifest.capabilities as string[]).includes(capability)),
+    getDefinition: (key: string) => harness.realGetRegistry?.().getDefinition(key),
     healthCheck: () => ({ state: "not_connected", health: "unavailable" }),
     disconnect: () => ({ state: "not_connected", health: "unavailable" }),
     connectMock: () => ({ state: "connected", health: "healthy" }),

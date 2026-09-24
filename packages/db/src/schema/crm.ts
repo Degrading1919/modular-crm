@@ -88,6 +88,7 @@ export const customerAssets = pgTable("customer_assets", {
   foreignKey({ columns: [t.tenantId, t.customerId], foreignColumns: [customers.tenantId, customers.id], name: "customer_assets_customer_tenant_fk" }),
   index("customer_assets_location_idx").on(t.tenantId, t.serviceLocationId, t.assetTypeKey),
   foreignKey({ columns: [t.tenantId, t.serviceLocationId], foreignColumns: [serviceLocations.tenantId, serviceLocations.id], name: "customer_assets_location_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.customerId, t.serviceLocationId], foreignColumns: [serviceLocations.tenantId, serviceLocations.customerId, serviceLocations.id], name: "customer_assets_customer_location_fk" }),
 ]);
 
 export const customerPreferences = pgTable("customer_preferences", {
@@ -119,12 +120,17 @@ export const portalLocationAccess = pgTable("portal_location_access", {
 ]);
 
 export const customerChangeRequests = pgTable("customer_change_requests", {
-  ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), customerId: uuid("customer_id").notNull().references(() => customers.id),
-  serviceLocationId: uuid("service_location_id").references(() => serviceLocations.id), requestType: text("request_type").notNull(),
+  ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), customerId: uuid("customer_id").notNull(),
+  serviceLocationId: uuid("service_location_id"), requestType: text("request_type").notNull(),
   status: status(), requestedChanges: jsonObject("requested_changes"), appliedChanges: jsonb("applied_changes").$type<Record<string, unknown>>(),
   customerMessage: text("customer_message"), internalNote: text("internal_note"), submittedByUserId: text("submitted_by_user_id").references(() => user.id),
   reviewedByMembershipId: uuid("reviewed_by_membership_id").references(() => memberships.id), reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
-}, (t) => [index("customer_change_requests_customer_idx").on(t.tenantId, t.customerId, t.status)]);
+}, (t) => [
+  foreignKey({ columns: [t.tenantId, t.customerId], foreignColumns: [customers.tenantId, customers.id], name: "customer_change_requests_customer_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.customerId, t.serviceLocationId], foreignColumns: [serviceLocations.tenantId, serviceLocations.customerId, serviceLocations.id], name: "customer_change_requests_location_customer_fk" }),
+  foreignKey({ columns: [t.tenantId, t.reviewedByMembershipId], foreignColumns: [memberships.tenantId, memberships.id], name: "customer_change_requests_reviewer_tenant_fk" }),
+  index("customer_change_requests_customer_idx").on(t.tenantId, t.customerId, t.status),
+]);
 
 export const leads = pgTable("leads", {
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id),

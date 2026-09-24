@@ -13,9 +13,15 @@ const MAX_CSV_BYTES = 1_500_000;
 const MAX_CSV_ROWS = 5_000;
 const MAX_EXPORT_ROWS = 25_000;
 const MAX_BUSINESS_EXPORT_BYTES = 25_000_000;
+const BUSINESS_EXPORT_PAGE_SIZE = 500;
 const MAX_COLUMNS = 100;
 const MAX_HEADER_CHARS = 200;
 const MAX_CELL_CHARS = 20_000;
+const BUSINESS_EXPORT_EXCLUDED_TABLES = new Set([
+  "account", "session", "verification", "api_credentials", "connector_oauth_transactions", "payment_method_references",
+]);
+const BUSINESS_EXPORT_SENSITIVE_KEY = /password|secret|token|credential|authorization|api[_-]?key|access[_-]?instructions?|private[_-]?key|storage[_-]?key|signed[_-]?url|encrypted|verifier|signature|(?:^|[_-])hash(?:$|[_-])|(?:^|[_-])digest(?:$|[_-])/i;
+const BUSINESS_EXPORT_NAME_OVERRIDES: Readonly<Record<string, string>> = { organization_locations: "locations" };
 const IMPORT_FIELDS = ["name", "email", "phone", "address", "status", "notes"] as const;
 type ImportField = (typeof IMPORT_FIELDS)[number];
 type Delimiter = "," | ";" | "\t";
@@ -96,6 +102,30 @@ function normalized(value: unknown): unknown {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [key.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase()), normalized(item)]));
   }
   return value;
+}
+
+function exportIdentifier(value: string): string {
+  if (!/^[a-z_][a-z0-9_]*$/.test(value)) throw new Error("Unsafe business export SQL identifier.");
+  return `"${value}"`;
+}
+
+function businessExportKey(tableName: string): string {
+  return BUSINESS_EXPORT_NAME_OVERRIDES[tableName]
+    ?? tableName.replace(/_([a-z0-9])/g, (_, letter: string) => letter.toUpperCase());
+}
+
+function sensitiveExportField(key: string): boolean {
+  // These two fields are references/statuses, not raw signature material.
+  if (/^signature(?:_file_id|_valid|fileid|valid)$/i.test(key)) return false;
+  return BUSINESS_EXPORT_SENSITIVE_KEY.test(key);
+}
+
+function removeSensitiveExportFields(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(removeSensitiveExportFields);
+  if (!value || typeof value !== "object" || value instanceof Date) return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !sensitiveExportField(key))
+    .map(([key, nested]) => [key, removeSensitiveExportFields(nested)]));
 }
 
 function looksBlank(record: string[]): boolean {
@@ -740,51 +770,113 @@ async function exportBusinessData(actor: SessionActor): Promise<Response> {
   requireStaffAccess(actor);
   if (actor.role !== "owner") throw new DomainError("FORBIDDEN", "Only a business owner can download a full business-data export.", 403);
   const tenantId = actor.tenantId;
-  const queries: Record<string, SQL> = {
-    tenant: sql`SELECT id, name, slug, status, default_currency, default_timezone, industry_pack_key, industry_pack_version, created_at, updated_at FROM tenants WHERE id = ${tenantId}`,
-    organizations: sql`SELECT id, parent_organization_id, organization_type, legal_name, display_name, email, phone, timezone, currency, active, created_at, updated_at FROM organizations WHERE tenant_id = ${tenantId}`,
-    locations: sql`SELECT id, organization_id, name, code, address_line1, address_line2, city, region, postal_code, country_code, timezone, phone, email, active, created_at, updated_at FROM organization_locations WHERE tenant_id = ${tenantId}`,
-    customers: sql`SELECT id, organization_id, owning_location_id, customer_type, status, display_name, company_name, primary_contact_id, billing_email, billing_phone, billing_address, tax_exempt, payment_terms_days, default_currency, created_at, updated_at, archived_at FROM customers WHERE tenant_id = ${tenantId}`,
-    customerContacts: sql`SELECT id, customer_id, first_name, last_name, email, phone, role, is_primary, billing_contact, service_contact, active, created_at, updated_at FROM customer_contacts WHERE tenant_id = ${tenantId}`,
-    serviceLocations: sql`SELECT id, customer_id, organization_location_id, name, address_line1, address_line2, city, region, postal_code, country_code, latitude, longitude, geocode_status, geocode_provider, geocode_confidence, timezone, service_zone_id, active, created_at, updated_at FROM service_locations WHERE tenant_id = ${tenantId}`,
-    customerAssets: sql`SELECT id, customer_id, service_location_id, asset_type_key, name, status, customer_visible, created_at, updated_at, archived_at FROM customer_assets WHERE tenant_id = ${tenantId}`,
-    leads: sql`SELECT id, organization_id, owning_location_id, status, first_name, last_name, company_name, email, phone, address, source_id, source_detail, customer_id, service_location_id, estimated_value_minor, currency, lost_reason, created_at, updated_at, converted_at, archived_at FROM leads WHERE tenant_id = ${tenantId}`,
-    services: sql`SELECT id, organization_id, key, name, description, service_type, default_duration_minutes, taxable, active, created_at, updated_at FROM services WHERE tenant_id = ${tenantId}`,
-    serviceZones: sql`SELECT id, organization_id, name, zone_type, definition, pricing_priority, active, created_at, updated_at FROM service_zones WHERE tenant_id = ${tenantId}`,
-    priceRules: sql`SELECT id, organization_id, name, priority, effective_from, effective_to, conditions, effects, active, source, created_at, updated_at FROM price_rules WHERE tenant_id = ${tenantId}`,
-    recurrenceRules: sql`SELECT id, frequency_type, interval, days_of_week, day_of_month, window_start, window_end, timezone, created_at, updated_at FROM recurrence_rules WHERE tenant_id = ${tenantId}`,
-    servicePlans: sql`SELECT id, customer_id, service_location_id, organization_location_id, service_id, status, effective_from, effective_to, recurrence_rule_id, preferred_assignment, pause_from, pause_until, canceled_at, cancellation_reason, created_at, updated_at FROM service_plans WHERE tenant_id = ${tenantId}`,
-    jobs: sql`SELECT id, organization_id, organization_location_id, customer_id, service_location_id, service_plan_id, service_id, parent_job_id, relation_type, status, scheduled_date, service_window_start, service_window_end, estimated_duration_minutes, actual_started_at, actual_completed_at, assigned_route_id, billable, skip_reason_code, cancel_reason_code, customer_summary, created_at, updated_at FROM jobs WHERE tenant_id = ${tenantId}`,
-    estimates: sql`SELECT id, customer_id, lead_id, service_location_id, organization_location_id, status, current_revision, expires_at, approved_at, declined_at, currency, total_minor, created_at, updated_at FROM estimates WHERE tenant_id = ${tenantId}`,
-    estimateRevisions: sql`SELECT id, estimate_id, revision_number, subtotal_minor, discount_minor, tax_minor, total_minor, terms_text, terms_version, notes, sent_at, created_at FROM estimate_revisions WHERE tenant_id = ${tenantId}`,
-    estimateItems: sql`SELECT id, estimate_revision_id, service_id, product_id, description, quantity, unit_amount_minor, discount_minor, tax_minor, total_minor, sort_order, created_at, updated_at FROM estimate_items WHERE tenant_id = ${tenantId}`,
-    invoices: sql`SELECT id, organization_id, organization_location_id, customer_id, status, invoice_number, currency, issued_at, due_at, subtotal_minor, discount_minor, tax_minor, total_minor, paid_minor, balance_minor, voided_at, written_off_at, created_at, updated_at FROM invoices WHERE tenant_id = ${tenantId}`,
-    invoiceItems: sql`SELECT id, invoice_id, job_id, service_id, product_id, description, quantity, unit_amount_minor, discount_minor, tax_minor, total_minor, sort_order, created_at, updated_at FROM invoice_items WHERE tenant_id = ${tenantId}`,
-    payments: sql`SELECT id, customer_id, status, source_type, amount_minor, currency, received_at, failure_code, recorded_by_actor_type, recorded_by_actor_id, created_at, updated_at FROM payments WHERE tenant_id = ${tenantId}`,
-  };
-  const data: Record<string, unknown> = {};
-  for (const [name, query] of Object.entries(queries)) {
-    const result = normalized(await rows(sql`SELECT * FROM (${query}) AS export_rows LIMIT ${MAX_EXPORT_ROWS + 1}`));
-    if (Array.isArray(result) && result.length > MAX_EXPORT_ROWS) {
-      throw new DomainError("VALIDATION_ERROR", `The ${name} data is too large for a single business-data download.`, 413);
+  const exported = await getDb().transaction(async (tx) => {
+    await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY`);
+    const queryRows = async (statement: SQL) => (await tx.execute(statement)).rows as Array<Record<string, unknown>>;
+    const [tenant] = await queryRows(sql`
+      SELECT id, name, slug, status, default_currency, default_timezone, industry_pack_key,
+        industry_pack_version, settings, created_at, updated_at
+      FROM tenants WHERE id = ${tenantId} LIMIT 1
+    `);
+    const columns = await queryRows(sql`
+      SELECT c.table_name, c.column_name, c.ordinal_position, pk.primary_key_position
+      FROM information_schema.columns c
+      JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+      LEFT JOIN (
+        SELECT tc.table_name, kcu.column_name, kcu.ordinal_position AS primary_key_position
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON kcu.constraint_catalog = tc.constraint_catalog
+          AND kcu.constraint_schema = tc.constraint_schema
+          AND kcu.constraint_name = tc.constraint_name
+          AND kcu.table_name = tc.table_name
+        WHERE tc.table_schema = 'public' AND tc.constraint_type = 'PRIMARY KEY'
+      ) pk ON pk.table_name = c.table_name AND pk.column_name = c.column_name
+      WHERE c.table_schema = 'public' AND t.table_type = 'BASE TABLE'
+      ORDER BY c.table_name, c.ordinal_position
+    `);
+    const tablePlans = new Map<string, { columns: string[]; primaryKey: Array<{ name: string; position: number }> }>();
+    for (const column of columns) {
+      const tableName = String(column.table_name);
+      if (tableName === "tenants" || BUSINESS_EXPORT_EXCLUDED_TABLES.has(tableName)) continue;
+      const columnName = String(column.column_name);
+      const plan = tablePlans.get(tableName) ?? { columns: [], primaryKey: [] };
+      if (!sensitiveExportField(columnName)) plan.columns.push(columnName);
+      if (column.primary_key_position !== null && column.primary_key_position !== undefined
+        && !sensitiveExportField(columnName)) {
+        plan.primaryKey.push({ name: columnName, position: Number(column.primary_key_position) });
+      }
+      tablePlans.set(tableName, plan);
     }
-    data[name] = result;
-  }
-  const tenantRows = data.tenant;
-  delete data.tenant;
-  const fileManifest = normalized(await rows(sql`
-    SELECT id, original_name, mime_type, byte_size, checksum, visibility, created_at
-    FROM files WHERE tenant_id = ${tenantId} ORDER BY created_at LIMIT ${MAX_EXPORT_ROWS + 1};
-  `));
-  if (Array.isArray(fileManifest) && fileManifest.length > MAX_EXPORT_ROWS) {
-    throw new DomainError("VALIDATION_ERROR", "The file manifest is too large for a single business-data download.", 413);
-  }
+
+    const data: Record<string, unknown> = {};
+    let estimatedBytes = 1_000;
+    for (const [tableName, plan] of tablePlans) {
+      if (!plan.columns.includes("tenant_id")) continue;
+      const orderColumns = plan.primaryKey.sort((a, b) => a.position - b.position).map(({ name }) => name);
+      const orderBy = orderColumns.length ? orderColumns : plan.columns.filter((name) => name !== "tenant_id");
+      const selectedColumns = sql.raw(plan.columns.map(exportIdentifier).join(", "));
+      const relation = sql.raw(`"public".${exportIdentifier(tableName)}`);
+      const ordering = sql.raw((orderBy.length ? orderBy : ["tenant_id"]).map(exportIdentifier).join(", "));
+      const tableRows: Array<Record<string, unknown>> = [];
+      let offset = 0;
+      while (true) {
+        const page = await queryRows(sql`
+          SELECT ${selectedColumns} FROM ${relation}
+          WHERE ${sql.raw(exportIdentifier("tenant_id"))} = ${tenantId}
+          ORDER BY ${ordering} LIMIT ${BUSINESS_EXPORT_PAGE_SIZE} OFFSET ${offset}
+        `);
+        for (const row of page) {
+          const safeRow = normalized(removeSensitiveExportFields(row)) as Record<string, unknown>;
+          estimatedBytes += new TextEncoder().encode(JSON.stringify(safeRow)).byteLength;
+          if (estimatedBytes > MAX_BUSINESS_EXPORT_BYTES) {
+            throw new DomainError("VALIDATION_ERROR", "The business-data export is too large for a single download.", 413);
+          }
+          tableRows.push(safeRow);
+        }
+        if (page.length < BUSINESS_EXPORT_PAGE_SIZE) break;
+        offset += page.length;
+      }
+      data[businessExportKey(tableName)] = tableRows;
+    }
+
+    const staff = [] as Array<Record<string, unknown>>;
+    let staffOffset = 0;
+    while (true) {
+      const page = await queryRows(sql`
+        SELECT m.id, m.tenant_id, m.user_id, u.name, u.email, u.email_verified, m.organization_id,
+          m.default_location_id, m.role_template_id, m.status, m.invited_at, m.joined_at,
+          m.last_active_at, m.created_at, m.updated_at
+        FROM memberships m JOIN "user" u ON u.id = m.user_id
+        WHERE m.tenant_id = ${tenantId}
+        ORDER BY m.id LIMIT ${BUSINESS_EXPORT_PAGE_SIZE} OFFSET ${staffOffset}
+      `);
+      for (const row of page) {
+        const safeRow = normalized(row) as Record<string, unknown>;
+        estimatedBytes += new TextEncoder().encode(JSON.stringify(safeRow)).byteLength;
+        if (estimatedBytes > MAX_BUSINESS_EXPORT_BYTES) {
+          throw new DomainError("VALIDATION_ERROR", "The business-data export is too large for a single download.", 413);
+        }
+        staff.push(safeRow);
+      }
+      if (page.length < BUSINESS_EXPORT_PAGE_SIZE) break;
+      staffOffset += page.length;
+    }
+    data.staff = staff;
+
+    const fileRows = data.files as Array<Record<string, unknown>> | undefined;
+    const fileManifest = (fileRows ?? []).map((file) => ({
+      id: file.id, originalName: file.originalName, mimeType: file.mimeType, byteSize: file.byteSize,
+      checksum: file.checksum, visibility: file.visibility, createdAt: file.createdAt,
+    }));
+    return { tenant: tenant ? normalized(removeSensitiveExportFields(tenant)) : null, data, fileManifest };
+  });
   const payload = {
     schemaVersion: "modular-crm-business-data-v1",
     exportedAt: new Date().toISOString(),
-    tenant: Array.isArray(tenantRows) ? tenantRows[0] ?? null : tenantRows,
-    data,
-    fileManifest,
+    tenant: exported.tenant,
+    data: exported.data,
+    fileManifest: exported.fileManifest,
   };
   if (new TextEncoder().encode(JSON.stringify(payload)).byteLength > MAX_BUSINESS_EXPORT_BYTES) {
     throw new DomainError("VALIDATION_ERROR", "The business-data export is too large for a single download.", 413);

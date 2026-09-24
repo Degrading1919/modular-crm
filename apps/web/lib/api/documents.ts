@@ -1,14 +1,14 @@
-import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import {
   completionProofs, creditAllocations, creditMemos, customerCredits, customers, estimateApprovals,
-  estimateItems, estimateRevisions, estimates, franchiseAgreements, invoiceItems, invoices,
-  jobs, memberships, organizationLocations, organizations, paymentAllocations,
+  estimateItems, estimateRevisions, estimates, fileLinks, files, franchiseAgreements, invoiceItems, invoices,
+  jobAssignments, jobs, memberships, organizationLocations, organizations, paymentAllocations,
   payments, payrollCalculations, payrollComponents, payrollPeriods, refunds, royaltyStatements,
-  serviceLocations, services, user,
+  serviceLocations, servicePlans, services, user,
 } from "@modular-crm/db";
 import { DomainError, requirePermission } from "@modular-crm/domain";
 import { getDb } from "../db";
-import { assertCustomerDocumentAccess, requireStaff, type SessionActor } from "./actor";
+import { assertCustomerDocumentAccess, assertCustomerServiceLocationAccess, requireStaff, type SessionActor } from "./actor";
 import { apiError, json } from "./http";
 import { payrollSnapshotInLocationScope } from "./payroll";
 
@@ -18,7 +18,7 @@ export type CustomerDocument = {
   kind: DocumentKind; title: string; number: string; date: string | null; status: string | null;
   business: { name: string; email?: string | null; phone?: string | null; address?: string | null };
   customer?: { name: string; email?: string | null; address?: string | null };
-  summary?: string | null; lines: DocumentLine[];
+  summary?: string | null; lines: DocumentLine[]; proofPhotoUrl?: string | null;
   totals: { label: string; amountMinor: number | string | bigint; currency?: string | null }[];
   terms?: string | null; period?: { start: string; end: string };
 };
@@ -38,18 +38,56 @@ function staffLocationAllowed(actor: SessionActor, locationId: string | null) {
   if (!actor.allLocations && (!locationId || !actor.locationIds.has(locationId))) notFound();
 }
 
-async function authorizeCustomer(actor: SessionActor, customerId: string, branchId: string | null) {
+async function authorizeCustomer(actor: SessionActor, customerId: string, branchId: string | null, serviceLocationId?: string | null) {
   if (actor.kind === "customer") {
-    if (branchId) await assertCustomerDocumentAccess(actor, customerId, branchId);
+    if (serviceLocationId) {
+      await assertCustomerServiceLocationAccess(actor, customerId, serviceLocationId);
+      const [location] = await getDb().select({ customerId: serviceLocations.customerId, organizationLocationId: serviceLocations.organizationLocationId })
+        .from(serviceLocations).where(and(eq(serviceLocations.tenantId, actor.tenantId), eq(serviceLocations.id, serviceLocationId))).limit(1);
+      if (!location || location.customerId !== customerId || (branchId && location.organizationLocationId !== branchId)) notFound();
+    }
+    else if (branchId) await assertCustomerDocumentAccess(actor, customerId, branchId);
     else {
-      if (!actor.customerIds.has(customerId) || actor.locationIds.size === 0) notFound();
+      const permittedLocationIds = [...(actor.customerLocationIds.get(customerId) ?? [])];
+      if (!actor.customerIds.has(customerId) || permittedLocationIds.length === 0) notFound();
       const [visible] = await getDb().select({ id: serviceLocations.id }).from(serviceLocations)
-        .where(and(eq(serviceLocations.tenantId, actor.tenantId), eq(serviceLocations.customerId, customerId), inArray(serviceLocations.id, [...actor.locationIds]))).limit(1);
+        .where(and(eq(serviceLocations.tenantId, actor.tenantId), eq(serviceLocations.customerId, customerId), inArray(serviceLocations.id, [...permittedLocationIds]))).limit(1);
       if (!visible) notFound();
     }
     return;
   }
-  staffLocationAllowed(actor, branchId);
+  if (serviceLocationId) {
+    const [location] = await getDb().select({ customerId: serviceLocations.customerId, organizationLocationId: serviceLocations.organizationLocationId })
+      .from(serviceLocations).where(and(eq(serviceLocations.tenantId, actor.tenantId), eq(serviceLocations.id, serviceLocationId))).limit(1);
+    if (!location || location.customerId !== customerId || (branchId && location.organizationLocationId !== branchId)) notFound();
+    staffLocationAllowed(actor, location.organizationLocationId ?? branchId);
+  } else staffLocationAllowed(actor, branchId);
+}
+
+/** An invoice can aggregate work at several properties. A customer may only read it when every job line is at a granted property. */
+async function authorizeInvoice(actor: SessionActor, invoiceId: string, customerId: string, branchId: string | null, billingSnapshot?: unknown) {
+  await authorizeCustomer(actor, customerId, branchId);
+  const db = getDb();
+  const locations = await db.select({
+    customerId: jobs.customerId,
+    serviceLocationId: jobs.serviceLocationId,
+    organizationLocationId: jobs.organizationLocationId,
+  }).from(invoiceItems).innerJoin(jobs, and(
+    eq(jobs.id, invoiceItems.jobId), eq(jobs.tenantId, invoiceItems.tenantId),
+  )).where(and(
+    eq(invoiceItems.tenantId, actor.tenantId), eq(invoiceItems.invoiceId, invoiceId),
+  ));
+  for (const location of locations) {
+    if (location.customerId !== customerId) notFound();
+    await authorizeCustomer(actor, customerId, location.organizationLocationId, location.serviceLocationId);
+  }
+  const servicePlanId = str(obj(billingSnapshot).servicePlanId);
+  if (servicePlanId) {
+    const [plan] = await db.select({ customerId: servicePlans.customerId, serviceLocationId: servicePlans.serviceLocationId, organizationLocationId: servicePlans.organizationLocationId })
+      .from(servicePlans).where(and(eq(servicePlans.tenantId, actor.tenantId), eq(servicePlans.id, servicePlanId))).limit(1);
+    if (!plan || plan.customerId !== customerId) notFound();
+    await authorizeCustomer(actor, customerId, plan.organizationLocationId, plan.serviceLocationId);
+  }
 }
 
 function branding(name: string, email?: string | null, phone?: string | null, address?: Record<string, unknown> | null) {
@@ -66,7 +104,7 @@ async function invoiceDocument(actor: SessionActor, id: string): Promise<Custome
     .innerJoin(customers, and(eq(customers.id, invoices.customerId), eq(customers.tenantId, invoices.tenantId)))
     .where(and(eq(invoices.tenantId, actor.tenantId), eq(invoices.id, id))).limit(1);
   if (!row) notFound();
-  await authorizeCustomer(actor, row.invoice.customerId, row.invoice.organizationLocationId);
+  await authorizeInvoice(actor, id, row.invoice.customerId, row.invoice.organizationLocationId, row.invoice.billingSnapshot);
   const snapshot = obj(row.invoice.billingSnapshot);
   const snapshotBusiness = obj(snapshot.business);
   const snapshotCustomer = obj(snapshot.customer);
@@ -103,7 +141,8 @@ async function receiptDocument(actor: SessionActor, id: string): Promise<Custome
     .where(and(eq(paymentAllocations.tenantId, actor.tenantId), eq(paymentAllocations.paymentId, id)));
   const allowed = [] as typeof allocations;
   for (const item of allocations) {
-    try { await authorizeCustomer(actor, row.payment.customerId, item.invoice.organizationLocationId); allowed.push(item); } catch { /* Filter branch scoped allocations. */ }
+    if (item.invoice.customerId !== row.payment.customerId) notFound();
+    try { await authorizeInvoice(actor, item.invoice.id, row.payment.customerId, item.invoice.organizationLocationId, item.invoice.billingSnapshot); allowed.push(item); } catch { /* Filter location-scoped allocations. */ }
   }
   if (allowed.length !== allocations.length) notFound();
   if (!["succeeded", "refunded", "partially_refunded"].includes(row.payment.status)) notFound();
@@ -141,7 +180,7 @@ async function statementDocument(actor: SessionActor, customerId: string, select
   const invoiceRows = await db.select().from(invoices).where(and(eq(invoices.tenantId, actor.tenantId), eq(invoices.customerId, customerId))).orderBy(asc(invoices.issuedAt));
   const visibleInvoices = [] as typeof invoiceRows;
   for (const invoice of invoiceRows) {
-    try { await authorizeCustomer(actor, customerId, invoice.organizationLocationId); visibleInvoices.push(invoice); } catch { /* Preserve location scope. */ }
+    try { await authorizeInvoice(actor, invoice.id, customerId, invoice.organizationLocationId, invoice.billingSnapshot); visibleInvoices.push(invoice); } catch { /* Preserve location scope. */ }
   }
   if (!visibleInvoices.length) {
     if (actor.kind === "staff") staffLocationAllowed(actor, customer.owningLocationId);
@@ -213,14 +252,28 @@ async function completionDocument(actor: SessionActor, id: string): Promise<Cust
     .innerJoin(organizations, and(eq(organizations.id, jobs.organizationId), eq(organizations.tenantId, jobs.tenantId)))
     .where(and(eq(jobs.tenantId, actor.tenantId), eq(jobs.id, id))).limit(1);
   if (!job) notFound();
-  await authorizeCustomer(actor, job.job.customerId, job.job.organizationLocationId);
+  await authorizeCustomer(actor, job.job.customerId, job.job.organizationLocationId, job.job.serviceLocationId);
+  if (actor.kind === "staff" && actor.role === "technician") {
+    const [assignment] = await db.select({ id: jobAssignments.id }).from(jobAssignments).where(and(
+      eq(jobAssignments.tenantId, actor.tenantId), eq(jobAssignments.jobId, id), eq(jobAssignments.membershipId, actor.membershipId!), isNull(jobAssignments.removedAt),
+    )).limit(1);
+    if (!assignment) notFound();
+  }
   if (job.job.status !== "completed") notFound();
   const [proof] = await db.select().from(completionProofs).where(and(eq(completionProofs.tenantId, actor.tenantId), eq(completionProofs.jobId, id))).orderBy(desc(completionProofs.completedAt)).limit(1);
   const snapshot = obj(proof?.snapshot);
-  const checklist = Array.isArray(snapshot.checklist) ? snapshot.checklist.filter((item): item is string => typeof item === "string") : [];
+  const checklist = Array.isArray(snapshot.checklist) ? snapshot.checklist.filter((item): item is string => typeof item === "string")
+    : Object.entries(obj(snapshot.checklist)).filter(([, completed]) => completed === true)
+      .map(([key]) => key.replace(/([a-z])([A-Z])/g, "$1 $2").replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase()));
+  const photoId = str(snapshot.fileId);
+  const [proofPhoto] = photoId ? await db.select({ id: files.id }).from(files)
+    .innerJoin(fileLinks, and(eq(fileLinks.fileId, files.id), eq(fileLinks.tenantId, files.tenantId)))
+    .where(and(eq(files.tenantId, actor.tenantId), eq(files.id, photoId), eq(files.visibility, "customer"),
+      eq(fileLinks.entityType, "job"), eq(fileLinks.entityId, id), eq(fileLinks.purpose, "proof"))).limit(1) : [];
   return { kind: "completion", title: "Service completion report", number: `JOB-${id.slice(0, 8).toUpperCase()}`, date: dateText(proof?.completedAt ?? job.job.actualCompletedAt), status: "completed",
     business: branding(job.business.displayName, job.business.email, job.business.phone), customer: { name: job.customer.displayName },
     summary: job.job.customerSummary ?? proof?.summary ?? "Service completed.", lines: checklist.map((item) => ({ description: item })),
+    proofPhotoUrl: proofPhoto ? `/api/v1/files/${proofPhoto.id}/download` : null,
     totals: [], period: { start: dateText(job.job.scheduledDate) ?? "", end: dateText(proof?.completedAt ?? job.job.actualCompletedAt) ?? "" } };
 }
 
@@ -231,7 +284,7 @@ async function estimateDocument(actor: SessionActor, id: string): Promise<Custom
   if (!estimate) notFound();
   if (actor.kind === "customer" && estimate.status === "draft") notFound();
   const customerId = estimate.customerId ?? notFound();
-  await authorizeCustomer(actor, customerId, estimate.organizationLocationId);
+  await authorizeCustomer(actor, customerId, estimate.organizationLocationId, estimate.serviceLocationId);
   const [approval] = await db.select().from(estimateApprovals).where(and(eq(estimateApprovals.tenantId, actor.tenantId), eq(estimateApprovals.estimateId, id), eq(estimateApprovals.decision, "approved"))).orderBy(desc(estimateApprovals.occurredAt)).limit(1);
   const revisionNumber = approval ? (await db.select({ revisionNumber: estimateRevisions.revisionNumber }).from(estimateRevisions).where(and(eq(estimateRevisions.tenantId, actor.tenantId), eq(estimateRevisions.id, approval.estimateRevisionId))).limit(1))[0]?.revisionNumber : estimate.currentRevision;
   if (!revisionNumber) notFound();

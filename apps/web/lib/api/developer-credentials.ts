@@ -8,9 +8,9 @@ import { json, readBody } from "./http";
 import { listDeveloperWebhookSubscriptions } from "./developer-webhooks";
 
 export const API_CREDENTIAL_SCOPES = [
-  "customers:read", "customers:write", "leads:read", "leads:write", "jobs:read", "jobs:write",
-  "estimates:read", "estimates:write", "invoices:read", "payments:read", "service_plans:read",
-  "service_plans:write", "tickets:read", "tickets:write", "webhooks:manage",
+  "customers:read", "customers:write", "leads:read", "leads:write", "jobs:read",
+  "estimates:read", "invoices:read", "payments:read", "service_plans:read",
+  "tickets:read", "webhooks:manage",
 ] as const;
 
 export const createApiCredentialBodySchema = z.object({

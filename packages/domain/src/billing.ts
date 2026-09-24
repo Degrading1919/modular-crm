@@ -3,6 +3,9 @@ import { DomainError } from "./errors.ts";
 export interface MoneyLine { description: string; quantity: number; unitAmountCents: number; taxAmountCents?: number; discountAmountCents?: number }
 export interface InvoiceSnapshot { currency: string; lines: ReadonlyArray<MoneyLine>; subtotalCents: number; taxCents: number; discountCents: number; totalCents: number; issuedAt: string; customerName: string; businessName: string }
 
+/** Payment states whose original collected amount remains part of financial reporting. */
+export const settledPaymentStatuses = ["succeeded", "partially_refunded", "refunded"] as const;
+
 export function makeInvoiceSnapshot(input: { lines: MoneyLine[]; issuedAt: string; customerName: string; businessName: string; currency?: string }): InvoiceSnapshot {
   if (input.lines.length === 0) throw new DomainError("VALIDATION_ERROR", "An invoice needs at least one line.", 422);
   const lines = input.lines.map((line) => ({ ...line }));
@@ -21,12 +24,32 @@ export function makeInvoiceSnapshot(input: { lines: MoneyLine[]; issuedAt: strin
   });
 }
 
-export function invoiceBalance(totalCents: number, paidCents: number, refundedCents = 0, creditedCents = 0): number {
+export function invoiceFinancialPosition(totalCents: number, paidCents: number, refundedCents = 0, creditedCents = 0): {
+  grossPaidCents: number;
+  refundedCents: number;
+  creditedCents: number;
+  netCollectedCents: number;
+  balanceCents: number;
+  status: "paid" | "partially_paid" | "issued";
+} {
   for (const value of [totalCents, paidCents, refundedCents, creditedCents]) {
     if (!Number.isInteger(value) || value < 0) throw new DomainError("VALIDATION_ERROR", "Money must use nonnegative integer minor units.", 422);
   }
   if (refundedCents > paidCents) throw new DomainError("VALIDATION_ERROR", "Refund exceeds payments.", 422);
-  return Math.max(0, totalCents - paidCents + refundedCents - creditedCents);
+  const netCollectedCents = paidCents - refundedCents;
+  const balanceCents = Math.max(0, totalCents - paidCents + refundedCents - creditedCents);
+  return {
+    grossPaidCents: paidCents,
+    refundedCents,
+    creditedCents,
+    netCollectedCents,
+    balanceCents,
+    status: invoiceStatus(balanceCents, totalCents),
+  };
+}
+
+export function invoiceBalance(totalCents: number, paidCents: number, refundedCents = 0, creditedCents = 0): number {
+  return invoiceFinancialPosition(totalCents, paidCents, refundedCents, creditedCents).balanceCents;
 }
 
 export function invoiceStatus(balanceCents: number, totalCents: number): "paid" | "partially_paid" | "issued" {

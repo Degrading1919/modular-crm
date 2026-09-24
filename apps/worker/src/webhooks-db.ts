@@ -8,7 +8,7 @@ export type WebhookSecretResolver = (reference: string) => Promise<string | unde
 export type WebhookFetcher = typeof fetch;
 const MAX_DELIVERY_ATTEMPTS = 8;
 
-export async function processWebhookDelivery(db: Database, boss: PgBoss, input: { tenantId: string; deliveryId: string }, resolveSecret: WebhookSecretResolver, fetcher: WebhookFetcher = fetch, now = new Date()): Promise<"delivered" | "retry" | "failed" | "skipped"> {
+export async function processWebhookDelivery(db: Database, boss: PgBoss, input: { tenantId: string; deliveryId: string }, resolveSecret: WebhookSecretResolver, fetcher?: WebhookFetcher, now = new Date()): Promise<"delivered" | "retry" | "failed" | "skipped"> {
   const [claimed] = await db.update(webhookDeliveries).set({ status: "sending", lastAttemptAt: now, updatedAt: now })
     .where(and(eq(webhookDeliveries.id, input.deliveryId), eq(webhookDeliveries.tenantId, input.tenantId), inArray(webhookDeliveries.status, ["queued", "retry"]), or(isNull(webhookDeliveries.nextRetryAt), lte(webhookDeliveries.nextRetryAt, now))))
     .returning();
@@ -23,7 +23,7 @@ export async function processWebhookDelivery(db: Database, boss: PgBoss, input: 
   }
   const webhookEvent: WebhookEvent = { id: event.id, tenantId: input.tenantId, eventType: event.eventType, eventVersion: event.eventVersion, occurredAt: event.occurredAt, entityType: event.entityType, entityId: event.entityId, organizationId: event.organizationId, locationId: event.locationId, payload: event.payload };
   let outcome: Awaited<ReturnType<typeof deliverWebhookAttempt>>;
-  try { outcome = await deliverWebhookAttempt({ url: subscription.url, secret, event: webhookEvent, now, fetcher }); }
+  try { outcome = await deliverWebhookAttempt({ url: subscription.url, secret, event: webhookEvent, now, ...(fetcher ? { fetcher } : {}) }); }
   catch (error) { outcome = { success: false, responseExcerpt: error instanceof Error ? error.message.slice(0, 250) : "Delivery configuration error", retryable: false }; }
   const attemptCount = claimed.attemptCount + 1;
   if (outcome.success) {

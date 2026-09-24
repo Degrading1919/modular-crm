@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
 import {
-  auditEvents, consentRecords, connectorInstallations, customerAssets, customerContacts, customers,
+  auditEvents, consentRecords, connectorInstallations, customerAssets, customerContacts, customers, hasUsableFeature, loadTenantCapabilities,
   domainEvents, leads, notificationPreferences, organizations, paymentMethodReferences, priceRules, recurrenceRules, serviceLocations,
   servicePlans, services, serviceZones, siteContents, siteForms, siteSubmissions, sites, taxRules,
   termsAcceptances, termsVersions, tenants,
@@ -439,9 +439,10 @@ async function createSignup(request: Request, row: PublicSiteRow, input: z.infer
   try { quote = await calculatePublicQuote(row.site, quoteSchema.parse(quoteInput)); } catch { quote = null; }
   const confident = !!quote && quote.eligibility.eligible && !quote.quoteRequired && !!input.quoteId && input.quoteId === quote.quoteId;
   const recurring = input.service.frequency !== "one_time" && quote?.service.serviceType !== "one_time";
+  const recurringEnabled = recurring && hasUsableFeature(await loadTenantCapabilities(db, row.site.tenantId), "recurring_service_management");
   const paymentMode = stringValue(settingsObject(row.tenant.settings).paymentMode) || stringValue(settingsObject(settingsObject(row.tenant.settings).onboarding).paymentMode) || "demo";
   // A request-provided demo method cannot stand in for a provider the business has not connected.
-  const canAutoActivate = confident && recurring && paymentMode !== "connect";
+  const canAutoActivate = confident && recurringEnabled && paymentMode !== "connect";
   const detailsToEncrypt = [input.yard.gateCode ? `Gate code: ${input.yard.gateCode}` : "", input.yard.accessNotes ? `Access notes: ${input.yard.accessNotes}` : ""].filter(Boolean).join("\n");
   const encryptedAccess = encryptServiceAccessInstructions(detailsToEncrypt);
   const idempotencyKey = `signup:${input.idempotencyKey}`;
@@ -481,9 +482,12 @@ async function createSignup(request: Request, row: PublicSiteRow, input: z.infer
       if (quote.service.serviceType !== "one_time") {
         await tx.insert(customerAssets).values(input.pets.map((pet) => ({ tenantId: row.site.tenantId, customerId: customer.id, serviceLocationId: location.id, assetTypeKey: "pet", name: pet.name, status: "active", customerVisible: true, customFields: { species: "dog", size: pet.size, activeAtLocation: true } })));
       }
-      await tx.insert(notificationPreferences).values({ tenantId: row.site.tenantId, customerId: customer.id, eventKey: "service_updates", emailEnabled: input.notificationPreferences.email, smsEnabled: input.notificationPreferences.sms }).onConflictDoNothing();
-      if (input.notificationPreferences.email) await tx.insert(consentRecords).values({ tenantId: row.site.tenantId, customerId: customer.id, channel: "email", category: "service_updates", state: "granted", source: "website_signup", actorType: "public", evidence: { statement: DEFAULT_SERVICE_TERMS_CONTENT, termsVersion } });
-      if (input.notificationPreferences.sms) await tx.insert(consentRecords).values({ tenantId: row.site.tenantId, customerId: customer.id, channel: "sms", category: "service_updates", state: "granted", source: "website_signup", actorType: "public", evidence: { statement: DEFAULT_SERVICE_TERMS_CONTENT, termsVersion } });
+      await tx.insert(notificationPreferences).values({ tenantId: row.site.tenantId, customerId: customer.id, eventKey: "general", emailEnabled: input.notificationPreferences.email, smsEnabled: input.notificationPreferences.sms }).onConflictDoNothing();
+      for (const channel of ["email", "sms"] as const) await tx.insert(consentRecords).values({
+        tenantId: row.site.tenantId, customerId: customer.id, channel, category: "transactional",
+        state: input.notificationPreferences[channel] ? "opted_in" : "opted_out", source: "website_signup",
+        actorType: "public", evidence: { statement: DEFAULT_SERVICE_TERMS_CONTENT, termsVersion },
+      });
       const terms = await ensureServiceTerms(tx, row.site.tenantId, termsVersion);
       await tx.insert(termsAcceptances).values({ tenantId: row.site.tenantId, termsVersionId: terms.id, actorType: "public", actorId: null, relatedEntityType: "customer", relatedEntityId: customer.id, ipAddress: requestIp(request), userAgent: request.headers.get("user-agent")?.slice(0, 500) ?? null });
 
@@ -522,7 +526,7 @@ async function createSignup(request: Request, row: PublicSiteRow, input: z.infer
     }
 
     const { firstName, lastName } = splitName(input.contact.name);
-    const reviewReason = existingCustomerMatch ? "existing_customer_review" : !quote ? "price_unavailable" : !quote.eligibility.eligible ? quote.eligibility.reason : quote.result.quoteRequired ? "quote_required" : !input.quoteId ? "quote_not_confirmed" : input.service.frequency === "one_time" || quote.service.serviceType === "one_time" ? "one_time_service_needs_scheduling" : paymentMode === "connect" ? "payment_setup_required" : "review_required";
+    const reviewReason = existingCustomerMatch ? "existing_customer_review" : !quote ? "price_unavailable" : !quote.eligibility.eligible ? quote.eligibility.reason : quote.result.quoteRequired ? "quote_required" : !input.quoteId ? "quote_not_confirmed" : input.service.frequency === "one_time" || quote.service.serviceType === "one_time" ? "one_time_service_needs_scheduling" : !recurringEnabled ? "recurring_capability_unavailable" : paymentMode === "connect" ? "payment_setup_required" : "review_required";
     const [lead] = await tx.insert(leads).values({
       tenantId: row.site.tenantId, organizationId: row.site.organizationId, owningLocationId: row.site.organizationLocationId,
       status: "new", firstName, lastName, email: input.contact.email.trim().toLowerCase(), phone: input.contact.phone.trim(),

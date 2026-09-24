@@ -142,19 +142,19 @@ export async function seedDevelopment(db: Database, actorIds: Partial<Record<See
     ]).onConflictDoNothing();
     const allPermissionKeys = Object.entries(permissionCatalog).flatMap(([category, actions]) => actions.map((action) => ({ key: `${category}.${action}`, category, description: `${category} ${action.replaceAll("_", " ")}` })));
     await tx.insert(permissions).values(allPermissionKeys).onConflictDoNothing();
-    const officeCategories = new Set(["leads", "customers", "estimates", "schedule", "jobs", "routes", "invoices", "payments", "communications", "tickets", "time", "mileage", "inventory", "payroll", "reports"]);
-    const officeDeniedKeys = new Set(["invoices.void", "payments.refund", "reports.franchise_read"]);
+    const officeCategories = new Set(["leads", "customers", "estimates", "schedule", "jobs", "routes", "invoices", "payments", "communications", "tickets", "time", "mileage", "inventory", "reports"]);
+    const officeDeniedKeys = new Set(["invoices.void", "payments.refund", "reports.franchise_read", "reports.payroll_read"]);
     const technicianKeys = new Set(["customers.read", "schedule.read", "jobs.read", "jobs.start", "jobs.complete", "jobs.skip", "jobs.forms_submit", "jobs.files_add", "routes.read", "tickets.read", "tickets.create", "time.own_read", "time.own_create", "time.own_correct_request", "mileage.own_manage", "inventory.read", "inventory.consume"]);
     await tx.insert(rolePermissions).values(allPermissionKeys.flatMap(({ key, category }) => [
       { roleTemplateId: seedIds.happyOwnerRole, permissionKey: key, allowed: true },
       { roleTemplateId: seedIds.cleanOwnerRole, permissionKey: key, allowed: true },
-      { roleTemplateId: seedIds.happyOfficeRole, permissionKey: key, allowed: (officeCategories.has(category) && !officeDeniedKeys.has(key)) || key === "compensation.read" },
+      { roleTemplateId: seedIds.happyOfficeRole, permissionKey: key, allowed: officeCategories.has(category) && !officeDeniedKeys.has(key) },
       { roleTemplateId: seedIds.happyTechRole, permissionKey: key, allowed: technicianKeys.has(key) },
       { roleTemplateId: seedIds.cleanTechRole, permissionKey: key, allowed: technicianKeys.has(key) },
     ])).onConflictDoNothing();
-    await tx.update(rolePermissions).set({ allowed: true }).where(and(
+    await tx.update(rolePermissions).set({ allowed: false }).where(and(
       eq(rolePermissions.roleTemplateId, seedIds.happyOfficeRole),
-      inArray(rolePermissions.permissionKey, ["compensation.read", "payroll.read", "payroll.calculate", "payroll.review", "payroll.approve", "payroll.export"]),
+      inArray(rolePermissions.permissionKey, ["compensation.read", "compensation.manage", "payroll.read", "payroll.calculate", "payroll.review", "payroll.approve", "payroll.export", "reports.payroll_read"]),
     ));
     await tx.update(rolePermissions).set({ allowed: false }).where(and(
       eq(rolePermissions.roleTemplateId, seedIds.happyOfficeRole),
@@ -334,6 +334,7 @@ export async function seedDevelopment(db: Database, actorIds: Partial<Record<See
     await tx.insert(ticketTypeDefinitions).values([
       { id: uuid(440), tenantId: seedIds.happyTenant, key: "reclean", name: "Reclean request" },
       { id: uuid(441), tenantId: seedIds.happyTenant, key: "general", name: "General question" },
+      { id: uuid(443), tenantId: seedIds.happyTenant, key: "plan_change_review", name: "Service plan change review" },
       { id: uuid(442), tenantId: seedIds.cleanTenant, key: "general", name: "General question" },
     ]).onConflictDoNothing();
     await tx.insert(ticketStatusDefinitions).values([

@@ -1,14 +1,15 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
-  auditEvents, completionProofs, customerContacts, customers, domainEvents, estimateApprovals, estimateItems, estimateRevisions, estimates, invoiceItems, invoices, jobAssignments, jobStatusEvents,
-  jobs, leads, memberships, paymentAllocations, payments, recurrenceRules, serviceLocations, servicePlans, services, tenants,
+  auditEvents, completionProofs, creditAllocations, customerContacts, customers, domainEvents, estimateApprovals, estimateItems, estimateRevisions, estimates, hasUsableFeature, invoiceItems, invoices, jobAssignments, jobStatusEvents,
+  jobs, leads, loadTenantCapabilities, memberships, paymentAllocations, payments, recurrenceRules, refunds, serviceLocations, servicePlans, services, tenants,
   secureEstimateTokens,
 } from "@modular-crm/db";
-import { assertTransition, DomainError, invoiceBalance, invoiceStatus, requirePermission, type Permission } from "@modular-crm/domain";
+import { assertTransition, DomainError, invoiceFinancialPosition, requirePermission, type Permission } from "@modular-crm/domain";
 import { getCapability } from "../connectors";
 import { getDb } from "../db";
+import type { Database } from "@modular-crm/db";
 import { requireTenantFeature } from "./capability-enforcement";
 import { assertCustomerDocumentAccess, requireStaff, type SessionActor } from "./actor";
 import { recordEvent } from "./events";
@@ -86,6 +87,11 @@ async function createEstimateDownstreamInTransaction(
   const [location] = await tx.select().from(serviceLocations).where(and(eq(serviceLocations.tenantId, tenantId), eq(serviceLocations.customerId, customerId),
     current.serviceLocationId ? eq(serviceLocations.id, current.serviceLocationId) : convertedLocationId ? eq(serviceLocations.id, convertedLocationId) : current.organizationLocationId ? eq(serviceLocations.organizationLocationId, current.organizationLocationId) : sql`true`)).limit(1);
   if (!service || !customer || !location) throw new DomainError("VALIDATION_ERROR", "Add a service address before approving this work.", 422);
+  const capabilities = await loadTenantCapabilities(tx as unknown as Database, tenantId);
+  const requiredFeature = service.serviceType === "recurring" ? "recurring_service_management" : "service_scheduling";
+  if (!hasUsableFeature(capabilities, requiredFeature)) {
+    throw new DomainError("CAPABILITY_UNAVAILABLE", "Add or enable this capability in your business setup to continue.", 403);
+  }
   if (service.serviceType === "recurring") {
     const [tenant] = await tx.select({ timezone: tenants.defaultTimezone }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
     const [rule] = await tx.insert(recurrenceRules).values({ tenantId, frequencyType: "weekly", timezone: location.timezone ?? tenant?.timezone ?? "UTC" }).returning();
@@ -213,7 +219,13 @@ export async function transitionJob(actor: SessionActor, jobId: string, next: st
   prepareCompletionProof?: (tx: JobTransitionTransaction) => Promise<{ fileId: string | null; checklist: Record<string, boolean>; membershipId: string }>;
   responseItem?: () => Promise<unknown>;
 } = {}): Promise<Response> {
-  const permission: Permission = next === "completed" ? "jobs.complete" : next === "skipped" ? "jobs.skip" : "jobs.start";
+  const transitionPermission: Record<string, Permission> = {
+    scheduled: "jobs.assign", dispatched: "jobs.dispatch", en_route: "jobs.start", in_progress: "jobs.start",
+    paused: "jobs.start", completed: "jobs.complete", skipped: "jobs.skip", missed: "jobs.skip",
+    canceled: "jobs.cancel", needs_return: "jobs.reopen",
+  };
+  const permission = transitionPermission[next];
+  if (!permission) throw new DomainError("VALIDATION_ERROR", "Choose a supported job status.", 422);
   const requestedJob = await getAssignedJob(actor, jobId, permission);
   const db = getDb();
   const invoicingEnabled = next === "completed" && requestedJob.servicePlanId && requestedJob.billable
@@ -283,8 +295,8 @@ function configuredForCompletionBilling(configuration: Record<string, unknown> |
 }
 
 function snapshotAmount(snapshot: Record<string, unknown> | null | undefined): number | null {
-  for (const key of ["totalMinor", "amountMinor"]) {
-    const value = snapshot?.[key];
+  const result = snapshot?.result && typeof snapshot.result === "object" ? snapshot.result as Record<string, unknown> : null;
+  for (const value of [snapshot?.totalMinor, snapshot?.amountMinor, result?.totalMinor]) {
     if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
     if (typeof value === "string" && /^\d+$/.test(value) && Number.isSafeInteger(Number(value))) return Number(value);
   }
@@ -307,7 +319,12 @@ async function issueCompletionInvoice(
   const [tenant] = await tx.select({ name: tenants.name, currency: tenants.defaultCurrency }).from(tenants).where(eq(tenants.id, actor.tenantId)).limit(1);
   if (!customer || !service || !tenant) return null;
   const snapshot = job.priceSnapshot ?? plan.pricingSnapshot;
-  const snapshotCurrency = typeof snapshot?.currency === "string" ? snapshot.currency.toUpperCase() : "";
+  const priceResult = snapshot?.result && typeof snapshot.result === "object" ? snapshot.result as Record<string, unknown> : null;
+  const subtotalMinor = typeof priceResult?.subtotalMinor === "number" && Number.isSafeInteger(priceResult.subtotalMinor)
+    && priceResult.subtotalMinor >= 0 && priceResult.subtotalMinor + Number(priceResult.taxMinor) === amountMinor
+    ? priceResult.subtotalMinor : amountMinor;
+  const taxMinor = amountMinor - subtotalMinor;
+  const snapshotCurrency = typeof (snapshot?.currency ?? priceResult?.currency) === "string" ? String(snapshot?.currency ?? priceResult?.currency).toUpperCase() : "";
   const currency = /^[A-Z]{3}$/.test(snapshotCurrency) ? snapshotCurrency : tenant.currency ?? "USD";
   const configuration = plan.billingConfiguration ?? {};
   const requestedNetDays = configuration.netDays;
@@ -320,16 +337,16 @@ async function issueCompletionInvoice(
   const [invoice] = await tx.insert(invoices).values({
     tenantId: actor.tenantId, organizationId: job.organizationId, organizationLocationId: job.organizationLocationId,
     customerId: job.customerId, status: "issued", invoiceNumber, currency,
-    issuedAt, dueAt, subtotalMinor: BigInt(amountMinor), discountMinor: 0n, taxMinor: 0n,
+    issuedAt, dueAt, subtotalMinor: BigInt(subtotalMinor), discountMinor: 0n, taxMinor: BigInt(taxMinor),
     totalMinor: BigInt(amountMinor), paidMinor: 0n, balanceMinor: BigInt(amountMinor),
     billingSnapshot: {
       businessName: tenant.name, customerName: customer.displayName, description, serviceId: job.serviceId,
       jobId: job.id, servicePlanId: plan.id, billingConfiguration: configuration, priceSnapshot: snapshot,
-      currency, subtotalMinor: amountMinor, totalMinor: amountMinor,
+      currency, subtotalMinor, taxMinor, totalMinor: amountMinor,
     },
   }).returning({ id: invoices.id, invoiceNumber: invoices.invoiceNumber, status: invoices.status });
   if (!invoice) throw new Error("Could not issue completion invoice");
-  await tx.insert(invoiceItems).values({ tenantId: actor.tenantId, invoiceId: invoice.id, jobId: job.id, serviceId: job.serviceId, description, quantity: "1", unitAmountMinor: BigInt(amountMinor), totalMinor: BigInt(amountMinor) });
+  await tx.insert(invoiceItems).values({ tenantId: actor.tenantId, invoiceId: invoice.id, jobId: job.id, serviceId: job.serviceId, description, quantity: "1", unitAmountMinor: BigInt(subtotalMinor), taxMinor: BigInt(taxMinor), totalMinor: BigInt(amountMinor) });
   await recordEvent(actor, { type: "invoice.created", entityType: "invoice", entityId: invoice.id, payload: { jobId: job.id, invoiceNumber, totalMinor: amountMinor }, auditAction: "invoice.create_from_job", after: { jobId: job.id, invoiceNumber, totalMinor: amountMinor }, locationId: job.organizationLocationId }, tx);
   await recordEvent(actor, { type: "invoice.issued", entityType: "invoice", entityId: invoice.id, payload: { jobId: job.id, invoiceNumber, totalMinor: amountMinor }, auditAction: "invoice.issue", before: { status: "draft" }, after: { status: "issued", invoiceNumber, totalMinor: amountMinor }, locationId: job.organizationLocationId }, tx);
   return invoice;
@@ -345,9 +362,15 @@ async function invoiceAction(request: Request, actor: SessionActor, invoiceId: s
   } else await assertCustomerDocumentAccess(actor, invoice.customerId, invoice.organizationLocationId);
   if (action === "issue") {
     if (actor.kind !== "staff") throw new DomainError("FORBIDDEN", "Staff access is required.", 403);
-    assertTransition("invoice", invoice.status, "issued");
-    const [issued] = await db.update(invoices).set({ status: "issued", issuedAt: new Date(), updatedAt: new Date() }).where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, actor.tenantId))).returning();
-    await recordEvent(actor, { type: "invoice.issued", entityType: "invoice", entityId: invoiceId, auditAction: "invoice.issue", before: { status: invoice.status }, after: { status: "issued" } });
+    const issued = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM invoices WHERE tenant_id = ${actor.tenantId} AND id = ${invoiceId} FOR UPDATE`);
+      const [current] = await tx.select().from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, actor.tenantId))).limit(1);
+      if (!current) throw new DomainError("NOT_FOUND", "Invoice not found.", 404);
+      assertTransition("invoice", current.status, "issued");
+      const [saved] = await tx.update(invoices).set({ status: "issued", issuedAt: new Date(), updatedAt: new Date() }).where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, actor.tenantId))).returning();
+      await recordEvent(actor, { type: "invoice.issued", entityType: "invoice", entityId: invoiceId, auditAction: "invoice.issue", before: { status: current.status }, after: { status: "issued" }, locationId: current.organizationLocationId }, tx);
+      return saved;
+    });
     return json({ item: normalized(issued) });
   }
   if (action !== "pay") throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
@@ -387,11 +410,21 @@ async function invoiceAction(request: Request, actor: SessionActor, invoiceId: s
     if (status === "succeeded") {
       await tx.insert(paymentAllocations).values({ tenantId: actor.tenantId, paymentId: payment.id, invoiceId, amountMinor: BigInt(body.amountCents) });
       const paidMinor = current.paidMinor + BigInt(body.amountCents);
-      const balanceMinor = BigInt(invoiceBalance(Number(current.totalMinor), Number(paidMinor)));
-      balanceCents = Number(balanceMinor);
-      await tx.update(invoices).set({ paidMinor, balanceMinor, status: invoiceStatus(balanceCents, Number(current.totalMinor)), updatedAt: new Date() }).where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, actor.tenantId)));
+      const allocations = await tx.select({ paymentId: paymentAllocations.paymentId }).from(paymentAllocations)
+        .where(and(eq(paymentAllocations.tenantId, actor.tenantId), eq(paymentAllocations.invoiceId, invoiceId)));
+      const paymentIds = allocations.map((allocation) => allocation.paymentId);
+      const refundRows = paymentIds.length ? await tx.select({ amountMinor: refunds.amountMinor }).from(refunds)
+        .where(and(eq(refunds.tenantId, actor.tenantId), eq(refunds.status, "succeeded"), inArray(refunds.paymentId, paymentIds))) : [];
+      const creditRows = await tx.select({ amountMinor: creditAllocations.amountMinor }).from(creditAllocations)
+        .where(and(eq(creditAllocations.tenantId, actor.tenantId), eq(creditAllocations.invoiceId, invoiceId)));
+      const refundedMinor = refundRows.reduce((sum, row) => sum + row.amountMinor, 0n);
+      const creditedMinor = creditRows.reduce((sum, row) => sum + row.amountMinor, 0n);
+      const position = invoiceFinancialPosition(Number(current.totalMinor), Number(paidMinor), Number(refundedMinor), Number(creditedMinor));
+      balanceCents = position.balanceCents;
+      await tx.update(invoices).set({ paidMinor, balanceMinor: BigInt(balanceCents), status: position.status, updatedAt: new Date() })
+        .where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, actor.tenantId)));
     }
-    await recordEvent(actor, { type: status === "succeeded" ? "payment.succeeded" : "payment.failed", entityType: "payment", entityId: payment.id, payload: { invoiceId, amountCents: body.amountCents }, auditAction: `payment.${status}`, locationId: current.organizationLocationId }, tx);
+    await recordEvent(actor, { type: status === "succeeded" ? "payment.succeeded" : "payment.failed", entityType: "payment", entityId: payment.id, payload: { invoiceId, customerId: current.customerId, amountCents: body.amountCents }, auditAction: `payment.${status}`, locationId: current.organizationLocationId }, tx);
     return { payment, duplicate: false, balanceCents };
   });
   return json({ item: normalized(outcome.payment), duplicate: outcome.duplicate, invoice: { id: invoiceId, balanceCents: outcome.balanceCents } });
@@ -405,9 +438,15 @@ async function servicePlanAction(actor: SessionActor, planId: string, action: st
   if (!plan || (!actor.allLocations && (!plan.organizationLocationId || !actor.locationIds.has(plan.organizationLocationId)))) throw new DomainError("NOT_FOUND", "Service plan not found.", 404);
   const next = action === "pause" ? "paused" : action === "resume" ? "active" : action === "cancel" ? "canceled" : "";
   if (!next) throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
-  assertTransition("servicePlan", plan.status, next);
-  const [updated] = await db.update(servicePlans).set({ status: next, pauseFrom: next === "paused" ? new Date().toISOString().slice(0, 10) : null, pauseUntil: next === "active" ? null : undefined, canceledAt: next === "canceled" ? new Date() : undefined, updatedAt: new Date() }).where(and(eq(servicePlans.id, planId), eq(servicePlans.tenantId, actor.tenantId))).returning();
-  await recordEvent(actor, { type: `service_plan.${next}`, entityType: "service_plan", entityId: planId, auditAction: `service_plan.${next}`, before: { status: plan.status }, after: { status: next } });
+  const updated = await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT id FROM service_plans WHERE tenant_id = ${actor.tenantId} AND id = ${planId} FOR UPDATE`);
+    const [current] = await tx.select().from(servicePlans).where(and(eq(servicePlans.id, planId), eq(servicePlans.tenantId, actor.tenantId))).limit(1);
+    if (!current) throw new DomainError("NOT_FOUND", "Service plan not found.", 404);
+    assertTransition("servicePlan", current.status, next);
+    const [saved] = await tx.update(servicePlans).set({ status: next, pauseFrom: next === "paused" ? new Date().toISOString().slice(0, 10) : null, pauseUntil: next === "active" ? null : undefined, canceledAt: next === "canceled" ? new Date() : undefined, updatedAt: new Date() }).where(and(eq(servicePlans.id, planId), eq(servicePlans.tenantId, actor.tenantId))).returning();
+    await recordEvent(actor, { type: `service_plan.${next}`, entityType: "service_plan", entityId: planId, auditAction: `service_plan.${next}`, before: { status: current.status }, after: { status: next }, locationId: current.organizationLocationId }, tx);
+    return saved;
+  });
   return json({ item: normalized(updated) });
 }
 
@@ -420,6 +459,7 @@ export async function handleWorkflow(request: Request, path: string[], actor: Se
   if (resource === "jobs" && action === "assign") return assignJob(request, actor, id);
   if (resource === "jobs" && action === "transition") {
     const body = await readBody(request, z.object({ status: z.string(), reason: z.string().optional(), note: z.string().optional(), completedChecklist: z.boolean().optional(), proofProvided: z.boolean().optional(), clientOperationId: z.uuid().optional(), deviceTimestamp: z.iso.datetime({ offset: true }).optional(), expectedPriorState: z.string().min(1).max(40).optional() }));
+    if (body.status === "completed") throw new DomainError("VALIDATION_ERROR", "Complete the job using the field checklist.", 422);
     return transitionJob(actor, id, body.status, {
       ...body,
       ...(actor.kind === "staff" && actor.role === "technician" ? { fieldOperation: { action: `job.transition.${body.status}`, target: id, clientOperationId: body.clientOperationId, payload: body, deviceTimestamp: body.deviceTimestamp ? new Date(body.deviceTimestamp) : null } } : {}),

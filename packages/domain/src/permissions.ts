@@ -28,12 +28,12 @@ export type RoleTemplate = "owner" | "office" | "technician";
 
 const officeDenied = new Set<Permission>([
   "tenant.update", "tenant.billing_manage", "tenant.security_manage", "tenant.audit_read", "tenant.delete",
-  "organization.franchise_manage", "organization.rollup_reports_read", "roles.manage", "compensation.manage",
+  "organization.franchise_manage", "organization.rollup_reports_read", "roles.manage", "compensation.read", "compensation.manage",
   "staff.invite", "staff.deactivate", "services.manage", "pricing.manage", "promotions.manage",
   "invoices.void", "payments.refund", "billing.settings_manage", "tax.manage",
   "automations.create", "automations.update", "automations.activate", "automations.archive", "automations.runs_retry",
   "connectors.install", "connectors.configure", "connectors.disconnect", "connectors.sync_manage", "website.publish", "website.domains_manage",
-  "reports.franchise_read",
+  "payroll.read", "payroll.calculate", "payroll.review", "payroll.approve", "payroll.export", "reports.payroll_read", "reports.franchise_read",
 ]);
 
 const technicianAllowed = new Set<Permission>([
@@ -64,6 +64,8 @@ export interface CustomerActor {
   tenantId: string;
   customerIds: ReadonlySet<string>;
   locationIds: ReadonlySet<string>;
+  /** Service locations granted for each customer identity. Avoids cross-pairing IDs for multi-customer portal users. */
+  customerLocationIds: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 export type Actor = StaffActor | CustomerActor;
@@ -85,8 +87,8 @@ export function requirePermission(actor: Actor, permission: Permission): asserts
 export function canReadResource(actor: Actor, resource: ScopedResource, permission: Permission): boolean {
   if (actor.tenantId !== resource.tenantId) return false;
   if (actor.kind === "customer") {
-    return resource.customerVisible === true && !!resource.customerId && actor.customerIds.has(resource.customerId)
-      && (!resource.locationId || actor.locationIds.has(resource.locationId));
+    return resource.customerVisible === true && !!resource.customerId && !!resource.locationId
+      && actor.customerIds.has(resource.customerId) && actor.customerLocationIds?.get(resource.customerId)?.has(resource.locationId) === true;
   }
   if (!actor.permissions.has(permission)) return false;
   if (actor.role === "technician") return !!resource.assignedUserIds?.includes(actor.userId);

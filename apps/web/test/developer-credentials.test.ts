@@ -74,6 +74,9 @@ describe("developer API credentials", () => {
       scopes: ["customers:read", "leads:read", "customers:read"],
     })).toEqual({ name: "Reporting dashboard", scopes: ["customers:read", "leads:read"] });
     expect(API_CREDENTIAL_SCOPES).toContain("webhooks:manage");
+    for (const unsupported of ["jobs:write", "estimates:write", "service_plans:write", "tickets:write"]) {
+      expect(() => createApiCredentialBodySchema.parse({ name: "Unsupported write", scopes: [unsupported] })).toThrow();
+    }
     expect(() => createApiCredentialBodySchema.parse({ name: "Report", scopes: ["tenant:delete"] })).toThrow();
     expect(() => createApiCredentialBodySchema.parse({ name: "\n", scopes: ["customers:read"] })).toThrow();
     expect(() => createApiCredentialBodySchema.parse({ name: "Report", scopes: ["customers:read"], tenantId: "tenant-b" })).toThrow();
