@@ -38,9 +38,11 @@ Research workers should map findings to the existing `IndustryPack` contract, ex
 
 ### Preferred candidate pool
 
-Use The Sweaty Startup's [Businesses I Love](https://www.sweatystartup.com/blog/businesses-i-love) list as the preferred starting pool when generating prospective service-business industries to research. It is a candidate source, not evidence that every listed business deserves a separate Industry Pack. Research should still determine whether a candidate has a distinct enough operating model to justify its own pack, should be represented as a variant of another pack, or is a poor fit for the platform.
+Use The Sweaty Startup's [Businesses I Love](https://www.sweatystartup.com/blog/businesses-i-love) list as the preferred starting pool when generating prospective service-business industries to research.
 
-Prioritize breadth of operating models when selecting batches so the research stress-tests the horizontal platform rather than repeatedly sampling near-identical route-service businesses.
+Research as many viable candidates from the source pool as practical, including industries that appear redundant, adjacent, or operationally similar. Do not pre-collapse similar candidates before research. Each candidate should receive its own evidence-backed profile so similarities and differences are measured rather than assumed.
+
+The completed research may later conclude that several candidates should share one runtime Industry Pack, use a common pack with variants, remain separate packs, or are poor fits for the platform. That consolidation decision belongs after the evidence exists, not before it. Parallel research batches should therefore optimize for coverage of the candidate pool rather than representative sampling alone.
 
 ## First reference Industry Pack: Pet Waste Removal
 
