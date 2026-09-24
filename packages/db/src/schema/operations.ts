@@ -86,6 +86,21 @@ export const jobStatusEvents = pgTable("job_status_events", {
   index("job_status_events_job_idx").on(t.tenantId, t.jobId, t.occurredAt),
 ]);
 
+/** Stores field mutation receipts without copying request bodies or credentials. */
+export const fieldOperationReceipts = pgTable("field_operation_receipts", {
+  ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  actorId: text("actor_id").notNull(), clientOperationId: uuid("client_operation_id").notNull(),
+  action: text("action").notNull(), requestHash: text("request_hash").notNull(),
+  resultKind: text("result_kind"), resultEntityId: uuid("result_entity_id"), resultRelatedId: uuid("result_related_id"), resultState: text("result_state"),
+  responseStatus: integer("response_status").notNull().default(200),
+  deviceTimestamp: timestamp("device_timestamp", { withTimezone: true }),
+  serverReceivedAt: timestamp("server_received_at", { withTimezone: true }).notNull().defaultNow(),
+  source: text("source").notNull(), anomalyClass: text("anomaly_class"),
+}, (t) => [
+  uniqueIndex("field_operation_receipts_actor_operation_ux").on(t.tenantId, t.actorId, t.clientOperationId),
+  index("field_operation_receipts_received_idx").on(t.tenantId, t.serverReceivedAt),
+]);
+
 export const recurringGenerationLedger = pgTable("recurring_generation_ledger", {
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), servicePlanId: uuid("service_plan_id").notNull().references(() => servicePlans.id),
   occurrenceKey: text("occurrence_key").notNull(), intendedDate: date("intended_date").notNull(),

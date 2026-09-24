@@ -75,6 +75,14 @@ Each connector should declare metadata such as:
 - error state
 - supported tenant/account discovery
 
+Tenant API-key and service-account setup is enabled only for an explicitly opted-in `credentials_ready` provider. Manifests declare stable credential field keys, plain-language labels, input types, help text, and maximum lengths; the server accepts exactly those fields. Real adapters receive validated values through a separate server-side configured-scope factory; generic mock authorization cannot connect a credentials-ready definition. `local_ready`, mock, and planned connectors cannot accept real credentials. Credential values are encrypted server-side with a dedicated `CONNECTOR_CREDENTIAL_ENCRYPTION_KEY`, and the authenticated payload is bound to the tenant, installation, and connector. Owners can replace or remove a credential; responses, audit records, and operational history contain no credential material. Disconnect removes the stored credential while retaining the installation and related sync, import, and event history. Marketplace status reports `live_setup` and a safe `credentialConfigured` boolean plus field metadata, keeping it distinct from mock and local behavior.
+
+Infrastructure-owned connectors may declare `platformManaged: true`. Their credentials come from server environment/configuration and never pass through tenant setup APIs. They are excluded from the tenant connector marketplace and installed into each tenant's runtime scope by the platform. S3-compatible storage uses `OBJECT_STORAGE_ENDPOINT`, `OBJECT_STORAGE_BUCKET`, `OBJECT_STORAGE_REGION`, `OBJECT_STORAGE_ACCESS_KEY`, and `OBJECT_STORAGE_SECRET_KEY`; when those values are absent, local development uses the tenant-separated filesystem adapter.
+
+OAuth implementations use durable, single-use transactions. Persist only a hash of the random state, bind it to tenant, actor, connector, and installation, expire it promptly, and consume it atomically. Store a PKCE verifier only as an encrypted, context-bound value and erase it when state is consumed. Do not expose OAuth callback routes until a provider has a complete authorization implementation.
+
+Email acceptance is distinct from delivery confirmation. An email provider may accept a send without returning a message identifier or delivery event; the shared capability result permits a missing external reference, and the CRM records provider acceptance without inventing a provider ID. Delivery status is reported only when the provider supplies a reliable event or status check.
+
 ## Setup experience
 
 Prefer:

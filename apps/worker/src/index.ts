@@ -74,8 +74,11 @@ export async function startWorker(env: Record<string, string | undefined> = proc
     await boss.schedule(QUEUES.recurringGeneration, "0 3 * * *", {}, { tz: "UTC" });
     await boss.send(QUEUES.publishOutbox, {});
     await boss.send(QUEUES.recurringGeneration, {});
+    const outboxSweep = setInterval(() => {
+      void boss.send(QUEUES.publishOutbox, {}).catch(() => log("outbox.enqueue_failed"));
+    }, 15_000);
     log("started", { queues: Object.values(QUEUES) });
-    return { boss, db, stop: async () => { await boss.stop(); await closeDatabase(db); log("stopped"); } };
+    return { boss, db, stop: async () => { clearInterval(outboxSweep); await boss.stop(); await closeDatabase(db); log("stopped"); } };
   } catch (error) {
     await boss.stop().catch(() => undefined);
     await closeDatabase(db);

@@ -214,6 +214,8 @@ Use background jobs for:
 
 Each job records status, attempts, last error, correlation context, and tenant.
 
+The worker sweeps the transactional outbox at startup and every 15 seconds, with a once-per-minute pg-boss schedule as a persistent recovery sweep. Consumers remain idempotent by event or action key.
+
 ## Error contract
 
 User-facing errors should normalize into:

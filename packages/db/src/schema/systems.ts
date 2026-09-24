@@ -105,6 +105,15 @@ export const connectorInstallations = pgTable("connector_installations", {
   lastErrorMessage: text("last_error_message"), settings: jsonObject("settings"),
 }, (t) => [uniqueIndex("connector_installations_account_ux").on(t.tenantId, t.connectorKey, t.providerAccountId)]);
 
+/** Single-use OAuth handoff state. Raw state is never persisted; verifier material is encrypted server-side. */
+export const connectorOAuthTransactions = pgTable("connector_oauth_transactions", {
+  stateHash: text("state_hash").primaryKey(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  actorUserId: text("actor_user_id").notNull(), connectorKey: text("connector_key").notNull(),
+  connectorInstallationId: uuid("connector_installation_id").notNull().references(() => connectorInstallations.id),
+  verifierEnvelope: text("verifier_envelope"), expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [index("connector_oauth_transactions_expiry_idx").on(t.expiresAt), index("connector_oauth_transactions_installation_idx").on(t.tenantId, t.connectorInstallationId)]);
+
 export const connectorResourceMappings = pgTable("connector_resource_mappings", {
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), connectorInstallationId: uuid("connector_installation_id").notNull().references(() => connectorInstallations.id),
   resourceType: text("resource_type").notNull(), providerResourceId: text("provider_resource_id").notNull(),

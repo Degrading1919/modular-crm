@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { bigint, boolean, date, foreignKey, index, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid, varchar } from "drizzle-orm/pg-core";
+import { bigint, boolean, check, date, foreignKey, index, integer, jsonb, numeric, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid, varchar } from "drizzle-orm/pg-core";
 import { active, currency, jsonObject, money, record, status } from "./columns.ts";
 import { memberships, organizationLocations, organizations, tenants, user } from "./identity.ts";
 
@@ -187,7 +187,10 @@ export const estimateRevisions = pgTable("estimate_revisions", {
   revisionNumber: integer("revision_number").notNull(), subtotalMinor: money("subtotal_minor"), discountMinor: money("discount_minor"),
   taxMinor: money("tax_minor"), totalMinor: money("total_minor"), termsText: text("terms_text"), termsVersion: text("terms_version"),
   notes: text("notes"), snapshot: jsonObject("snapshot"), sentAt: timestamp("sent_at", { withTimezone: true }),
-}, (t) => [uniqueIndex("estimate_revisions_number_ux").on(t.estimateId, t.revisionNumber)]);
+}, (t) => [
+  uniqueIndex("estimate_revisions_number_ux").on(t.estimateId, t.revisionNumber),
+  uniqueIndex("estimate_revisions_tenant_estimate_id_ux").on(t.tenantId, t.estimateId, t.id),
+]);
 
 export const estimateItems = pgTable("estimate_items", {
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), estimateRevisionId: uuid("estimate_revision_id").notNull().references(() => estimateRevisions.id),
@@ -197,10 +200,28 @@ export const estimateItems = pgTable("estimate_items", {
   totalMinor: money("total_minor"), sortOrder: integer("sort_order").notNull().default(0), metadata: jsonObject("metadata"),
 });
 
+export const secureEstimateTokens = pgTable("secure_estimate_tokens", {
+  ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), estimateId: uuid("estimate_id").notNull(),
+  estimateRevisionId: uuid("estimate_revision_id").notNull(), tokenHash: text("token_hash").notNull(),
+  allowedActions: text("allowed_actions").array().notNull().default(sql`ARRAY['approve', 'decline']::text[]`),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(), consumedAt: timestamp("consumed_at", { withTimezone: true }),
+  consumedAction: text("consumed_action"), revokedAt: timestamp("revoked_at", { withTimezone: true }),
+}, (t) => [
+  uniqueIndex("secure_estimate_tokens_hash_ux").on(t.tokenHash),
+  uniqueIndex("secure_estimate_tokens_tenant_estimate_id_ux").on(t.tenantId, t.estimateId, t.id),
+  foreignKey({ columns: [t.tenantId, t.estimateId], foreignColumns: [estimates.tenantId, estimates.id], name: "secure_estimate_tokens_estimate_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.estimateId, t.estimateRevisionId], foreignColumns: [estimateRevisions.tenantId, estimateRevisions.estimateId, estimateRevisions.id], name: "secure_estimate_tokens_revision_tenant_fk" }),
+  check("secure_estimate_tokens_actions_ck", sql`${t.allowedActions} <@ ARRAY['approve', 'decline']::text[] AND cardinality(${t.allowedActions}) > 0`),
+  check("secure_estimate_tokens_consumed_ck", sql`(${t.consumedAt} IS NULL AND ${t.consumedAction} IS NULL) OR (${t.consumedAt} IS NOT NULL AND ${t.consumedAction} = ANY(${t.allowedActions}))`),
+  index("secure_estimate_tokens_estimate_idx").on(t.tenantId, t.estimateId, t.expiresAt),
+]);
+
 export const estimateApprovals = pgTable("estimate_approvals", {
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), estimateId: uuid("estimate_id").notNull().references(() => estimates.id),
   estimateRevisionId: uuid("estimate_revision_id").notNull().references(() => estimateRevisions.id), decision: text("decision").notNull(),
   actorType: text("actor_type").notNull(), actorUserId: text("actor_user_id").references(() => user.id), secureTokenId: uuid("secure_token_id"),
   occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(), ipAddress: text("ip_address"),
   userAgent: text("user_agent"), termsVersion: text("terms_version"), comment: text("comment"),
-});
+}, (t) => [
+  foreignKey({ columns: [t.tenantId, t.estimateId, t.secureTokenId], foreignColumns: [secureEstimateTokens.tenantId, secureEstimateTokens.estimateId, secureEstimateTokens.id], name: "estimate_approvals_secure_token_fk" }),
+]);

@@ -26,6 +26,9 @@ Every connector exports a manifest with:
 - sync modes
 - documentation/support links
 - connector version
+- optional platform-managed marker for infrastructure configured only by the deployment
+
+Credentials-ready API-key and service-account connectors also declare their owner-facing credential fields. Real implementations provide a separate `createConfiguredScope({ tenantId, credentials, now, ensureAvailable })` factory; the registry validates the exact manifest field set and calls it with in-memory server-side values. Generic mock authorization is unavailable to `credentials_ready` definitions. Only the server connector boundary opens stored credential envelopes, and credentials never enter public installation views.
 
 Example capability keys:
 
@@ -59,6 +62,8 @@ A connector may implement:
 
 Unsupported methods are absent rather than stubbed as success.
 
+Messaging results record the provider's acceptance of a request. Some email APIs, including Microsoft Graph `sendMail`, return acceptance without a message resource identifier; adapters may omit the external reference rather than inventing one. The CRM's `sent` history means the provider accepted the request, not that recipient delivery was confirmed.
+
 ## Authentication types
 
 Supported connector auth patterns:
@@ -72,6 +77,12 @@ Supported connector auth patterns:
 OAuth is preferred whenever a provider supports a reasonable user authorization flow.
 
 Secrets are stored server-side only through secure credential storage abstraction.
+
+Credential entry is provider opt-in and limited to `credentials_ready` API-key/service-account manifests with `credentialSetup: true` and declared stable fields, labels, input types, help text, and size limits. `local_ready`, mock-complete, and planned manifests reject tenant credential setup. The server validates submitted keys against the manifest. Use the dedicated `CONNECTOR_CREDENTIAL_ENCRYPTION_KEY`; authenticated encrypted payloads bind secrets to tenant, installation, and connector. Saving/replacing/removing credentials is owner-only and must never return, log, or audit secret values. Disconnect erases credential data but preserves installation-linked operational history.
+
+Platform-managed infrastructure connectors use deployment configuration and a separate registry activation path. They are omitted from tenant marketplace/setup surfaces and do not accept tenant-supplied credentials.
+
+OAuth transaction helpers persist only a SHA-256 state hash and an encrypted PKCE verifier. State is short-lived, bound to tenant, actor, connector, and installation, and atomically consumed once. A provider must supply the full authorization and callback flow before routes are exposed.
 
 ## Marketplace UX
 

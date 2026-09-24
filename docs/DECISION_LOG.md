@@ -4,6 +4,30 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-09-24 — Infrastructure connectors use platform-owned configuration
+
+- **Status:** Accepted
+- **Area:** Connectors
+- **Decision:** Infrastructure connectors such as S3-compatible object storage may be marked platform-managed, read server-owned deployment configuration, and activate tenant-isolated runtime scopes without exposing connection fields in the tenant marketplace. Local filesystem storage remains the development fallback when S3 configuration is absent.
+- **Rationale:** File storage is deployment infrastructure for most small businesses; owners should use protected files without selecting or managing bucket credentials.
+- **Authoritative doc:** `docs/CONNECTOR_SYSTEM.md`
+
+## 2026-09-24 — Messaging history distinguishes provider acceptance from delivery
+
+- **Status:** Accepted
+- **Area:** Connectors
+- **Decision:** A connector send result records provider acceptance. Provider message identifiers are optional when an API does not return one, and the CRM must not invent an external ID or report recipient delivery unless the provider supplies delivery confirmation.
+- **Rationale:** Email APIs have different response contracts; for example, Microsoft Graph returns an accepted response without a message resource. A common adapter must preserve that fact instead of overstating the provider result.
+- **Authoritative doc:** `docs/CONNECTOR_SYSTEM.md`
+
+## 2026-09-24 — Tenant connector credential and OAuth transaction boundary
+
+- **Status:** Accepted
+- **Area:** Connectors
+- **Decision:** Store tenant API-key/service-account credentials only for explicitly opted-in `credentials_ready` connectors with manifest-declared fields, using the dedicated `CONNECTOR_CREDENTIAL_ENCRYPTION_KEY` and a context-bound authenticated payload. Real adapters receive validated credentials through a configured-scope factory; generic mock authorization cannot connect credentials-ready definitions. Preserve `local_ready` for local-only behavior. Owner-only credential operations never expose secret values, and disconnect clears stored credential data while preserving installation-linked operational history. OAuth state is durable, hashed, short-lived, bound to tenant/actor/connector/installation, and consumed once; PKCE verifier material is encrypted and erased upon consumption. Marketplace/API status distinguishes `live_setup` from mock and local modes and exposes only configured-state booleans and field metadata.
+- **Rationale:** Provider adapters need a tenant-safe credential boundary before real integrations are enabled, while mock connectors must not be mistaken for credential-ready providers.
+- **Authoritative doc:** `docs/CONNECTOR_SYSTEM.md`
+
 ## 2026-09-23 — Modular capability subscriptions complement Industry Packs
 
 - **Status:** Accepted

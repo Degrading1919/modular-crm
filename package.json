@@ -5,11 +5,12 @@
   "type": "module",
   "packageManager": "pnpm@11.19.0",
   "scripts": {
-    "dev": "concurrently -k -n web,worker \"pnpm dev:web\" \"pnpm dev:worker\"",
+    "dev": "dotenv -e .env -- concurrently -k -n web,worker \"pnpm dev:web\" \"pnpm dev:worker\"",
     "dev:web": "pnpm --filter @modular-crm/web dev",
     "dev:worker": "pnpm --filter @modular-crm/worker dev",
     "infra:up": "docker compose up -d",
     "infra:down": "docker compose down",
+    "infra:pglite": "pnpm --filter @modular-crm/db infra:pglite",
     "db:migrate": "pnpm --filter @modular-crm/db db:migrate",
     "db:seed": "pnpm --filter @modular-crm/web db:seed",
     "test": "pnpm -r --if-present test",
@@ -21,6 +22,7 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "concurrently": "^9.2.1",
+    "dotenv-cli": "^11.0.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"

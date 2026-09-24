@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CAPABILITY_LABELS, ConnectorError, createMockConnectorRegistry, mockWebhookSignature, validateConnectorManifest } from "./index.ts";
+import { createS3StorageDefinition } from "./s3-storage.ts";
 
 describe("connector contract", () => {
   it("validates a capability-first manifest catalog", () => {
@@ -20,6 +21,35 @@ describe("connector contract", () => {
     expect(JSON.stringify(installed)).not.toContain(begin.state);
     expect(registry.healthCheck("tenant-a", "mock-payments").health).toBe("healthy");
     expect(registry.disconnect("tenant-a", "mock-payments").state).toBe("not_connected");
+  });
+  it("connects only credential-ready definitions with exact manifest fields and a configured adapter", () => {
+    const registry = createMockConnectorRegistry();
+    const base = registry.listCatalog()[0]!;
+    const manifest = { ...base, key: "real-example", authType: "api_key" as const, availability: "credentials_ready" as const,
+      credentialSetup: true as const, credentialFields: [{ key: "apiKey", label: "API key", inputType: "password" as const, maxLength: 100 }] };
+    let receivedCredential: string | undefined;
+    registry.register({ manifest, createConfiguredScope: ({ credentials }) => { receivedCredential = credentials.apiKey; return {}; } });
+    expect(() => registry.connectMock("tenant-a", "real-example")).toThrow(ConnectorError);
+    expect(() => registry.connectConfigured("tenant-a", "real-example", { apiKey: "valid", extra: "no" })).toThrow(ConnectorError);
+    expect(registry.connectConfigured("tenant-a", "real-example", { apiKey: "provider-secret" }).state).toBe("connected");
+    expect(receivedCredential).toBe("provider-secret");
+    expect(JSON.stringify(registry.healthCheck("tenant-a", "real-example"))).not.toContain("provider-secret");
+
+    registry.register({ manifest: { ...manifest, key: "not-wired" } });
+    expect(() => registry.connectConfigured("tenant-a", "not-wired", { apiKey: "valid" })).toThrow(/not available yet/);
+  });
+  it("activates platform-managed infrastructure without tenant credential setup", () => {
+    const registry = createMockConnectorRegistry();
+    const definition = createS3StorageDefinition({
+      endpoint: "http://localhost:9000", bucket: "files", region: "us-east-1", accessKeyId: "server-access", secretAccessKey: "server-secret",
+    });
+    registry.register(definition);
+    expect(definition.manifest).toMatchObject({ platformManaged: true, availability: "credentials_ready" });
+    expect(definition.manifest.credentialSetup).toBeUndefined();
+    expect(() => registry.connectConfigured("tenant-a", "s3-compatible", {})).toThrow(ConnectorError);
+    expect(registry.connectPlatformManaged("tenant-a", "s3-compatible").state).toBe("connected");
+    expect(registry.getCapability("tenant-a", "storage")).toBeDefined();
+    expect(() => registry.connectPlatformManaged("tenant-a", "mock-storage")).toThrow(ConnectorError);
   });
   it("isolates tenant scoped payment references, retries and refunds", async () => {
     const registry = createMockConnectorRegistry();

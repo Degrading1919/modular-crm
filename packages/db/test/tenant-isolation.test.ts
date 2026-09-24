@@ -117,7 +117,7 @@ describe("tenant-scoped persistence", () => {
     const clean = createTenantRepository(db, seedIds.cleanTenant);
     expect((await happy.listCustomers({ search: "Carter" })).map((r) => r.id)).toEqual([seedIds.carter]);
     expect((await clean.listCustomers({ search: "Carter" })).map((r) => r.id)).toEqual([seedIds.cleanCarter]);
-    expect((await happy.listInvoices()).map((r) => r.invoiceNumber)).toEqual(["HY-1001", "HY-1002"]);
+    expect((await happy.listInvoices()).map((r) => r.invoiceNumber)).toEqual(["HY-1001", "HY-1002", "HY-E-1001", "HY-W-1001"]);
     expect((await clean.listInvoices()).map((r) => r.invoiceNumber)).toEqual(["CP-1001"]);
   });
 });

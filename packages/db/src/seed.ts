@@ -6,7 +6,7 @@ import {
   installInitialCapabilityCatalog,
 } from "./initial-capability-catalog.ts";
 import {
-  account, user, tenants, organizations, organizationLocations, roleTemplates, permissions, rolePermissions,
+  account, user, tenants, organizations, organizationLocations, franchiseAgreements, royaltyRules, roleTemplates, permissions, rolePermissions,
   memberships, membershipLocationScopes, customers, customerContacts, serviceLocations, customerAssets,
   customerPreferences, portalAccess, portalLocationAccess, leadSources, leads, services, serviceZones, priceRules,
   estimates, estimateRevisions, estimateItems, estimateApprovals,
@@ -24,6 +24,9 @@ export const seedIds = {
   happyTenant: uuid(1), cleanTenant: uuid(2),
   happyOrganization: uuid(10), cleanOrganization: uuid(20),
   augusta: uuid(11), northAugusta: uuid(12), cleanBranch: uuid(21),
+  franchiseEastOrganization: uuid(13), franchiseWestOrganization: uuid(14), franchiseEastLocation: uuid(15), franchiseWestLocation: uuid(16),
+  franchiseEastAgreement: uuid(900), franchiseWestAgreement: uuid(901), franchiseEastRule: uuid(902), franchiseWestRule: uuid(903),
+  franchiseEastInvoice: uuid(904), franchiseWestInvoice: uuid(905),
   happyOwnerRole: uuid(30), happyOfficeRole: uuid(31), happyTechRole: uuid(32),
   cleanOwnerRole: uuid(33), cleanTechRole: uuid(34),
   oliviaMembership: uuid(40), morganMembership: uuid(41), terryMembership: uuid(42), caseyMembership: uuid(43),
@@ -110,12 +113,24 @@ export async function seedDevelopment(db: Database, actorIds: Partial<Record<See
     });
     await tx.insert(organizations).values([
       { id: seedIds.happyOrganization, tenantId: seedIds.happyTenant, organizationType: "business", legalName: "Happy Yards Pet Waste LLC", displayName: "Happy Yards Pet Waste", email: "hello@happyyards.local" },
+      { id: seedIds.franchiseEastOrganization, tenantId: seedIds.happyTenant, parentOrganizationId: seedIds.happyOrganization, organizationType: "franchise_unit", legalName: "Happy Yards East LLC", displayName: "Happy Yards East", email: "east@happyyards.local" },
+      { id: seedIds.franchiseWestOrganization, tenantId: seedIds.happyTenant, parentOrganizationId: seedIds.happyOrganization, organizationType: "franchise_unit", legalName: "Happy Yards West LLC", displayName: "Happy Yards West", email: "west@happyyards.local" },
       { id: seedIds.cleanOrganization, tenantId: seedIds.cleanTenant, organizationType: "business", legalName: "CleanPaws Route Service LLC", displayName: "CleanPaws Route Service", email: "hello@cleanpaws.local" },
     ]).onConflictDoNothing();
     await tx.insert(organizationLocations).values([
       { id: seedIds.augusta, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, name: "Augusta Branch", code: "AUG", city: "Augusta", region: "GA", postalCode: "30901", addressLine1: "125 Broad Street" },
       { id: seedIds.northAugusta, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, name: "North Augusta Branch", code: "NAUG", city: "North Augusta", region: "SC", postalCode: "29841", addressLine1: "20 Georgia Avenue" },
+      { id: seedIds.franchiseEastLocation, tenantId: seedIds.happyTenant, organizationId: seedIds.franchiseEastOrganization, name: "East Branch", code: "EAST", city: "Augusta", region: "GA", postalCode: "30904", addressLine1: "220 Central Avenue" },
+      { id: seedIds.franchiseWestLocation, tenantId: seedIds.happyTenant, organizationId: seedIds.franchiseWestOrganization, name: "West Branch", code: "WEST", city: "North Augusta", region: "SC", postalCode: "29842", addressLine1: "740 West Avenue" },
       { id: seedIds.cleanBranch, tenantId: seedIds.cleanTenant, organizationId: seedIds.cleanOrganization, name: "Main Branch", code: "MAIN", city: "Augusta", region: "GA", postalCode: "30901", addressLine1: "8 Broad Street" },
+    ]).onConflictDoNothing();
+    await tx.insert(franchiseAgreements).values([
+      { id: seedIds.franchiseEastAgreement, tenantId: seedIds.happyTenant, parentOrganizationId: seedIds.happyOrganization, childOrganizationId: seedIds.franchiseEastOrganization, effectiveFrom: day(-365), settings: { demo: true }, active: true },
+      { id: seedIds.franchiseWestAgreement, tenantId: seedIds.happyTenant, parentOrganizationId: seedIds.happyOrganization, childOrganizationId: seedIds.franchiseWestOrganization, effectiveFrom: day(-365), settings: { demo: true }, active: true },
+    ]).onConflictDoNothing();
+    await tx.insert(royaltyRules).values([
+      { id: seedIds.franchiseEastRule, tenantId: seedIds.happyTenant, franchiseAgreementId: seedIds.franchiseEastAgreement, ruleType: "percentage", definition: { basis: "invoiced_revenue", rateBasisPoints: 500 }, effectiveFrom: day(-365), active: true },
+      { id: seedIds.franchiseWestRule, tenantId: seedIds.happyTenant, franchiseAgreementId: seedIds.franchiseWestAgreement, ruleType: "percentage", definition: { basis: "invoiced_revenue", rateBasisPoints: 500 }, effectiveFrom: day(-365), active: true },
     ]).onConflictDoNothing();
 
     await tx.insert(roleTemplates).values([
@@ -288,6 +303,10 @@ export async function seedDevelopment(db: Database, actorIds: Partial<Record<See
       { id: seedIds.happyInvoice, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, status: "paid", invoiceNumber: "HY-1001", currency: "USD", issuedAt: at(-7), dueAt: at(-1), subtotalMinor: 2500n, totalMinor: 2500n, paidMinor: 2500n, balanceMinor: 0n, billingSnapshot: { customerName: "Carter Household", service: "Yard cleanup" } },
       { id: seedIds.overdueInvoice, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: seedIds.nguyen, status: "overdue", invoiceNumber: "HY-1002", currency: "USD", issuedAt: at(-30), dueAt: at(-15), subtotalMinor: 3000n, totalMinor: 3000n, paidMinor: 0n, balanceMinor: 3000n, billingSnapshot: { customerName: "Nguyen Household", service: "Yard cleanup" } },
       { id: seedIds.cleanInvoice, tenantId: seedIds.cleanTenant, organizationId: seedIds.cleanOrganization, organizationLocationId: seedIds.cleanBranch, customerId: seedIds.cleanCarter, status: "paid", invoiceNumber: "CP-1001", currency: "USD", issuedAt: at(-10), dueAt: at(-3), subtotalMinor: 2700n, totalMinor: 2700n, paidMinor: 2700n, balanceMinor: 0n, billingSnapshot: { customerName: "Carter Household", service: "Yard cleanup" } },
+    ]).onConflictDoNothing();
+    await tx.insert(invoices).values([
+      { id: seedIds.franchiseEastInvoice, tenantId: seedIds.happyTenant, organizationId: seedIds.franchiseEastOrganization, organizationLocationId: seedIds.franchiseEastLocation, customerId: seedIds.carter, status: "issued", invoiceNumber: "HY-E-1001", currency: "USD", issuedAt: at(-5), dueAt: at(25), subtotalMinor: 6800n, totalMinor: 6800n, paidMinor: 0n, balanceMinor: 6800n, billingSnapshot: { customerName: "Carter Household", service: "Franchise demo service" } },
+      { id: seedIds.franchiseWestInvoice, tenantId: seedIds.happyTenant, organizationId: seedIds.franchiseWestOrganization, organizationLocationId: seedIds.franchiseWestLocation, customerId: seedIds.carter, status: "issued", invoiceNumber: "HY-W-1001", currency: "USD", issuedAt: at(-3), dueAt: at(27), subtotalMinor: 9200n, totalMinor: 9200n, paidMinor: 0n, balanceMinor: 9200n, billingSnapshot: { customerName: "Carter Household", service: "Franchise demo service" } },
     ]).onConflictDoNothing();
     await tx.insert(invoiceItems).values([
       { id: uuid(420), tenantId: seedIds.happyTenant, invoiceId: seedIds.happyInvoice, jobId: seedIds.completedJob, serviceId: seedIds.weeklyService, description: "Weekly yard cleanup", quantity: "1", unitAmountMinor: 2500n, totalMinor: 2500n },

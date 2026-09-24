@@ -28,7 +28,7 @@ export function preferenceKeysForTemplate(templateKey?: string | null): string[]
 }
 
 /** A tenant-scoped connector is selected for every send; expired connections stay expired. */
-export async function sendThroughMessagingCapability(registry: ConnectorRegistry, input: { tenantId: string; channel: "email" | "sms"; recipient: string; subject?: string; body: string; idempotencyKey: string }): Promise<{ reference: string; status: "sent" }> {
+export async function sendThroughMessagingCapability(registry: ConnectorRegistry, input: { tenantId: string; channel: "email" | "sms"; recipient: string; subject?: string; body: string; idempotencyKey: string }): Promise<{ reference?: string; status: "sent" }> {
   let capability = registry.getCapability(input.tenantId, input.channel);
   if (!capability) {
     const installation = registry.getInstallation(input.tenantId, "mock-communication");
@@ -75,8 +75,8 @@ export async function processOutboundMessage(db: Database, registry: ConnectorRe
   try {
     const sent = await sendThroughMessagingCapability(registry, { tenantId: input.tenantId, channel: message.channel === "email" ? "email" : "sms", recipient: message.recipient, subject: message.renderedSubject ?? undefined, body: message.renderedBody, idempotencyKey: message.idempotencyKey });
     await db.transaction(async (tx) => {
-      await tx.update(outboundMessages).set({ status: "sent", providerReference: sent.reference, sentAt: now, failureCode: null, failureMessage: null, updatedAt: now }).where(and(eq(outboundMessages.id, message.id), eq(outboundMessages.tenantId, input.tenantId)));
-      await tx.insert(communicationEvents).values({ tenantId: input.tenantId, outboundMessageId: message.id, eventType: "sent", occurredAt: now, payload: { reference: sent.reference } });
+      await tx.update(outboundMessages).set({ status: "sent", providerReference: sent.reference ?? null, sentAt: now, failureCode: null, failureMessage: null, updatedAt: now }).where(and(eq(outboundMessages.id, message.id), eq(outboundMessages.tenantId, input.tenantId)));
+      await tx.insert(communicationEvents).values({ tenantId: input.tenantId, outboundMessageId: message.id, eventType: "sent", occurredAt: now, payload: { ...(sent.reference ? { reference: sent.reference } : {}), acceptedByProvider: true } });
     });
     return "sent";
   } catch (error) {

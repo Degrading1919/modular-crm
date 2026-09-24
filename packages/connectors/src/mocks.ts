@@ -1,5 +1,11 @@
 import { ConnectorRegistry, type ConnectorDefinition } from "./registry.ts";
 import { ConnectorError, type CapabilityKey, type ConnectorCategory, type ConnectorManifest, type Coordinates, type ScopedCapabilities } from "./types.ts";
+import { createTwilioConfiguredScope } from "./providers/twilio.ts";
+import { createOpenAiConfiguredScope } from "./providers/openai.ts";
+import { createGoogleMapsConfiguredScope } from "./providers/google-maps.ts";
+import { createMapboxConfiguredScope } from "./providers/mapbox.ts";
+import { createGoogleWorkspaceConnector } from "./providers/google-workspace.ts";
+import { createMicrosoft365ConnectorDefinition } from "./providers/microsoft-365.ts";
 
 function manifest(key: string, name: string, description: string, category: ConnectorCategory, capabilities: readonly CapabilityKey[], resources: readonly string[] = [], webhookSupport = false): ConnectorManifest {
   return { key, name, description, provider: "Modular CRM Test", icon: "flask", categories: [category], capabilities, authType: "local_mock", requiredScopes: [], environments: ["local", "test"], setupComplexity: "easy", discoverableResources: resources, webhookSupport, syncModes: [], version: "1.0.0", availability: "mock_complete" };
@@ -191,18 +197,43 @@ export const PLANNED_PROVIDER_DEFINITIONS: readonly ConnectorDefinition[] = [
   planned("square", "Square", "Square", "get_paid", ["payments"], "oauth2"),
   planned("quickbooks", "QuickBooks Online", "Intuit", "accounting", ["accounting"], "oauth2"),
   planned("xero", "Xero", "Xero", "accounting", ["accounting"], "oauth2"),
-  planned("google-workspace", "Google Workspace", "Google", "calendar", ["calendar", "email"], "oauth2"),
-  planned("microsoft-365", "Microsoft 365", "Microsoft", "calendar", ["calendar", "email"], "oauth2"),
-  planned("twilio", "Twilio", "Twilio", "communication", ["sms"], "api_key"),
-  planned("google-maps", "Google Maps Platform", "Google", "maps_routing", ["geocoding", "routing"], "api_key"),
-  planned("mapbox", "Mapbox", "Mapbox", "maps_routing", ["geocoding", "routing"], "api_key"),
-  planned("s3-compatible", "S3 compatible storage", "S3 compatible", "files", ["storage"], "service_account"),
-  planned("openai", "OpenAI", "OpenAI", "ai", ["ai"], "api_key"),
+  {
+    manifest: { key: "twilio", name: "Twilio", description: "Send text messages from your business messaging account.", provider: "Twilio", icon: "plug", categories: ["communication"], capabilities: ["sms"], authType: "api_key", requiredScopes: [], environments: ["test", "production"], setupComplexity: "guided", discoverableResources: ["sender"], webhookSupport: false, syncModes: [], version: "0.1.0", availability: "credentials_ready", credentialSetup: true, credentialFields: [
+      { key: "accountSid", label: "Twilio account ID", inputType: "password", helpText: "The account ID for the messaging account that owns the sender.", maxLength: 34 },
+      { key: "authToken", label: "Twilio auth token", inputType: "password", helpText: "Stored securely and used only by the server to send messages.", maxLength: 256 },
+      { key: "sender", label: "Verified sender or messaging service ID", inputType: "password", helpText: "Use an E.164 sender number or a Messaging Service ID.", maxLength: 128 },
+    ] },
+    createConfiguredScope: createTwilioConfiguredScope,
+  },
+  {
+    manifest: { key: "google-maps", name: "Google Maps Platform", description: "Find service addresses and calculate road distances, travel times and waypoint order.", provider: "Google", icon: "plug", categories: ["maps_routing"], capabilities: ["geocoding", "routing"], authType: "api_key", requiredScopes: [], environments: ["test", "production"], setupComplexity: "guided", discoverableResources: [], webhookSupport: false, syncModes: [], version: "0.1.0", availability: "credentials_ready", credentialSetup: true, credentialFields: [
+      { key: "apiKey", label: "Google Maps API key", inputType: "password", helpText: "Enable the Geocoding API and Routes API for this key.", maxLength: 512 },
+    ] },
+    createConfiguredScope: createGoogleMapsConfiguredScope,
+  },
+  {
+    manifest: { key: "mapbox", name: "Mapbox", description: "Find service addresses and calculate road routes with optional stop optimization.", provider: "Mapbox", icon: "plug", categories: ["maps_routing"], capabilities: ["geocoding", "routing"], authType: "api_key", requiredScopes: [], environments: ["test", "production"], setupComplexity: "guided", discoverableResources: [], webhookSupport: false, syncModes: [], version: "0.1.0", availability: "credentials_ready", credentialSetup: true, credentialFields: [
+      { key: "accessToken", label: "Mapbox access token", inputType: "password", helpText: "Use a token with Geocoding and Navigation API access.", maxLength: 1_024 },
+    ] },
+    createConfiguredScope: createMapboxConfiguredScope,
+  },
+  {
+    manifest: { key: "openai", name: "OpenAI", description: "Draft structured website copy with an optional writing assistant.", provider: "OpenAI", icon: "plug", categories: ["ai"], capabilities: ["ai"], authType: "api_key", requiredScopes: [], environments: ["test", "production"], setupComplexity: "guided", discoverableResources: [], webhookSupport: false, syncModes: [], version: "0.1.0", availability: "credentials_ready", credentialSetup: true, credentialFields: [
+      { key: "apiKey", label: "OpenAI API key", inputType: "password", helpText: "Stored securely and used only to draft requested content.", maxLength: 512 },
+    ] },
+    createConfiguredScope: createOpenAiConfiguredScope,
+  },
+];
+
+export const OAUTH_CONNECTOR_DEFINITIONS: readonly ConnectorDefinition[] = [
+  createGoogleWorkspaceConnector(),
+  createMicrosoft365ConnectorDefinition(),
 ];
 
 export function createMockConnectorRegistry(options: { includePlannedProviders?: boolean; now?: () => Date } = {}): ConnectorRegistry {
   const registry = new ConnectorRegistry(options.now);
   for (const definition of MOCK_CONNECTOR_DEFINITIONS) registry.register(definition);
+  for (const definition of OAUTH_CONNECTOR_DEFINITIONS) registry.register(definition);
   if (options.includePlannedProviders) for (const definition of PLANNED_PROVIDER_DEFINITIONS) registry.register(definition);
   return registry;
 }
