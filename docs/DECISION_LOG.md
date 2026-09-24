@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-09-24 — Research candidate industries exhaustively before consolidation
+
+- **Status:** Accepted
+- **Area:** Industry Packs
+- **Decision:** Research as many viable industries from the preferred candidate pool as practical, including near-duplicate and operationally similar businesses. Give each candidate its own evidence-backed research profile before deciding whether it becomes a distinct Industry Pack, a shared-pack variant, or no pack at all.
+- **Rationale:** Similar businesses can still differ in terminology, pricing, field data, workflows, customer expectations, packaging, or software pain. Pre-grouping them would hide those differences and reduce the value of the research corpus.
+- **Authoritative doc:** `docs/INDUSTRY_PACKS.md`
+
 ## 2026-09-24 — Sweaty Startup list seeds Industry Pack candidate generation
 
 - **Status:** Accepted
