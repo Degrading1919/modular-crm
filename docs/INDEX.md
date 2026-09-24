@@ -53,6 +53,7 @@ This repository is the source of truth. New implementation work should begin her
 ## Research
 
 - [REFERENCE_IMPLEMENTATIONS.md](./REFERENCE_IMPLEMENTATIONS.md)
+- [research/INDUSTRY_RESEARCH_PROFILE_TEMPLATE.md](./research/INDUSTRY_RESEARCH_PROFILE_TEMPLATE.md)
 - [research/SWEEP_AND_GO_FEATURE_AUDIT.md](./research/SWEEP_AND_GO_FEATURE_AUDIT.md)
 
 ## Agent workflow
