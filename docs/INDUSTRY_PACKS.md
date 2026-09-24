@@ -28,6 +28,14 @@ A pack may define:
 - inventory/part defaults where relevant
 - route/service-duration assumptions
 
+## Research before implementation
+
+Prospective Industry Packs should be researched using [the canonical Industry Research Profile template](./research/INDUSTRY_RESEARCH_PROFILE_TEMPLATE.md) before runtime implementation.
+
+Completed profiles belong under `docs/research/industry-packs/<industry-key>.md`. The profile preserves the evidence, uncertainty, competitor context, operator complaints, workflow realities, capability needs, and core-platform gaps behind the pack. The runtime Industry Pack should contain the resulting configuration, not the research corpus itself.
+
+Research workers should map findings to the existing `IndustryPack` contract, explicitly distinguish Industry Pack configuration from candidate shared-platform gaps, and leave unsupported or irrelevant fields unknown rather than inventing defaults. Multiple industries may be researched in parallel as long as each worker produces an independent profile using the same template.
+
 ## First reference Industry Pack: Pet Waste Removal
 
 Pet waste removal is the first complete reference implementation and should prove that the shared platform can support a route-dense recurring service business end to end.
