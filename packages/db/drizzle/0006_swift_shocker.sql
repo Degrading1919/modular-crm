@@ -1,0 +1,1 @@
+ALTER TABLE "field_operation_receipts" ADD COLUMN "result_related_id" uuid;

@@ -10,6 +10,8 @@ Fully functional deterministic local/test adapter.
 ### Credentials-ready
 Real provider adapter includes authorization/setup path, token handling, capability method boundaries, webhook/sync hooks, environment placeholders, and graceful "not configured" behavior. It can be activated when the developer registers an app and supplies credentials.
 
+The manifest uses the distinct `credentials_ready` availability value for a real provider setup path. `local_ready` remains reserved for local implementations and does not enable tenant credential entry. API-key and service-account definitions must also explicitly set `credentialSetup: true` and declare stable, labeled credential fields, including input type and any field-specific length limit; the shared endpoint validates submitted keys against this metadata. OAuth providers use the durable transaction primitives and expose routes only with a complete provider flow.
+
 ### Production-verified
 Requires real provider credentials/accounts and live validation. This is not required for the initial local Codex build unless credentials are available.
 
@@ -90,6 +92,8 @@ Request only the scopes needed for capabilities the user turns on.
 
 Do not request broad Gmail access merely to send outbound messages.
 
+The credentials-ready adapter uses a server-registered OAuth web client. Configure `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, enable the Calendar and Gmail APIs, and register `APP_BASE_URL/api/v1/connections/google-workspace/oauth/callback` as an authorized redirect URI. Calendar access requests event and calendar-list read scopes; email access requests only Gmail send. Offline access and incremental grants support background service reminders and adding a capability later. See Google's [web-server OAuth guide](https://developers.google.com/identity/protocols/oauth2/web-server), [Calendar event guide](https://developers.google.com/workspace/calendar/api/guides/create-events), and [Gmail send method](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/send).
+
 ### Microsoft 365
 
 Use Microsoft Graph for supported capabilities:
@@ -97,6 +101,8 @@ Use Microsoft Graph for supported capabilities:
 - Outlook calendar
 - Outlook email send
 - OneDrive/SharePoint file capability when enabled later
+
+Configure `MICROSOFT_365_CLIENT_ID`, `MICROSOFT_365_CLIENT_SECRET`, and the optional `MICROSOFT_365_TENANT` authority (`common` by default). Register `APP_BASE_URL/api/v1/connections/microsoft-365/oauth/callback` as a web redirect URI and grant delegated `Calendars.ReadWrite` and/or `Mail.Send` only when that capability is enabled. Disconnect clears locally held tokens; Microsoft does not expose a user-token revocation endpoint for this delegated flow. See Microsoft's [authorization-code flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow), [calendar event API](https://learn.microsoft.com/en-us/graph/api/calendar-post-events?view=graph-rest-1.0), and [sendMail API](https://learn.microsoft.com/en-us/graph/api/user-sendmail?view=graph-rest-1.0).
 
 Capabilities/scopes are enabled progressively.
 
@@ -140,7 +146,7 @@ Production targets may include:
 - Cloudflare R2
 - other compatible services
 
-This is an infrastructure connector/capability and normally not a tenant marketplace choice unless customer-owned storage is later supported.
+This is a platform-managed infrastructure connector/capability, configured with deployment environment values and excluded from tenant marketplace/setup. Local development falls back to the tenant-separated filesystem adapter when S3 configuration is absent. It is not a tenant marketplace choice unless customer-owned storage is later supported.
 
 ### AI
 

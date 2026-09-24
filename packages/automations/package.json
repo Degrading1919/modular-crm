@@ -1,0 +1,9 @@
+{
+  "name": "@modular-crm/automations",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": { "@modular-crm/config": "workspace:*" },
+  "scripts": { "test": "vitest run", "typecheck": "tsc --noEmit -p tsconfig.json" }
+}

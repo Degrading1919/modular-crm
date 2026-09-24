@@ -21,7 +21,8 @@ A pack may define:
 - reports
 - automations
 - dashboard defaults
-- recommended capabilities
+- structured product capability recommendations, including conditional recommendations based on onboarding answers
+- recommended connector capabilities
 - website copy/content defaults
 - website template preferences
 - inventory/part defaults where relevant
@@ -88,3 +89,5 @@ Possible configuration:
 Do not create industry-specific database tables unless a real product requirement cannot reasonably be modeled through the shared platform.
 
 Industry Packs should remain easy to add and revise without destabilizing the core product.
+
+Packs configure available functionality and recommend a small, relevant starting stack. They do not grant commercial entitlement or define fixed prices. A recommendation can be normally recommended, optional, usually unnecessary, or conditional; the tenant can accept it or customize the setup. The subscription system determines which modules the tenant owns, and capability enforcement remains outside the pack.

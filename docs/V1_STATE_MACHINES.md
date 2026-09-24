@@ -82,6 +82,8 @@ Primary states:
 
 `draft -> unscheduled -> scheduled -> dispatched -> en_route -> in_progress -> completed`
 
+Field work may move `in_progress -> paused -> in_progress` while retaining timer/status history.
+
 Alternative operational states:
 
 `skipped`
