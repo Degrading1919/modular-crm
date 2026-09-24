@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { and, eq, inArray, isNull, lt, or } from "drizzle-orm";
-import { type Database, automationRuns, customerContacts, customers, internalNotifications, invoices, jobs, memberships, messageTemplates, notes, outboundMessages, roleTemplates, ticketStatusDefinitions, ticketTypeDefinitions, tickets } from "@modular-crm/db";
+import {
+  type Database, automationRuns, customerContacts, customers, hasUsableFeature, internalNotifications, invoices,
+  jobs, loadTenantCapabilities, memberships, messageTemplates, notes, outboundMessages, roleTemplates,
+  ticketStatusDefinitions, ticketTypeDefinitions, tickets,
+} from "@modular-crm/db";
 import { evaluateAutomationRule, renderActionConfiguration, type AutomationAction, type AutomationPlan, type AutomationRule, type DomainEvent } from "@modular-crm/automations";
 import type { PgBoss } from "pg-boss";
 import { enqueueAutomationRun, enqueueOutboundMessage } from "./queues.js";
@@ -94,6 +98,15 @@ export async function processAutomationRun(db: Database, boss: PgBoss, input: { 
     .where(and(eq(automationRuns.id, input.runId), eq(automationRuns.tenantId, input.tenantId), inArray(automationRuns.status, ["queued", "retry"])))
     .returning();
   if (!run) return "skipped";
+  const capabilityState = await loadTenantCapabilities(db, input.tenantId, now);
+  if (!hasUsableFeature(capabilityState, "automation_workflows")) {
+    await db.update(automationRuns).set({
+      status: "failed", attempts: run.attempts + 1, completedAt: now,
+      errorCode: "capability_unavailable", errorMessage: "Automation workflows are not enabled for this business.",
+      nextRetryAt: null, updatedAt: now,
+    }).where(and(eq(automationRuns.id, run.id), eq(automationRuns.tenantId, input.tenantId)));
+    return "failed";
+  }
   const snapshot = run.contextSnapshot as unknown as RunSnapshot | undefined;
   const attempts = run.attempts + 1;
   const completed = new Set(snapshot?.completedActionKeys ?? []);

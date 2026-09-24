@@ -2,6 +2,7 @@ import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { PgBoss } from "pg-boss";
 import { closeDatabase, createDatabase, type Database } from "@modular-crm/db";
+import { isSecretEnvelope, openSecret } from "@modular-crm/domain";
 import { createMockConnectorRegistry } from "@modular-crm/connectors";
 import { enqueuePendingAutomationRuns, processAutomationRun } from "./automations-db.js";
 import { processDomainEvent, publishPendingDomainEvents } from "./events-db.js";
@@ -19,7 +20,15 @@ export function environmentSecretResolver(env: Record<string, string | undefined
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("WEBHOOK_SECRETS_JSON must be a JSON object");
     entries = Object.fromEntries(Object.entries(parsed).filter((item): item is [string, string] => typeof item[1] === "string"));
   }
-  return async (reference) => entries[reference] ?? (reference === "local-test" ? env.WEBHOOK_TEST_SECRET : undefined);
+  return async (reference) => {
+    if (entries[reference] !== undefined) return entries[reference];
+    if (isSecretEnvelope(reference)) {
+      const key = env.WEBHOOK_SECRET_ENCRYPTION_KEY;
+      if (!key) throw new Error("WEBHOOK_SECRET_ENCRYPTION_KEY is required to decrypt webhook signing secrets");
+      return openSecret(reference, key);
+    }
+    return reference === "local-test" ? env.WEBHOOK_TEST_SECRET : undefined;
+  };
 }
 
 export async function registerWorkerHandlers(db: Database, boss: PgBoss, resolveSecret: WebhookSecretResolver): Promise<void> {

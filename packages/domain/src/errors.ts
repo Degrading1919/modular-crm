@@ -1,6 +1,7 @@
 export type DomainErrorCode =
   | "UNAUTHENTICATED"
   | "FORBIDDEN"
+  | "CAPABILITY_UNAVAILABLE"
   | "NOT_FOUND"
   | "VALIDATION_ERROR"
   | "INVALID_TRANSITION"

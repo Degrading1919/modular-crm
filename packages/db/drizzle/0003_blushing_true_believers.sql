@@ -1,0 +1,1 @@
+ALTER TABLE "tenant_capability_grants" DROP CONSTRAINT "tenant_capability_grants_revocation_ck";

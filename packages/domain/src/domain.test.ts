@@ -1,10 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { assertTransition } from "./states.ts";
 import { canReadResource, permissionsForRole, type StaffActor } from "./permissions.ts";
+
 import { generateOccurrences } from "./recurrence.ts";
 import { makeInvoiceSnapshot, invoiceBalance } from "./billing.ts";
 import { calculateGrossPay } from "./payroll.ts";
 import { makeTransfer, stockBalance } from "./inventory.ts";
+
+it("lets office managers operate payroll without managing compensation policy", () => {
+  const permissions = permissionsForRole("office");
+  for (const key of ["payroll.read", "payroll.calculate", "payroll.review", "payroll.approve", "payroll.export", "reports.payroll_read", "compensation.read"] as const) {
+    expect(permissions.has(key)).toBe(true);
+  }
+  expect(permissions.has("compensation.manage")).toBe(false);
+  expect(permissions.has("reports.franchise_read")).toBe(false);
+});
 
 describe("authorization", () => {
   const actor: StaffActor = { kind: "staff", userId: "tech-a", tenantId: "tenant-a", role: "technician", permissions: permissionsForRole("technician"), locationIds: new Set(["branch-a"]), allLocations: false };

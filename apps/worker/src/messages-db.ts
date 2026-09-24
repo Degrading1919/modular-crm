@@ -1,5 +1,8 @@
 import { and, desc, eq, inArray, lt } from "drizzle-orm";
-import { type Database, communicationEvents, consentRecords, notificationPreferences, outboundMessages } from "@modular-crm/db";
+import {
+  type Database, communicationEvents, consentRecords, hasUsableFeature, loadTenantCapabilities,
+  notificationPreferences, outboundMessages,
+} from "@modular-crm/db";
 import { ConnectorError, type ConnectorRegistry } from "@modular-crm/connectors";
 import type { PgBoss } from "pg-boss";
 import { enqueueOutboundMessage } from "./queues.js";
@@ -45,6 +48,18 @@ export async function processOutboundMessage(db: Database, registry: ConnectorRe
     .where(and(eq(outboundMessages.id, input.messageId), eq(outboundMessages.tenantId, input.tenantId), inArray(outboundMessages.status, ["queued", "retry"])))
     .returning();
   if (!message) return "skipped";
+  const capabilityState = await loadTenantCapabilities(db, input.tenantId, now);
+  if (!hasUsableFeature(capabilityState, "customer_notifications")) {
+    await db.transaction(async (tx) => {
+      await tx.update(outboundMessages).set({ status: "suppressed", failureCode: "capability_unavailable", failureMessage: "Customer notifications are not enabled for this business.", updatedAt: now })
+        .where(and(eq(outboundMessages.id, message.id), eq(outboundMessages.tenantId, input.tenantId)));
+      await tx.insert(communicationEvents).values({
+        tenantId: input.tenantId, outboundMessageId: message.id, eventType: "suppressed", occurredAt: now,
+        payload: { reason: "capability_unavailable" },
+      });
+    });
+    return "suppressed";
+  }
   const preferenceKeys = preferenceKeysForTemplate(message.templateKey);
   const preferences = message.customerId ? await db.select().from(notificationPreferences).where(and(eq(notificationPreferences.tenantId, input.tenantId), eq(notificationPreferences.customerId, message.customerId), inArray(notificationPreferences.eventKey, preferenceKeys))) : [];
   const preference = preferences.find((item) => item.eventKey === message.templateKey) ?? preferences[0];

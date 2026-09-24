@@ -30,6 +30,16 @@ An owner can:
 - publish a basic generated website
 - invite staff
 
+## Modular capability setup
+
+- The Industry Pack uses plain-language onboarding answers to recommend a focused capability setup; the owner can accept it or customize it.
+- The owner can add or remove available modules later in the same tenant without a migration or a new application.
+- Module definitions and feature membership are data-defined; prices, allowances, and staff-seat charges are not fixed in application code.
+- Entitlement, enabled/configured state, and navigation prominence can differ, and server-side actions enforce entitlement and dependencies.
+- Removing a module prevents new use while prior operational and financial records remain available for history and export.
+- Workers, automations, connectors, public features, and portal actions honor the same effective capability state when they act for a tenant.
+- Usage measurement and account credits/adjustments can be recorded independently of a payment provider.
+
 ## Import and migration
 
 - Owner can upload a customer CSV.

@@ -239,25 +239,11 @@ exist in V1 but remain unobtrusive until:
 
 The application should not make a one-person operator feel like they purchased an ERP.
 
-## Module enablement
+## Recommended capability setup
 
-Tenant module settings control navigation visibility and onboarding prompts, not database/code availability.
+After the owner chooses an Industry Pack and answers outcome-oriented questions, offer a focused recommended setup with **Accept Recommended Setup** and **Customize My Setup** paths. Explain the subscription impact of changes in ordinary business language. The pack provides recommendations and defaults; a separate entitlement decision grants access.
 
-Recommended defaults for Pet Waste Removal:
-
-- CRM: on
-- scheduling/jobs: on
-- routing: on
-- billing: on
-- customer portal: on
-- website: on
-- communications: on
-- automations: on
-- time tracking: on
-- payroll: off until staff/pay configured
-- inventory: off by default
-- franchise: off unless parent/multi-location setup
-- advanced reports: available but not onboarding-blocking
+For each capability, keep commercial entitlement, operational enablement/configuration, and UI prominence separate. Hiding navigation must never be the only access control. A one-person operator should see the work they chose first, while subscribed capabilities can be enabled later without changing applications or migrating records.
 
 ## Minimal-feedback principle
 

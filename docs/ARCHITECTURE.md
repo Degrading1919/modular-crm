@@ -38,9 +38,23 @@ The shared application should own common concepts such as:
 - integrations
 - public website content
 
+This common data model supports every capability without separate tenant deployments or Industry Pack forks. The exact required platform foundation and commercial module boundaries are configurable rather than embedded in database table names.
+
+## Capability and subscription boundary
+
+Keep a canonical registry of stable functional capabilities and data-defined commercial modules. Module definitions carry display metadata, availability, dependencies, compatibility, and the functional capabilities they provide. Dependencies are evaluated centrally. Connector capabilities describe provider functions and remain a separate namespace from commercial product capabilities.
+
+Tenant entitlement records are authoritative for the right to use a module. Tenant enablement/configuration and UI visibility or prominence are stored separately. Industry Pack recommendations and onboarding answers may propose a setup but cannot create an entitlement by themselves. Existing tenants and local demonstrations may receive explicit grants so previously working V1 flows remain available.
+
+Authorized use requires both a tenant capability decision and the actor's role, customer, or location permissions. Apply the decision at server action boundaries used by APIs, background workers, automations, connectors, public sites, and the customer portal. Frontend navigation consumes the same effective state for presentation. Disabling or removing a module prevents future active work while retaining historical records and appropriate read/export access.
+
+Keep commercial accounting provider neutral. Module grants, usage measurements, allowances, account credits, promotions, and administrative adjustments should remain distinct records so a future billing connector executes payments without defining the product model. Memberships and role permissions do not imply billable seats; commercial seat rules may distinguish administrators from field users or use business volume instead.
+
 ## Authorization model
 
 Authorization should be tenant-aware and permission-based.
+
+Role permission checks and commercial capability checks answer different questions and must both be enforced for an action that belongs to a subscribable capability.
 
 Internal users belong to one or more tenants through memberships. A membership receives a role template, and the role template resolves to granular permissions.
 

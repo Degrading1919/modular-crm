@@ -7,8 +7,9 @@ import { eq } from "drizzle-orm";
 import { fileURLToPath } from "node:url";
 import type { Database } from "../src/client.ts";
 import { createTenantRepository } from "../src/tenant-repository.ts";
+import { INITIAL_CAPABILITY_MODULE_KEYS } from "../src/initial-capability-catalog.ts";
 import { seedDevelopment, seedIds, seedUserIds } from "../src/seed.ts";
-import { customerAssets, customerContacts, customers, connectorInstallations, domainEvents, invoices, jobs, paymentAllocations, schema, tenants } from "../src/schema/index.ts";
+import { capabilityModules, customerAssets, customerContacts, customers, connectorInstallations, domainEvents, invoices, jobs, paymentAllocations, schema, tenantCapabilityGrants, tenants } from "../src/schema/index.ts";
 
 let pglite: PGlite;
 let db: Database;
@@ -42,6 +43,14 @@ describe("tenant-scoped persistence", () => {
     expect((await db.select().from(domainEvents)).length).toBe(before.events);
     const [completionEvent] = await db.select().from(domainEvents).where(eq(domainEvents.id, "00000000-0000-4000-8000-000000000321"));
     expect(completionEvent.publishedAt).not.toBeNull();
+
+    const catalogModules = await db.select().from(capabilityModules);
+    const grants = await db.select().from(tenantCapabilityGrants);
+    for (const tenantId of [seedIds.happyTenant, seedIds.cleanTenant]) {
+      const tenantGrants = grants.filter((grant) => grant.tenantId === tenantId && grant.revokedAt === null && grant.effectiveUntil === null);
+      expect(new Set(tenantGrants.map(({ moduleId }) => moduleId)).size).toBe(INITIAL_CAPABILITY_MODULE_KEYS.length);
+      expect(tenantGrants.map(({ moduleId }) => moduleId).sort()).toEqual(catalogModules.map(({ id }) => id).sort());
+    }
   });
 
   it("repairs the customer-assets archive column on a legacy schema", async () => {

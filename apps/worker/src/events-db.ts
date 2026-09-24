@@ -1,5 +1,8 @@
 import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
-import { type Database, automationRules, automationRuns, domainEvents, webhookDeliveries, webhookSubscriptions } from "@modular-crm/db";
+import {
+  type Database, automationRules, automationRuns, domainEvents, hasUsableFeature, loadTenantCapabilities,
+  webhookDeliveries, webhookSubscriptions,
+} from "@modular-crm/db";
 import { automationRunKey, planAutomationRun, type AutomationAction, type AutomationRule, type DomainEvent } from "@modular-crm/automations";
 import type { PgBoss } from "pg-boss";
 import { enqueueAutomationRun, enqueueDomainEvent, enqueueWebhookDelivery } from "./queues.js";
@@ -7,6 +10,113 @@ import { matchesEventPattern } from "./webhook.js";
 
 type EventRow = typeof domainEvents.$inferSelect;
 type RuleRow = typeof automationRules.$inferSelect;
+
+const WORKER_ACTION_CONFIG_KEYS: Readonly<Record<string, ReadonlySet<string>>> = {
+  send_email: new Set(["templateKey", "to", "subject", "body", "customerId"]),
+  send_sms: new Set(["templateKey", "to", "subject", "body", "customerId"]),
+  create_ticket: new Set(["type", "title", "description"]),
+  add_note: new Set(["body"]),
+  notify_staff: new Set(["title", "body"]),
+};
+const ACTION_METADATA_KEYS = new Set(["delay", "continueOnError", "dedupeKeyTemplate"]);
+const SEEDED_NOTIFICATION_COPY: Readonly<Record<string, string>> = {
+  manual_review: "A new signup needs manual review.",
+  payment_failed: "A customer's payment failed.",
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeActionMetadata(item: Record<string, unknown>): Pick<AutomationAction, "delay" | "continueOnError" | "dedupeKeyTemplate"> {
+  let delay: AutomationAction["delay"];
+  if (item.delay !== undefined) {
+    if (!isRecord(item.delay)) throw new Error("Automation delay is invalid");
+    if (Object.keys(item.delay).length === 1 && Number.isSafeInteger(item.delay.afterEventMinutes)
+      && Number(item.delay.afterEventMinutes) >= 0 && Number(item.delay.afterEventMinutes) <= 525_600) {
+      delay = { afterEventMinutes: Number(item.delay.afterEventMinutes) };
+    } else if (Object.keys(item.delay).length === 2 && typeof item.delay.relativeToField === "string"
+      && /^[a-zA-Z_][a-zA-Z0-9_.]{0,199}$/.test(item.delay.relativeToField)
+      && Number.isSafeInteger(item.delay.offsetMinutes) && Math.abs(Number(item.delay.offsetMinutes)) <= 525_600) {
+      delay = { relativeToField: item.delay.relativeToField, offsetMinutes: Number(item.delay.offsetMinutes) };
+    } else throw new Error("Automation delay is invalid");
+  }
+  if (item.continueOnError !== undefined && typeof item.continueOnError !== "boolean") throw new Error("Automation continueOnError is invalid");
+  if (item.dedupeKeyTemplate !== undefined && (typeof item.dedupeKeyTemplate !== "string" || item.dedupeKeyTemplate.length > 300)) {
+    throw new Error("Automation deduplication key is invalid");
+  }
+  return {
+    ...(delay ? { delay } : {}),
+    ...(typeof item.continueOnError === "boolean" ? { continueOnError: item.continueOnError } : {}),
+    ...(typeof item.dedupeKeyTemplate === "string" ? { dedupeKeyTemplate: item.dedupeKeyTemplate } : {}),
+  };
+}
+
+function normalizeAutomationAction(item: Record<string, unknown>, source: RuleRow["source"], sourceKey: RuleRow["sourceKey"]): AutomationAction {
+  // Signup seeding flattens `{ actionType: "create_ticket", configuration: { type } }`
+  // into the same `type` property, so recover this one known recipe by its stable source key.
+  if (source === "industry_pack" && sourceKey === "pause-request" && item.type === "plan_change_review"
+    && item.actionType === undefined && Object.keys(item).every((key) => key === "type" || ACTION_METADATA_KEYS.has(key))) {
+    return { actionType: "create_ticket", configuration: { type: "plan_change_review" }, ...normalizeActionMetadata(item) };
+  }
+  if (item.actionType !== undefined && item.type !== undefined && item.actionType !== item.type) {
+    throw new Error("Automation action type is ambiguous");
+  }
+  const rawType = item.actionType ?? item.type;
+  if (rawType === "message.send") {
+    if (item.channel !== "email" && item.channel !== "sms") throw new Error("Legacy message action channel is invalid");
+    if (item.template !== undefined && typeof item.template !== "string") throw new Error("Legacy message template is invalid");
+    const allowed = new Set(["type", "actionType", "channel", "template", ...ACTION_METADATA_KEYS]);
+    if (Object.keys(item).some((key) => !allowed.has(key))) throw new Error("Legacy message action contains an unsupported setting");
+    const metadata = normalizeActionMetadata(item);
+    return {
+      actionType: item.channel === "email" ? "send_email" : "send_sms",
+      configuration: { templateKey: typeof item.template === "string" ? item.template : "" },
+      ...metadata,
+    };
+  }
+  if (typeof rawType !== "string" || !Object.hasOwn(WORKER_ACTION_CONFIG_KEYS, rawType)) {
+    throw new Error(`Automation action ${String(rawType ?? "(missing)")} is not supported by the worker`);
+  }
+
+  const isNested = item.configuration !== undefined;
+  if (isNested && !isRecord(item.configuration)) throw new Error("Automation action configuration is invalid");
+  const configSource = (isNested ? item.configuration : item) as Record<string, unknown>;
+  const allowedConfig = WORKER_ACTION_CONFIG_KEYS[rawType]!;
+  const configuration: Record<string, unknown> = {};
+  const seededNotificationDetails: string[] = [];
+  for (const [key, value] of Object.entries(configSource)) {
+    if (!isNested && (key === "type" || key === "actionType" || ACTION_METADATA_KEYS.has(key))) continue;
+    if (source === "industry_pack" && rawType === "notify_staff" && (key === "when" || key === "reason")) {
+      if (typeof value !== "string" || !Object.hasOwn(SEEDED_NOTIFICATION_COPY, value)) {
+        throw new Error(`The seeded notify_staff action does not support ${key}=${String(value)}`);
+      }
+      seededNotificationDetails.push(SEEDED_NOTIFICATION_COPY[value]!);
+      continue;
+    }
+    if (!allowedConfig.has(key)) throw new Error(`The ${rawType} action does not support ${key}`);
+    const maxLength = key === "body" || key === "description" ? 5_000 : 254;
+    if (typeof value !== "string" || value.length > maxLength) throw new Error(`The ${key} action setting is invalid`);
+    configuration[key] = value.trim();
+  }
+  if (seededNotificationDetails.length) {
+    if (configuration.body !== undefined) throw new Error("Seeded notification details cannot be combined with a custom body");
+    configuration.body = seededNotificationDetails.join(" ");
+  }
+  if (rawType === "add_note" && !String(configuration.body ?? "").trim()) throw new Error("The add_note action needs a body");
+
+  const allowedProperties = new Set(["type", "actionType", "configuration", ...ACTION_METADATA_KEYS]);
+  if (isNested) {
+    if (Object.keys(item).some((key) => !allowedProperties.has(key))) throw new Error("Automation action contains an unsupported setting");
+  } else {
+    for (const key of Object.keys(item)) {
+      if (key === "type" || key === "actionType" || ACTION_METADATA_KEYS.has(key) || allowedConfig.has(key)) continue;
+      if (source === "industry_pack" && rawType === "notify_staff" && (key === "when" || key === "reason")) continue;
+      throw new Error(`The ${rawType} action does not support ${key}`);
+    }
+  }
+  return { actionType: rawType as AutomationAction["actionType"], configuration, ...normalizeActionMetadata(item) };
+}
 
 export function toAutomationEvent(row: EventRow): DomainEvent | undefined {
   if (!row.tenantId) return undefined;
@@ -25,11 +135,8 @@ export function normalizeAutomationRule(row: RuleRow): AutomationRule {
   const trigger = row.triggerConfig as { event?: unknown; filters?: AutomationRule["conditions"] };
   if (typeof trigger.event !== "string") throw new Error("Automation trigger event is missing");
   const actions = row.actions.map((raw) => {
-    if (!raw || typeof raw !== "object") throw new Error("Automation action must be an object");
-    const item = raw as Record<string, unknown>;
-    if (item.type === "message.send" && (item.channel === "email" || item.channel === "sms")) return { actionType: item.channel === "email" ? "send_email" : "send_sms", configuration: { templateKey: String(item.template ?? "") } } satisfies AutomationAction;
-    if (typeof item.actionType !== "string" || !item.configuration || typeof item.configuration !== "object") throw new Error("Automation action configuration is invalid");
-    return item as unknown as AutomationAction;
+    if (!isRecord(raw)) throw new Error("Automation action must be an object");
+    return normalizeAutomationAction(raw, row.source, row.sourceKey);
   });
   const conditions = row.conditions && Object.keys(row.conditions).length ? row.conditions as AutomationRule["conditions"] : undefined;
   return {
@@ -60,7 +167,10 @@ export async function processDomainEvent(db: Database, boss: PgBoss, input: { te
   const [row] = await db.select().from(domainEvents).where(and(eq(domainEvents.id, input.eventId), eq(domainEvents.tenantId, input.tenantId))).limit(1);
   if (!row) return { automationRuns: 0, webhookDeliveries: 0 };
   const event = toAutomationEvent(row)!;
-  const rules = await db.select().from(automationRules).where(and(eq(automationRules.tenantId, input.tenantId), eq(automationRules.status, "active"), isNull(automationRules.archivedAt)));
+  const capabilityState = await loadTenantCapabilities(db, input.tenantId);
+  const rules = hasUsableFeature(capabilityState, "automation_workflows")
+    ? await db.select().from(automationRules).where(and(eq(automationRules.tenantId, input.tenantId), eq(automationRules.status, "active"), isNull(automationRules.archivedAt)))
+    : [];
   let automationCount = 0;
   for (const ruleRow of rules) {
     let rule: AutomationRule;

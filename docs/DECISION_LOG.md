@@ -4,6 +4,15 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-09-23 — Modular capability subscriptions complement Industry Packs
+
+- **Status:** Accepted
+- **Area:** Business Model
+- **Decision:** Modular CRM remains one horizontal platform with a small required core, data-defined independently subscribable capability modules, and Industry Packs that recommend and configure a focused setup. Entitlement, enablement/configuration, and UI prominence are separate; server actions enforce access, while module removal preserves history. Pricing, module names, allowances, and seat rules remain open rather than hard-coded.
+- **Rationale:** Small service businesses need depth in relevant workflows without paying for or navigating unrelated complexity, and should be able to grow without migrating systems.
+- **Authoritative doc:** `docs/PRODUCT_SCOPE.md`
+- **Supersedes:** The visibility-only module-setting rule in `docs/V1_ONBOARDING.md`
+
 ## 2026-09-23 — Durable local file adapter for Docker-free development
 
 - **Status:** Accepted

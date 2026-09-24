@@ -15,6 +15,20 @@
       "when": 1790185644068,
       "tag": "0001_repair_customer_assets_archived_at",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790207922073,
+      "tag": "0002_absurd_wild_pack",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1790208170446,
+      "tag": "0003_blushing_true_believers",
+      "breakpoints": true
     }
   ]
 }

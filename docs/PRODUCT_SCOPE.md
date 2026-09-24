@@ -34,6 +34,12 @@ The internal product is one shared platform.
 
 The external experience is verticalized through Industry Packs.
 
+Every tenant receives a small platform foundation. Operational capabilities can be grouped into independently subscribable modules within that same application. The commercial groupings, prices, allowances, and seat rules remain configurable product decisions; the illustrative V1 feature areas below are not fixed subscription packages.
+
+An Industry Pack configures niche behavior and recommends an appropriate capability stack using the business's onboarding answers. Recommendations do not grant access. A tenant's commercial entitlement, its enabled/configured state, and the prominence of a capability in the user experience are separate choices. Server behavior must enforce access as well as the UI reflecting it.
+
+Owners should be able to start with a focused setup and add or remove capabilities later without moving their data or changing applications. Removing a capability stops new operational use according to its policy while preserving historical operational and financial records. The customer promise is: **Software built around your business. Start with exactly what you need and add capabilities as you grow.**
+
 A septic company should feel that the product was built for septic work. A chimney sweep, hood cleaner, appliance repair company, or small-engine shop should receive different language and workflow defaults while still using the same platform.
 
 ## Core business lifecycle
@@ -110,6 +116,8 @@ Primary capabilities:
 - technician assignment and operational changes
 
 Sensitive business configuration, subscription ownership, destructive tenant actions, and security administration are owner-controlled by default.
+
+Commercial staff or field-user charges are distinct from authentication, memberships, and role permissions. The product must allow inexpensive or unlimited field users as well as other future pricing models without changing the identity model.
 
 ### Field Technician
 

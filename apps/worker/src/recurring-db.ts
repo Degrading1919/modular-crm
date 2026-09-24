@@ -1,5 +1,8 @@
 import { and, eq } from "drizzle-orm";
-import { type Database, customers, domainEvents, jobStatusEvents, jobs, recurrenceRules, recurringGenerationLedger, servicePlans, services } from "@modular-crm/db";
+import {
+  type Database, customers, domainEvents, hasUsableFeature, jobStatusEvents, jobs, loadTenantCapabilities,
+  recurrenceRules, recurringGenerationLedger, servicePlans, services,
+} from "@modular-crm/db";
 import { addCalendarDays, localDate, planRecurringOccurrences, type RecurringPlan } from "./recurrence.js";
 
 export type RecurringGenerationRequest = { tenantId?: string; planId?: string; through?: string; horizonDays?: number; now?: Date };
@@ -20,7 +23,14 @@ export async function generateRecurringJobs(db: Database, request: RecurringGene
     .where(and(...filters));
   let created = 0;
   let existing = 0;
+  const usableByTenant = new Map<string, boolean>();
   for (const row of rows) {
+    let usable = usableByTenant.get(row.plan.tenantId);
+    if (usable === undefined) {
+      usable = hasUsableFeature(await loadTenantCapabilities(db, row.plan.tenantId, now), "recurring_service_management");
+      usableByTenant.set(row.plan.tenantId, usable);
+    }
+    if (!usable) continue;
     const from = localDate(now, row.recurrence.timezone);
     const through = request.through ?? addCalendarDays(from, horizonDays);
     const plan: RecurringPlan = {

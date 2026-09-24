@@ -1,4 +1,10 @@
+import { and, eq, inArray } from "drizzle-orm";
 import type { Database } from "./client.ts";
+import {
+  grantTenantCapabilityModules,
+  INITIAL_CAPABILITY_MODULE_KEYS,
+  installInitialCapabilityCatalog,
+} from "./initial-capability-catalog.ts";
 import {
   account, user, tenants, organizations, organizationLocations, roleTemplates, permissions, rolePermissions,
   memberships, membershipLocationScopes, customers, customerContacts, serviceLocations, customerAssets,
@@ -78,6 +84,7 @@ const permissionCatalog: Record<string, string[]> = {
 export async function seedDevelopment(db: Database, actorIds: Partial<Record<SeedActorKey, string>> = {}) {
   const actors = { ...seedUserIds, ...actorIds };
   await db.transaction(async (tx) => {
+    await installInitialCapabilityCatalog(tx);
     await tx.insert(user).values([
       { id: actors.happyOwner, name: "Olivia Owner", email: "owner@happyyards.test", emailVerified: true },
       { id: actors.happyManager, name: "Morgan Manager", email: "manager@happyyards.test", emailVerified: true },
@@ -93,6 +100,14 @@ export async function seedDevelopment(db: Database, actorIds: Partial<Record<See
       { id: seedIds.happyTenant, name: "Happy Yards Pet Waste", slug: "happy-yards", status: "active", industryPackKey: "pet-waste-removal", industryPackVersion: "1.0.0" },
       { id: seedIds.cleanTenant, name: "CleanPaws Route Service", slug: "cleanpaws", status: "active", industryPackKey: "pet-waste-removal", industryPackVersion: "1.0.0" },
     ]).onConflictDoNothing();
+    await grantTenantCapabilityModules(tx, seedIds.happyTenant, INITIAL_CAPABILITY_MODULE_KEYS, {
+      source: "development_seed",
+      sourceReference: "seedDevelopment",
+    });
+    await grantTenantCapabilityModules(tx, seedIds.cleanTenant, INITIAL_CAPABILITY_MODULE_KEYS, {
+      source: "development_seed",
+      sourceReference: "seedDevelopment",
+    });
     await tx.insert(organizations).values([
       { id: seedIds.happyOrganization, tenantId: seedIds.happyTenant, organizationType: "business", legalName: "Happy Yards Pet Waste LLC", displayName: "Happy Yards Pet Waste", email: "hello@happyyards.local" },
       { id: seedIds.cleanOrganization, tenantId: seedIds.cleanTenant, organizationType: "business", legalName: "CleanPaws Route Service LLC", displayName: "CleanPaws Route Service", email: "hello@cleanpaws.local" },
@@ -112,15 +127,24 @@ export async function seedDevelopment(db: Database, actorIds: Partial<Record<See
     ]).onConflictDoNothing();
     const allPermissionKeys = Object.entries(permissionCatalog).flatMap(([category, actions]) => actions.map((action) => ({ key: `${category}.${action}`, category, description: `${category} ${action.replaceAll("_", " ")}` })));
     await tx.insert(permissions).values(allPermissionKeys).onConflictDoNothing();
-    const officeCategories = new Set(["leads", "customers", "estimates", "schedule", "jobs", "routes", "invoices", "payments", "communications", "tickets", "time", "mileage", "inventory", "reports"]);
+    const officeCategories = new Set(["leads", "customers", "estimates", "schedule", "jobs", "routes", "invoices", "payments", "communications", "tickets", "time", "mileage", "inventory", "payroll", "reports"]);
+    const officeDeniedKeys = new Set(["invoices.void", "payments.refund", "reports.franchise_read"]);
     const technicianKeys = new Set(["customers.read", "schedule.read", "jobs.read", "jobs.start", "jobs.complete", "jobs.skip", "jobs.forms_submit", "jobs.files_add", "routes.read", "tickets.read", "tickets.create", "time.own_read", "time.own_create", "time.own_correct_request", "mileage.own_manage", "inventory.read", "inventory.consume"]);
     await tx.insert(rolePermissions).values(allPermissionKeys.flatMap(({ key, category }) => [
       { roleTemplateId: seedIds.happyOwnerRole, permissionKey: key, allowed: true },
       { roleTemplateId: seedIds.cleanOwnerRole, permissionKey: key, allowed: true },
-      { roleTemplateId: seedIds.happyOfficeRole, permissionKey: key, allowed: officeCategories.has(category) },
+      { roleTemplateId: seedIds.happyOfficeRole, permissionKey: key, allowed: (officeCategories.has(category) && !officeDeniedKeys.has(key)) || key === "compensation.read" },
       { roleTemplateId: seedIds.happyTechRole, permissionKey: key, allowed: technicianKeys.has(key) },
       { roleTemplateId: seedIds.cleanTechRole, permissionKey: key, allowed: technicianKeys.has(key) },
     ])).onConflictDoNothing();
+    await tx.update(rolePermissions).set({ allowed: true }).where(and(
+      eq(rolePermissions.roleTemplateId, seedIds.happyOfficeRole),
+      inArray(rolePermissions.permissionKey, ["compensation.read", "payroll.read", "payroll.calculate", "payroll.review", "payroll.approve", "payroll.export"]),
+    ));
+    await tx.update(rolePermissions).set({ allowed: false }).where(and(
+      eq(rolePermissions.roleTemplateId, seedIds.happyOfficeRole),
+      inArray(rolePermissions.permissionKey, ["invoices.void", "payments.refund", "reports.franchise_read"]),
+    ));
 
     await tx.insert(memberships).values([
       { id: seedIds.oliviaMembership, tenantId: seedIds.happyTenant, userId: actors.happyOwner, organizationId: seedIds.happyOrganization, defaultLocationId: seedIds.augusta, roleTemplateId: seedIds.happyOwnerRole, status: "active", joinedAt: at(-30) },

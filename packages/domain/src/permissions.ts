@@ -28,12 +28,12 @@ export type RoleTemplate = "owner" | "office" | "technician";
 
 const officeDenied = new Set<Permission>([
   "tenant.update", "tenant.billing_manage", "tenant.security_manage", "tenant.audit_read", "tenant.delete",
-  "organization.franchise_manage", "organization.rollup_reports_read", "roles.manage", "compensation.read", "compensation.manage",
+  "organization.franchise_manage", "organization.rollup_reports_read", "roles.manage", "compensation.manage",
   "staff.invite", "staff.deactivate", "services.manage", "pricing.manage", "promotions.manage",
-  "invoices.void", "payments.refund", "billing.settings_manage", "tax.manage", "payroll.read", "payroll.calculate", "payroll.review", "payroll.approve", "payroll.export",
+  "invoices.void", "payments.refund", "billing.settings_manage", "tax.manage",
   "automations.create", "automations.update", "automations.activate", "automations.archive", "automations.runs_retry",
   "connectors.install", "connectors.configure", "connectors.disconnect", "connectors.sync_manage", "website.publish", "website.domains_manage",
-  "reports.payroll_read", "reports.franchise_read",
+  "reports.franchise_read",
 ]);
 
 const technicianAllowed = new Set<Permission>([
