@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-09-24 — Sweaty Startup list seeds Industry Pack candidate generation
+
+- **Status:** Accepted
+- **Area:** Industry Packs
+- **Decision:** Use The Sweaty Startup's `Businesses I Love` list as the preferred starting pool for generating prospective service-business Industry Pack candidates. Inclusion in the list does not itself justify a separate pack; the canonical industry research profile still determines whether a candidate needs its own pack, belongs as a variant, or is a poor fit.
+- **Rationale:** The list provides a broad, service-business-focused universe spanning home services, trades, vehicles, events, business services, real estate, hospitality, and specialized field work, which is well suited to parallel research and platform stress-testing.
+- **Authoritative doc:** `docs/INDUSTRY_PACKS.md`
+
 ## 2026-09-24 — Industry Packs use a canonical evidence-backed research profile
 
 - **Status:** Accepted
