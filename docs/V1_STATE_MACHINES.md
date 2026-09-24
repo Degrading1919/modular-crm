@@ -74,7 +74,8 @@ Rules:
 - Pause may be bounded by start/end dates or indefinite.
 - Cancellation stops future generation but does not remove already completed work.
 - Future generated jobs may be canceled automatically based on tenant policy.
-- Pricing changes use effective dates and do not retroactively rewrite historical invoices/jobs.
+- Frequency and pricing changes retain effective-dated versions and do not retroactively rewrite historical jobs or invoices. Newly generated jobs snapshot the frequency and price effective on the service date; existing generated future jobs keep their prior snapshots by default.
+- Existing generated future jobs are kept by default. When explicitly requested, `cancel_unstarted` cancels generated draft, unscheduled, and scheduled jobs on or after the effective date; dispatched and started jobs remain unchanged.
 
 ## Job
 

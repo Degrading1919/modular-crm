@@ -1,14 +1,14 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import {
   type Database, customers, domainEvents, hasUsableFeature, jobStatusEvents, jobs, loadTenantCapabilities,
   recurrenceRules, recurringGenerationLedger, servicePlans, services,
 } from "@modular-crm/db";
-import { addCalendarDays, localDate, planRecurringOccurrences, type RecurringPlan } from "./recurrence.js";
+import { addCalendarDays, localDate, planRecurringOccurrences, priceSnapshotForDate, type RecurrenceVersion, type RecurringPlan } from "./recurrence.js";
 
 export type RecurringGenerationRequest = { tenantId?: string; planId?: string; through?: string; horizonDays?: number; now?: Date };
 
 /** Ledger insert, job insert, status history and domain event commit as one transaction. */
-export async function generateRecurringJobs(db: Database, request: RecurringGenerationRequest = {}): Promise<{ created: number; existing: number }> {
+export async function generateRecurringJobs(db: Database, request: RecurringGenerationRequest = {}): Promise<{ created: number; existing: number; invalid: Array<{ planId: string; reason: string }> }> {
   const now = request.now ?? new Date();
   const horizonDays = request.horizonDays ?? 28;
   if (!Number.isSafeInteger(horizonDays) || horizonDays < 0 || horizonDays > 366) throw new Error("Recurring horizon must be 0–366 days");
@@ -23,6 +23,7 @@ export async function generateRecurringJobs(db: Database, request: RecurringGene
     .where(and(...filters));
   let created = 0;
   let existing = 0;
+  const invalid: Array<{ planId: string; reason: string }> = [];
   const usableByTenant = new Map<string, boolean>();
   for (const row of rows) {
     let usable = usableByTenant.get(row.plan.tenantId);
@@ -31,27 +32,40 @@ export async function generateRecurringJobs(db: Database, request: RecurringGene
       usableByTenant.set(row.plan.tenantId, usable);
     }
     if (!usable) continue;
-    const from = localDate(now, row.recurrence.timezone);
-    const through = request.through ?? addCalendarDays(from, horizonDays);
+    const configuration = row.recurrence.configuration && typeof row.recurrence.configuration === "object" && !Array.isArray(row.recurrence.configuration)
+      ? row.recurrence.configuration as Record<string, unknown> : {};
+    const scheduleVersions = Array.isArray(configuration.scheduleVersions)
+      ? configuration.scheduleVersions as RecurrenceVersion[]
+      : undefined;
     const plan: RecurringPlan = {
       id: row.plan.id, tenantId: row.plan.tenantId, status: row.plan.status, effectiveFrom: row.plan.effectiveFrom,
       effectiveTo: row.plan.effectiveTo, pauseFrom: row.plan.pauseFrom, pauseUntil: row.plan.pauseUntil,
       frequencyType: row.recurrence.frequencyType, interval: row.recurrence.interval, daysOfWeek: row.recurrence.daysOfWeek,
-      dayOfMonth: row.recurrence.dayOfMonth, timezone: row.recurrence.timezone,
+      dayOfMonth: row.recurrence.dayOfMonth, timezone: row.recurrence.timezone, scheduleVersions,
+      pricingSnapshot: row.plan.pricingSnapshot,
     };
-    for (const occurrence of planRecurringOccurrences(plan, from, through)) {
+    let occurrences;
+    try {
+      const from = localDate(now, row.recurrence.timezone);
+      const through = request.through ?? addCalendarDays(from, horizonDays);
+      occurrences = planRecurringOccurrences(plan, from, through);
+    } catch (error) {
+      invalid.push({ planId: row.plan.id, reason: error instanceof Error ? error.message : "Invalid recurrence configuration" });
+      continue;
+    }
+    for (const occurrence of occurrences) {
       const outcome = await db.transaction(async (tx) => {
         const [claim] = await tx.insert(recurringGenerationLedger).values({ tenantId: row.plan.tenantId, servicePlanId: row.plan.id, occurrenceKey: occurrence.key, intendedDate: occurrence.serviceDate, status: "pending" })
           .onConflictDoNothing({ target: [recurringGenerationLedger.servicePlanId, recurringGenerationLedger.occurrenceKey] }).returning({ id: recurringGenerationLedger.id });
         if (!claim) return "existing" as const;
-        const [prior] = await tx.select({ id: jobs.id }).from(jobs).where(and(eq(jobs.tenantId, row.plan.tenantId), eq(jobs.servicePlanId, row.plan.id), eq(jobs.scheduledDate, occurrence.serviceDate))).limit(1);
+        const [prior] = await tx.select({ id: jobs.id }).from(jobs).where(and(eq(jobs.tenantId, row.plan.tenantId), eq(jobs.servicePlanId, row.plan.id), eq(jobs.scheduledDate, occurrence.serviceDate), ne(jobs.status, "canceled"))).limit(1);
         let jobId = prior?.id;
         if (!jobId) {
           const [job] = await tx.insert(jobs).values({
             tenantId: row.plan.tenantId, organizationId: row.organizationId, organizationLocationId: row.plan.organizationLocationId,
             customerId: row.plan.customerId, serviceLocationId: row.plan.serviceLocationId, servicePlanId: row.plan.id,
             serviceId: row.plan.serviceId, status: "scheduled", scheduledDate: occurrence.serviceDate,
-            estimatedDurationMinutes: row.defaultDurationMinutes, priceSnapshot: row.plan.pricingSnapshot,
+            estimatedDurationMinutes: row.defaultDurationMinutes, priceSnapshot: priceSnapshotForDate(row.plan.pricingSnapshot, occurrence.serviceDate),
           }).returning({ id: jobs.id });
           if (!job) throw new Error("Job insertion did not return an ID");
           jobId = job.id;
@@ -65,5 +79,5 @@ export async function generateRecurringJobs(db: Database, request: RecurringGene
       else existing++;
     }
   }
-  return { created, existing };
+  return { created, existing, invalid };
 }

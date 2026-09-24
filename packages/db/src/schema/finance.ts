@@ -15,7 +15,7 @@ export const invoices = pgTable("invoices", {
   termsSnapshot: text("terms_snapshot"), billingSnapshot: jsonObject("billing_snapshot"),
   voidedAt: timestamp("voided_at", { withTimezone: true }), writtenOffAt: timestamp("written_off_at", { withTimezone: true }),
 }, (t) => [
-  uniqueIndex("invoices_tenant_id_id_ux").on(t.tenantId, t.id), uniqueIndex("invoices_number_ux").on(t.tenantId, t.invoiceNumber),
+  uniqueIndex("invoices_tenant_id_id_ux").on(t.tenantId, t.id), uniqueIndex("invoices_tenant_customer_id_ux").on(t.tenantId, t.customerId, t.id), uniqueIndex("invoices_number_ux").on(t.tenantId, t.invoiceNumber),
   foreignKey({ columns: [t.tenantId, t.customerId], foreignColumns: [customers.tenantId, customers.id], name: "invoices_customer_tenant_fk" }),
   foreignKey({ columns: [t.tenantId, t.organizationId], foreignColumns: [organizations.tenantId, organizations.id], name: "invoices_organization_tenant_fk" }),
   foreignKey({ columns: [t.tenantId, t.organizationLocationId], foreignColumns: [organizationLocations.tenantId, organizationLocations.id], name: "invoices_branch_tenant_fk" }),
@@ -62,11 +62,14 @@ export const paymentAllocations = pgTable("payment_allocations", {
 
 export const refunds = pgTable("refunds", {
   id: uuid("id").defaultRandom().primaryKey(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
-  paymentId: uuid("payment_id").notNull().references(() => payments.id), connectorInstallationId: uuid("connector_installation_id"),
+  paymentId: uuid("payment_id").notNull(), connectorInstallationId: uuid("connector_installation_id"),
   providerReference: text("provider_reference"), amountMinor: money("amount_minor"), currency: currency(), status: status(),
   reason: text("reason"), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   completedAt: timestamp("completed_at", { withTimezone: true }),
-}, (t) => [index("refunds_payment_idx").on(t.tenantId, t.paymentId), check("refunds_amount_nonnegative", sql`${t.amountMinor} >= 0`)]);
+}, (t) => [
+  foreignKey({ columns: [t.tenantId, t.paymentId], foreignColumns: [payments.tenantId, payments.id], name: "refunds_payment_tenant_fk" }),
+  index("refunds_payment_idx").on(t.tenantId, t.paymentId), check("refunds_amount_nonnegative", sql`${t.amountMinor} >= 0`),
+]);
 
 export const paymentMethodReferences = pgTable("payment_method_references", {
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), customerId: uuid("customer_id").notNull().references(() => customers.id),
@@ -74,7 +77,10 @@ export const paymentMethodReferences = pgTable("payment_method_references", {
   providerMethodRef: text("provider_method_ref").notNull(), methodType: text("method_type").notNull(), brand: text("brand"),
   last4: text("last4"), expiryMonth: integer("expiry_month"), expiryYear: integer("expiry_year"),
   isDefault: boolean("is_default").notNull().default(false), status: status(),
-}, (t) => [uniqueIndex("payment_methods_default_ux").on(t.tenantId, t.customerId, t.connectorInstallationId).where(sql`${t.isDefault} = true`)]);
+}, (t) => [
+  foreignKey({ columns: [t.tenantId, t.customerId], foreignColumns: [customers.tenantId, customers.id], name: "payment_methods_customer_tenant_fk" }),
+  uniqueIndex("payment_methods_default_ux").on(t.tenantId, t.customerId, t.connectorInstallationId).where(sql`${t.isDefault} = true`),
+]);
 
 export const tips = pgTable("tips", {
   id: uuid("id").defaultRandom().primaryKey(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
@@ -82,27 +88,44 @@ export const tips = pgTable("tips", {
   membershipId: uuid("membership_id").references(() => memberships.id), paymentId: uuid("payment_id").references(() => payments.id),
   amountMinor: money("amount_minor"), currency: currency(), tipType: text("tip_type").notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  foreignKey({ columns: [t.tenantId, t.customerId], foreignColumns: [customers.tenantId, customers.id], name: "tips_customer_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.jobId], foreignColumns: [jobs.tenantId, jobs.id], name: "tips_job_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.membershipId], foreignColumns: [memberships.tenantId, memberships.id], name: "tips_membership_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.paymentId], foreignColumns: [payments.tenantId, payments.id], name: "tips_payment_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.customerId, t.jobId], foreignColumns: [jobs.tenantId, jobs.customerId, jobs.id], name: "tips_job_customer_fk" }),
+]);
 
 export const customerCredits = pgTable("customer_credits", {
   id: uuid("id").defaultRandom().primaryKey(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
   customerId: uuid("customer_id").notNull().references(() => customers.id), sourceType: text("source_type").notNull(), sourceEntityId: uuid("source_entity_id"),
   originalAmountMinor: money("original_amount_minor"), remainingAmountMinor: money("remaining_amount_minor"), currency: currency(),
   status: status(), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(), expiresAt: timestamp("expires_at", { withTimezone: true }),
-});
+}, (t) => [
+  uniqueIndex("customer_credits_tenant_id_id_ux").on(t.tenantId, t.id),
+  uniqueIndex("customer_credits_tenant_customer_id_ux").on(t.tenantId, t.customerId, t.id),
+  foreignKey({ columns: [t.tenantId, t.customerId], foreignColumns: [customers.tenantId, customers.id], name: "customer_credits_customer_tenant_fk" }),
+]);
 
 export const creditAllocations = pgTable("credit_allocations", {
   id: uuid("id").defaultRandom().primaryKey(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
-  customerCreditId: uuid("customer_credit_id").notNull().references(() => customerCredits.id), invoiceId: uuid("invoice_id").notNull().references(() => invoices.id),
+  customerCreditId: uuid("customer_credit_id").notNull(), invoiceId: uuid("invoice_id").notNull(),
   amountMinor: money("amount_minor"), allocatedAt: timestamp("allocated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  foreignKey({ columns: [t.tenantId, t.customerCreditId], foreignColumns: [customerCredits.tenantId, customerCredits.id], name: "credit_allocations_credit_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.invoiceId], foreignColumns: [invoices.tenantId, invoices.id], name: "credit_allocations_invoice_tenant_fk" }),
+]);
 
 export const creditMemos = pgTable("credit_memos", {
   id: uuid("id").defaultRandom().primaryKey(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
-  customerId: uuid("customer_id").notNull().references(() => customers.id), invoiceId: uuid("invoice_id").references(() => invoices.id),
+  customerId: uuid("customer_id").notNull(), invoiceId: uuid("invoice_id"),
   amountMinor: money("amount_minor"), currency: currency(), reason: text("reason").notNull(), status: status(),
   issuedAt: timestamp("issued_at", { withTimezone: true }).notNull().defaultNow(), appliedAt: timestamp("applied_at", { withTimezone: true }),
-});
+}, (t) => [
+  foreignKey({ columns: [t.tenantId, t.customerId], foreignColumns: [customers.tenantId, customers.id], name: "credit_memos_customer_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.invoiceId], foreignColumns: [invoices.tenantId, invoices.id], name: "credit_memos_invoice_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.customerId, t.invoiceId], foreignColumns: [invoices.tenantId, invoices.customerId, invoices.id], name: "credit_memos_invoice_customer_fk" }),
+]);
 
 export const taxRules = pgTable("tax_rules", {
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), organizationLocationId: uuid("organization_location_id").references(() => organizationLocations.id),
@@ -114,7 +137,7 @@ export const billingSchedules = pgTable("billing_schedules", {
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), servicePlanId: uuid("service_plan_id").notNull().references(() => servicePlans.id),
   billingType: text("billing_type").notNull(), intervalConfig: jsonObject("interval_config"), autopay: boolean("autopay").notNull().default(false),
   nextBillAt: timestamp("next_bill_at", { withTimezone: true }), active: active(),
-});
+}, (t) => [foreignKey({ columns: [t.tenantId, t.servicePlanId], foreignColumns: [servicePlans.tenantId, servicePlans.id], name: "billing_schedules_plan_tenant_fk" })]);
 
 export const compensationProfiles = pgTable("compensation_profiles", {
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), membershipId: uuid("membership_id").notNull().references(() => memberships.id),

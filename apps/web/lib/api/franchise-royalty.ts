@@ -344,14 +344,17 @@ async function createFranchiseUnit(request: Request, actor: SessionActor): Promi
     }).returning();
     if (!agreement) throw new DomainError("CONFLICT", "The franchise agreement could not be created.", 409);
 
-    await recordEvent(actor, {
+    // Domain events enforce that their organization and location belong together. The parent
+    // owner initiated this operation, but these events describe resources in the new child unit.
+    const unitActor = { ...actor, organizationId: organization.id };
+    await recordEvent(unitActor, {
       type: "franchise.unit.created", entityType: "organization", entityId: organization.id,
       payload: { locationId: location.id, agreementId: agreement.id },
       auditAction: "franchise.unit.create",
       after: { displayName: organization.displayName, organizationType: organization.organizationType, locationId: location.id, agreementId: agreement.id },
       locationId: location.id,
     }, tx);
-    await recordEvent(actor, {
+    await recordEvent(unitActor, {
       type: "franchise.agreement.created", entityType: "franchise_agreement", entityId: agreement.id,
       auditAction: "franchise.agreement.create", after: normalized(agreement) as Record<string, unknown>,
       locationId: location.id,

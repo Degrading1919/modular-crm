@@ -14,7 +14,7 @@ export type PackField = Readonly<{
 export type PackAsset = Readonly<{ key: string; label: string; pluralLabel: string; fields: readonly PackField[] }>;
 export type PackService = Readonly<{ key: string; name: string; kind: "recurring" | "one_time" | "add_on" | "recovery"; estimatedMinutes?: number; defaultEnabled?: boolean }>;
 export type PackRecurrence = Readonly<{ key: string; label: string; rrule?: string; custom?: boolean }>;
-export type PackRecipe = Readonly<{ sourceKey: string; name: string; description: string; event: string; actions: readonly { actionType: string; configuration: Record<string, unknown> }[]; enabledByDefault: boolean }>;
+export type PackRecipe = Readonly<{ sourceKey: string; name: string; description: string; event: string; filters?: Readonly<{ field: string; operator: "equals"; value: string }>; actions: readonly { actionType: string; configuration: Record<string, unknown> }[]; enabledByDefault: boolean }>;
 export type PackReport = Readonly<{ key: string; name: string; coreMetric: string; dimensions?: readonly string[] }>;
 export type PackPricingTemplate = Readonly<{ key: string; name: string; stage: "base" | "quantity" | "zone" | "add_on" | "promotion" | "bounds"; inputFields: readonly string[]; effect: string; requiresTenantAmount: boolean }>;
 

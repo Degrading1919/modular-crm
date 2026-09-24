@@ -9,7 +9,12 @@ import type { Database } from "../src/client.ts";
 import { createTenantRepository } from "../src/tenant-repository.ts";
 import { INITIAL_CAPABILITY_MODULE_KEYS } from "../src/initial-capability-catalog.ts";
 import { seedDevelopment, seedIds, seedUserIds } from "../src/seed.ts";
-import { capabilityModules, customerAssets, customerContacts, customers, connectorInstallations, domainEvents, invoices, jobs, paymentAllocations, schema, tenantCapabilityGrants, tenants } from "../src/schema/index.ts";
+import {
+  automationRuns, capabilityModules, communicationEvents, completionProofs, creditAllocations, customerAssets, customerChangeRequests,
+  customerContacts, customerCredits, customers, connectorInstallations, domainEvents, invoices, jobs, outboundMessages, paymentAllocations,
+  portalLocationAccess, refunds, schema, tenantCapabilityGrants, tenants, ticketComments, tickets, timeEntries, webhookDeliveries,
+  webhookSubscriptions,
+} from "../src/schema/index.ts";
 
 let pglite: PGlite;
 let db: Database;
@@ -110,6 +115,41 @@ describe("tenant-scoped persistence", () => {
     await expect(db.insert(jobs).values({ tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization,
       customerId: seedIds.carter, serviceLocationId: seedIds.nguyenLocation, serviceId: seedIds.weeklyService,
       status: "scheduled" })).rejects.toThrow();
+  });
+
+  it("rejects tenant mismatches in customer, job, finance, ticket and outbox links", async () => {
+    await expect(db.insert(customerChangeRequests).values({ tenantId: seedIds.happyTenant, customerId: seedIds.cleanCarter, requestType: "address_change", status: "pending" })).rejects.toThrow();
+    await expect(db.insert(customerChangeRequests).values({ tenantId: seedIds.happyTenant, customerId: seedIds.carter, serviceLocationId: seedIds.nguyenLocation, requestType: "address_change", status: "pending" })).rejects.toThrow();
+    await expect(db.insert(portalLocationAccess).values({ tenantId: seedIds.happyTenant, portalAccessId: "00000000-0000-4000-8000-000000000140", serviceLocationId: seedIds.cleanCarterLocation })).rejects.toThrow();
+    await expect(db.insert(completionProofs).values({ tenantId: seedIds.happyTenant, jobId: seedIds.cleanJob, completedAt: new Date() })).rejects.toThrow();
+    await expect(db.insert(timeEntries).values({ tenantId: seedIds.happyTenant, membershipId: seedIds.cleanTechMembership, source: "manual", startsAt: new Date(), endsAt: new Date(), durationSeconds: 0, approvalStatus: "pending" })).rejects.toThrow();
+    await expect(db.insert(refunds).values({ tenantId: seedIds.happyTenant, paymentId: seedIds.cleanPayment, amountMinor: 1n, status: "pending" })).rejects.toThrow();
+
+    const [credit] = await db.insert(customerCredits).values({ tenantId: seedIds.happyTenant, customerId: seedIds.carter, sourceType: "manual", originalAmountMinor: 1000n, remainingAmountMinor: 1000n, status: "open" }).returning({ id: customerCredits.id });
+    await expect(db.insert(creditAllocations).values({ tenantId: seedIds.happyTenant, customerCreditId: credit!.id, invoiceId: seedIds.cleanInvoice, amountMinor: 1n })).rejects.toThrow();
+
+    await expect(db.insert(tickets).values({
+      tenantId: seedIds.happyTenant, customerId: seedIds.cleanCarter, ticketTypeId: "00000000-0000-4000-8000-000000000440",
+      statusDefinitionId: "00000000-0000-4000-8000-000000000445", title: "Cross tenant", description: "Must be rejected.", createdByActorType: "staff",
+    })).rejects.toThrow();
+    await expect(db.insert(ticketComments).values({ tenantId: seedIds.happyTenant, ticketId: "00000000-0000-4000-8000-000000000451", visibility: "internal", body: "Cross-tenant comment", actorType: "staff" })).rejects.toThrow();
+
+    const [cleanMessage] = await db.insert(outboundMessages).values({
+      tenantId: seedIds.cleanTenant, customerId: seedIds.cleanCarter, channel: "email", recipient: "clean@example.test",
+      renderedBody: "Test", status: "queued", idempotencyKey: "tenant-fk-clean-message",
+    }).returning({ id: outboundMessages.id });
+    await expect(db.insert(communicationEvents).values({ tenantId: seedIds.happyTenant, outboundMessageId: cleanMessage!.id, eventType: "delivered" })).rejects.toThrow();
+
+    const [cleanEvent] = await db.insert(domainEvents).values({ tenantId: seedIds.cleanTenant, eventType: "test.event", actorType: "system", entityType: "test", entityId: seedIds.cleanCarter }).returning({ id: domainEvents.id });
+    await expect(db.insert(automationRuns).values({
+      tenantId: seedIds.happyTenant, automationRuleId: "00000000-0000-4000-8000-000000000800", ruleVersion: 1,
+      triggeringEventId: cleanEvent!.id, idempotencyKey: "tenant-fk-cross-event", status: "queued",
+    })).rejects.toThrow();
+    const [subscription] = await db.insert(webhookSubscriptions).values({
+      tenantId: seedIds.happyTenant, name: "Tenant FK test", url: "https://example.test/hook", eventPatterns: [],
+      secretReference: "test", status: "active", createdByMembershipId: seedIds.morganMembership,
+    }).returning({ id: webhookSubscriptions.id });
+    await expect(db.insert(webhookDeliveries).values({ tenantId: seedIds.happyTenant, webhookSubscriptionId: subscription!.id, domainEventId: cleanEvent!.id, status: "queued" })).rejects.toThrow();
   });
 
   it("keeps overlapping names and financial records separate", async () => {

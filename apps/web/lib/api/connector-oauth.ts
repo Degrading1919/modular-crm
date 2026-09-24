@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import {
   buildOAuthAuthorizationUrl, normalizeOAuthTokenResponse, withOAuthProviderTimeout,
   type ConnectorManifest, type OAuthCredentialSet, type OAuthTokenResponse, type ScopedCapabilities,
 } from "@modular-crm/connectors";
-import { connectorInstallations } from "@modular-crm/db";
+import { connectorInstallations, type Database } from "@modular-crm/db";
 import { DomainError, requirePermission } from "@modular-crm/domain";
 import { getRegistry } from "../connectors";
 import { getDb } from "../db";
@@ -299,10 +299,14 @@ export async function hydrateOAuthInstallation(tenantId: string, installationId:
   return pending;
 }
 
-/** Revokes when supported, then always clears local tokens while retaining the installation and history. */
-export async function disconnectOAuthConnector(tenantId: string, connectorKey: string) {
-  const db = getDb();
-  const installations = await db.select().from(connectorInstallations)
+export type OAuthDisconnectPreparation = {
+  installations: typeof connectorInstallations.$inferSelect[];
+  revocationStatus: "revoked" | "failed" | "not_supported";
+};
+
+/** Revocation is best effort and external; it must finish before the local transaction begins. */
+export async function prepareOAuthDisconnect(tenantId: string, connectorKey: string): Promise<OAuthDisconnectPreparation> {
+  const installations = await getDb().select().from(connectorInstallations)
     .where(and(eq(connectorInstallations.tenantId, tenantId), eq(connectorInstallations.connectorKey, connectorKey)));
   const adapter = getRegistry().getOAuthAdapter(connectorKey);
   let revocationStatus: "revoked" | "failed" | "not_supported" = adapter?.revoke ? "revoked" : "not_supported";
@@ -315,6 +319,44 @@ export async function disconnectOAuthConnector(tenantId: string, connectorKey: s
       } catch { revocationStatus = "failed"; }
     }
   }
+  return { installations, revocationStatus };
+}
+
+/** Persist every prepared disconnect or roll the whole transaction back on any stale snapshot. */
+export async function persistOAuthDisconnect(
+  writer: Pick<Database, "update" | "insert">,
+  actor: SessionActor,
+  connectorKey: string,
+  prepared: OAuthDisconnectPreparation,
+): Promise<typeof connectorInstallations.$inferSelect[]> {
+  const changed: typeof connectorInstallations.$inferSelect[] = [];
+  for (const before of prepared.installations) {
+    const credentialCondition = before.credentialReference
+      ? eq(connectorInstallations.credentialReference, before.credentialReference)
+      : isNull(connectorInstallations.credentialReference);
+    const [updated] = await writer.update(connectorInstallations).set({
+      status: "not_connected", credentialReference: null, grantedScopes: [], providerAccountId: null,
+      lastErrorCode: prepared.revocationStatus === "failed" ? "revocation_failed" : null,
+      lastErrorMessage: null, updatedAt: new Date(),
+    }).where(and(
+      eq(connectorInstallations.tenantId, actor.tenantId), eq(connectorInstallations.id, before.id),
+      eq(connectorInstallations.connectorKey, connectorKey), credentialCondition,
+    )).returning();
+    if (!updated) throw new DomainError("CONFLICT", "The connection changed while it was being disconnected. Try again.", 409);
+    await recordEvent(actor, {
+      type: "connector.disconnected", entityType: "connector_installation", entityId: updated.id,
+      payload: { connectorKey, mode: "live", health: "unavailable", revocationStatus: prepared.revocationStatus },
+      auditAction: "connector.disconnect", before: { status: before.status }, after: { status: updated.status, mode: "live" },
+    }, writer);
+    changed.push(updated);
+  }
+  return changed;
+}
+
+/** Revokes when supported, then clears local tokens while retaining the installation and history. */
+export async function disconnectOAuthConnector(tenantId: string, connectorKey: string) {
+  const { revocationStatus } = await prepareOAuthDisconnect(tenantId, connectorKey);
+  const db = getDb();
   await db.update(connectorInstallations).set({
     status: "not_connected", credentialReference: null, grantedScopes: [], providerAccountId: null,
     lastErrorCode: revocationStatus === "failed" ? "revocation_failed" : null,

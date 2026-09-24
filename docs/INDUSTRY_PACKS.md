@@ -63,6 +63,8 @@ The pack should cover at minimum:
 
 The reference pack should demonstrate Industry Pack configuration rather than introduce pet-waste-specific tables unless a shared configurable entity cannot reasonably represent the requirement.
 
+Default automation recipes must use emitted domain events and recipient-bearing payloads. The pet-waste pack distinguishes completed customer signups from requests needing office review; route reminders trigger from each dispatched job rather than a route-wide event without a customer; and pause-review tickets filter change-request events to `type=pause`. Payment receipts use `payment.succeeded` and its customer identity, and remain drafts until the business enables them. Pack setup supplies the ticket type required by its plan-change review recipe.
+
 ## Future examples
 
 ### Septic service

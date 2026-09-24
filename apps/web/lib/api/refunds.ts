@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { invoices, paymentAllocations, payments, refunds } from "@modular-crm/db";
-import { DomainError, invoiceStatus, requirePermission } from "@modular-crm/domain";
+import { creditAllocations, invoices, paymentAllocations, payments, refunds } from "@modular-crm/db";
+import { DomainError, invoiceFinancialPosition, requirePermission } from "@modular-crm/domain";
 import { ConnectorError } from "@modular-crm/connectors";
 import { getCapability } from "../connectors";
 import { getDb } from "../db";
@@ -160,10 +160,29 @@ export async function handleInvoiceRefund(request: Request, path: string[], acto
     await tx.update(payments).set({ status: nextPaymentStatus, updatedAt: now })
       .where(and(eq(payments.tenantId, actor.tenantId), eq(payments.id, payment.id)));
 
-    const balanceMinor = invoice.balanceMinor + amountMinor;
-    if (balanceMinor > invoice.totalMinor) throw new DomainError("CONFLICT", "Refund would exceed the invoice total.", 409);
-    const balanceCents = Number(balanceMinor);
-    await tx.update(invoices).set({ balanceMinor, status: invoiceStatus(balanceCents, Number(invoice.totalMinor)), updatedAt: now })
+    const invoiceAllocations = await tx.select({ paymentId: paymentAllocations.paymentId })
+      .from(paymentAllocations).where(and(eq(paymentAllocations.tenantId, actor.tenantId), eq(paymentAllocations.invoiceId, invoiceId)));
+    const invoicePaymentIds = invoiceAllocations.map((item) => item.paymentId);
+    const invoiceRefundRows = invoicePaymentIds.length
+      ? await tx.select({ amountMinor: refunds.amountMinor }).from(refunds)
+        .where(and(eq(refunds.tenantId, actor.tenantId), eq(refunds.status, "succeeded"), inArray(refunds.paymentId, invoicePaymentIds)))
+      : [];
+    const totalRefundedMinor = invoiceRefundRows.reduce((sum, item) => sum + item.amountMinor, 0n);
+    const creditRows = await tx.select({ amountMinor: creditAllocations.amountMinor }).from(creditAllocations)
+      .where(and(eq(creditAllocations.tenantId, actor.tenantId), eq(creditAllocations.invoiceId, invoiceId)));
+    const creditedMinor = creditRows.reduce((sum, item) => sum + item.amountMinor, 0n);
+    let position: ReturnType<typeof invoiceFinancialPosition>;
+    try {
+      position = invoiceFinancialPosition(Number(invoice.totalMinor), Number(invoice.paidMinor), Number(totalRefundedMinor), Number(creditedMinor));
+    } catch (error) {
+      if (error instanceof DomainError && error.code === "VALIDATION_ERROR") {
+        throw new DomainError("CONFLICT", "Refund would exceed the amount collected for this invoice.", 409);
+      }
+      throw error;
+    }
+    const balanceMinor = BigInt(position.balanceCents);
+    const balanceCents = position.balanceCents;
+    await tx.update(invoices).set({ balanceMinor, status: position.status, updatedAt: now })
       .where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, actor.tenantId)));
     await recordEvent(actor, {
       type: "payment.refunded", entityType: "refund", entityId: refund.id,

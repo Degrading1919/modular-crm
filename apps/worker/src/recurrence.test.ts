@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { generateForPlans, localDate, planRecurringOccurrences, type RecurringPlan } from "./recurrence.js";
+import { generateForPlans, localDate, planRecurringOccurrences, priceSnapshotForDate, type RecurringPlan } from "./recurrence.js";
 
 const weekly: RecurringPlan = { id: "plan-a", tenantId: "tenant-a", status: "active", effectiveFrom: "2026-09-01", frequencyType: "weekly", interval: 1, daysOfWeek: [2, 5], timezone: "America/New_York" };
 
@@ -11,6 +11,37 @@ it("generates both weekly route days, skips pauses and uses a stable occurrence 
 it("uses interval weeks and end-of-month clamping", () => {
   expect(planRecurringOccurrences({ ...weekly, interval: 2, daysOfWeek: [2] }, "2026-09-01", "2026-09-30").map((item) => item.serviceDate)).toEqual(["2026-09-01", "2026-09-15", "2026-09-29"]);
   expect(planRecurringOccurrences({ ...weekly, effectiveFrom: "2026-01-31", frequencyType: "monthly", daysOfWeek: null }, "2026-01-31", "2026-03-31").map((item) => item.serviceDate)).toEqual(["2026-01-31", "2026-02-28", "2026-03-31"]);
+});
+it("normalizes legacy biweekly recurrence labels to a two-week schedule", () => {
+  expect(planRecurringOccurrences({ ...weekly, frequencyType: "biweekly", interval: 2, daysOfWeek: [2] }, "2026-09-01", "2026-09-30").map((item) => item.serviceDate))
+    .toEqual(["2026-09-01", "2026-09-15", "2026-09-29"]);
+});
+it("applies effective-dated frequency versions prospectively with stable version keys", () => {
+  const dates = planRecurringOccurrences({
+    ...weekly,
+    scheduleVersions: [
+      { effectiveFrom: "2026-09-01", anchorDate: "2026-09-01", frequencyType: "weekly", interval: 1, daysOfWeek: [2] },
+      { effectiveFrom: "2026-09-10", anchorDate: "2026-09-10", frequencyType: "weekly", interval: 2, daysOfWeek: [4] },
+    ],
+  }, "2026-09-01", "2026-09-30");
+  expect(dates.map((item) => item.serviceDate)).toEqual(["2026-09-01", "2026-09-08", "2026-09-10", "2026-09-24"]);
+  expect(dates[2]?.key).toBe("plan-a:2026-09-10:2026-09-10");
+});
+it("keeps a price-only change on the existing recurrence anchor and selects dated snapshots", () => {
+  const dates = planRecurringOccurrences({
+    ...weekly,
+    scheduleVersions: [
+      { effectiveFrom: "2026-09-01", anchorDate: "2026-09-01", frequencyType: "weekly", interval: 1, daysOfWeek: [2] },
+      { effectiveFrom: "2026-09-10", anchorDate: "2026-09-01", frequencyType: "weekly", interval: 1, daysOfWeek: [2] },
+    ],
+  }, "2026-09-01", "2026-09-18");
+  expect(dates.map((item) => item.serviceDate)).toEqual(["2026-09-01", "2026-09-08", "2026-09-15"]);
+  const snapshot = { totalMinor: 1000, priceVersions: [
+    { effectiveFrom: "2026-09-01", snapshot: { totalMinor: 1000 } },
+    { effectiveFrom: "2026-09-10", snapshot: { totalMinor: 1200 } },
+  ] };
+  expect(priceSnapshotForDate(snapshot, "2026-09-08")).toEqual({ totalMinor: 1000 });
+  expect(priceSnapshotForDate(snapshot, "2026-09-15")).toEqual({ totalMinor: 1200 });
 });
 it("does not generate paused or inactive plans and uses local calendar dates", () => {
   expect(planRecurringOccurrences({ ...weekly, status: "paused" }, "2026-09-01", "2026-09-30")).toEqual([]);

@@ -11,13 +11,13 @@
     "infra:up": "docker compose up -d",
     "infra:down": "docker compose down",
     "infra:pglite": "pnpm --filter @modular-crm/db infra:pglite",
-    "db:migrate": "pnpm --filter @modular-crm/db db:migrate",
-    "db:seed": "pnpm --filter @modular-crm/web db:seed",
+    "db:migrate": "dotenv -e .env -- pnpm --filter @modular-crm/db db:migrate",
+    "db:seed": "dotenv -e .env -- pnpm --filter @modular-crm/web db:seed",
     "test": "pnpm -r --if-present test",
     "test:e2e": "pnpm --filter @modular-crm/web test:e2e",
     "lint": "pnpm -r --if-present lint",
     "typecheck": "pnpm -r --if-present typecheck",
-    "build": "pnpm -r --if-present build"
+    "build": "dotenv -e .env -- pnpm -r --if-present build"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

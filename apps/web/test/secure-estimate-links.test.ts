@@ -6,8 +6,8 @@ import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import { and, eq } from "drizzle-orm";
 import {
-  auditEvents, domainEvents, estimateApprovals, estimateItems, estimateRevisions, estimates, jobs, leads,
-  schema, secureEstimateTokens, seedDevelopment, seedIds, servicePlans, type Database,
+  auditEvents, capabilityModules, domainEvents, estimateApprovals, estimateItems, estimateRevisions, estimates, jobs, leads,
+  schema, secureEstimateTokens, seedDevelopment, seedIds, servicePlans, tenantCapabilitySettings, type Database,
 } from "@modular-crm/db";
 import { permissionsForRole } from "@modular-crm/domain";
 import type { SessionActor } from "../lib/api/actor.ts";
@@ -90,6 +90,27 @@ async function visit(token: string, action?: string, body: Record<string, unknow
 }
 
 describe("secure estimate decision links", () => {
+  it("does not create downstream recurring work when that capability is disabled", async () => {
+    const { lead, estimate } = await createLeadEstimate();
+    const { token } = await sendEstimate(estimate.id);
+    const plansBefore = (await db.select().from(servicePlans).where(eq(servicePlans.tenantId, seedIds.happyTenant))).length;
+    const [module] = await db.select({ id: capabilityModules.id }).from(capabilityModules)
+      .where(eq(capabilityModules.key, "scheduling-and-recurring")).limit(1);
+    await db.insert(tenantCapabilitySettings).values({ tenantId: seedIds.happyTenant, moduleId: module!.id, enabled: false })
+      .onConflictDoUpdate({ target: [tenantCapabilitySettings.tenantId, tenantCapabilitySettings.moduleId], set: { enabled: false } });
+    try {
+      const response = await visit(token, "approve");
+      expect(response.status).toBe(403);
+      expect((await db.select().from(estimates).where(eq(estimates.id, estimate.id)))[0]?.status).toBe("sent");
+      expect((await db.select().from(leads).where(eq(leads.id, lead.id)))[0]?.customerId).toBeNull();
+      expect(await db.select().from(servicePlans).where(eq(servicePlans.tenantId, seedIds.happyTenant))).toHaveLength(plansBefore);
+    } finally {
+      await db.update(tenantCapabilitySettings).set({ enabled: true }).where(and(
+        eq(tenantCapabilitySettings.tenantId, seedIds.happyTenant), eq(tenantCapabilitySettings.moduleId, module!.id),
+      ));
+    }
+  });
+
   it("sends a one-time raw link and serves a scoped estimate view without exposing its token hash", async () => {
     const { estimate } = await createLeadEstimate();
     const { token, actionUrl } = await sendEstimate(estimate.id);

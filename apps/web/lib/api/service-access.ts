@@ -1,10 +1,10 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { authSigningSecret } from "../runtime-secret";
 
 const SERVICE_ACCESS_KEY_PURPOSE = "modular-crm:service-access:v1";
-const DEVELOPMENT_AUTH_SECRET = "dev-only-replace-before-deploying-0123456789";
 
 function serviceAccessKey(): Buffer {
-  const secret = process.env.BETTER_AUTH_SECRET ?? DEVELOPMENT_AUTH_SECRET;
+  const secret = authSigningSecret();
   return createHash("sha256").update(secret).update(SERVICE_ACCESS_KEY_PURPOSE).digest();
 }
 

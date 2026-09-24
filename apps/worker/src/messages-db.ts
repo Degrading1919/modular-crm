@@ -6,6 +6,7 @@ import {
 import { ConnectorError, type ConnectorRegistry } from "@modular-crm/connectors";
 import type { PgBoss } from "pg-boss";
 import { enqueueOutboundMessage } from "./queues.js";
+import { hydrateMessagingConnector } from "./messaging-connectors.js";
 
 type Message = typeof outboundMessages.$inferSelect;
 type Preference = typeof notificationPreferences.$inferSelect;
@@ -24,13 +25,13 @@ export function preferenceKeysForTemplate(templateKey?: string | null): string[]
   if (!templateKey) return ["general"];
   const canonical = templateKey === "completion" || templateKey === "cleanup-completed" ? "job_completed"
     : templateKey === "payment-failed" ? "payment_failed" : templateKey.replace(/[.\-]/g, "_");
-  return [...new Set([templateKey, canonical])];
+  return [...new Set([templateKey, canonical, "general"])];
 }
 
 /** A tenant-scoped connector is selected for every send; expired connections stay expired. */
-export async function sendThroughMessagingCapability(registry: ConnectorRegistry, input: { tenantId: string; channel: "email" | "sms"; recipient: string; subject?: string; body: string; idempotencyKey: string }): Promise<{ reference?: string; status: "sent" }> {
+export async function sendThroughMessagingCapability(registry: ConnectorRegistry, input: { tenantId: string; channel: "email" | "sms"; recipient: string; subject?: string; body: string; idempotencyKey: string }, allowImplicitMock = true): Promise<{ reference?: string; status: "sent" }> {
   let capability = registry.getCapability(input.tenantId, input.channel);
-  if (!capability) {
+  if (!capability && allowImplicitMock) {
     const installation = registry.getInstallation(input.tenantId, "mock-communication");
     if (installation.state === "not_connected") {
       registry.connectMock(input.tenantId, "mock-communication");
@@ -62,7 +63,7 @@ export async function processOutboundMessage(db: Database, registry: ConnectorRe
   }
   const preferenceKeys = preferenceKeysForTemplate(message.templateKey);
   const preferences = message.customerId ? await db.select().from(notificationPreferences).where(and(eq(notificationPreferences.tenantId, input.tenantId), eq(notificationPreferences.customerId, message.customerId), inArray(notificationPreferences.eventKey, preferenceKeys))) : [];
-  const preference = preferences.find((item) => item.eventKey === message.templateKey) ?? preferences[0];
+  const preference = preferenceKeys.map((key) => preferences.find((item) => item.eventKey === key)).find(Boolean);
   const [consent] = message.customerId ? await db.select().from(consentRecords).where(and(eq(consentRecords.tenantId, input.tenantId), eq(consentRecords.customerId, message.customerId), eq(consentRecords.channel, message.channel), eq(consentRecords.category, "transactional"))).orderBy(desc(consentRecords.capturedAt)).limit(1) : [];
   const reason = suppressReason(message, preference, consent);
   if (reason) {
@@ -73,10 +74,12 @@ export async function processOutboundMessage(db: Database, registry: ConnectorRe
     return "suppressed";
   }
   try {
-    const sent = await sendThroughMessagingCapability(registry, { tenantId: input.tenantId, channel: message.channel === "email" ? "email" : "sms", recipient: message.recipient, subject: message.renderedSubject ?? undefined, body: message.renderedBody, idempotencyKey: message.idempotencyKey });
+    const channel = message.channel === "email" ? "email" : "sms";
+    const selected = await hydrateMessagingConnector(db, registry, input.tenantId, channel);
+    const sent = await sendThroughMessagingCapability(registry, { tenantId: input.tenantId, channel, recipient: message.recipient, subject: message.renderedSubject ?? undefined, body: message.renderedBody, idempotencyKey: message.idempotencyKey }, false);
     await db.transaction(async (tx) => {
-      await tx.update(outboundMessages).set({ status: "sent", providerReference: sent.reference ?? null, sentAt: now, failureCode: null, failureMessage: null, updatedAt: now }).where(and(eq(outboundMessages.id, message.id), eq(outboundMessages.tenantId, input.tenantId)));
-      await tx.insert(communicationEvents).values({ tenantId: input.tenantId, outboundMessageId: message.id, eventType: "sent", occurredAt: now, payload: { ...(sent.reference ? { reference: sent.reference } : {}), acceptedByProvider: true } });
+      await tx.update(outboundMessages).set({ status: "sent", connectorInstallationId: selected.installationId, providerReference: sent.reference ?? null, sentAt: now, failureCode: null, failureMessage: null, updatedAt: now }).where(and(eq(outboundMessages.id, message.id), eq(outboundMessages.tenantId, input.tenantId)));
+      await tx.insert(communicationEvents).values({ tenantId: input.tenantId, outboundMessageId: message.id, eventType: "sent", occurredAt: now, payload: { ...(sent.reference ? { reference: sent.reference } : {}), acceptedByProvider: true, mode: selected.mode } });
     });
     return "sent";
   } catch (error) {

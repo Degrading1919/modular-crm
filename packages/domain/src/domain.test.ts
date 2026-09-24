@@ -3,14 +3,14 @@ import { assertTransition } from "./states.ts";
 import { canReadResource, permissionsForRole, type StaffActor } from "./permissions.ts";
 
 import { generateOccurrences } from "./recurrence.ts";
-import { makeInvoiceSnapshot, invoiceBalance } from "./billing.ts";
+import { invoiceFinancialPosition, makeInvoiceSnapshot, invoiceBalance, settledPaymentStatuses } from "./billing.ts";
 import { calculateGrossPay } from "./payroll.ts";
 import { makeTransfer, stockBalance } from "./inventory.ts";
 
-it("lets office managers operate payroll without managing compensation policy", () => {
+it("keeps payroll and compensation access away from office managers by default", () => {
   const permissions = permissionsForRole("office");
   for (const key of ["payroll.read", "payroll.calculate", "payroll.review", "payroll.approve", "payroll.export", "reports.payroll_read", "compensation.read"] as const) {
-    expect(permissions.has(key)).toBe(true);
+    expect(permissions.has(key)).toBe(false);
   }
   expect(permissions.has("compensation.manage")).toBe(false);
   expect(permissions.has("reports.franchise_read")).toBe(false);
@@ -22,6 +22,17 @@ describe("authorization", () => {
     expect(canReadResource(actor, { tenantId: "tenant-a", locationId: "branch-a", assignedUserIds: ["tech-a"] }, "jobs.read")).toBe(true);
     expect(canReadResource(actor, { tenantId: "tenant-b", locationId: "branch-a", assignedUserIds: ["tech-a"] }, "jobs.read")).toBe(false);
     expect(canReadResource(actor, { tenantId: "tenant-a", locationId: "branch-a", assignedUserIds: ["other"] }, "jobs.read")).toBe(false);
+  });
+
+  it("requires customer resources to name a specifically granted service location", () => {
+    const customer = {
+      kind: "customer" as const, userId: "customer-user", tenantId: "tenant-a",
+      customerIds: new Set(["customer-a"]), locationIds: new Set(["location-a", "location-b"]),
+      customerLocationIds: new Map([["customer-a", new Set(["location-a"])]]),
+    };
+    expect(canReadResource(customer, { tenantId: "tenant-a", customerId: "customer-a", locationId: "location-a", customerVisible: true }, "jobs.read")).toBe(true);
+    expect(canReadResource(customer, { tenantId: "tenant-a", customerId: "customer-a", locationId: "location-b", customerVisible: true }, "jobs.read")).toBe(false);
+    expect(canReadResource(customer, { tenantId: "tenant-a", customerId: "customer-a", customerVisible: true }, "jobs.read")).toBe(false);
   });
 });
 
@@ -49,6 +60,17 @@ describe("financial history", () => {
     source[0]!.unitAmountCents = 9999;
     expect(invoice.totalCents).toBe(2500);
     expect(invoiceBalance(invoice.totalCents, 2500, 500)).toBe(500);
+  });
+  it("reconciles gross payments, refunds, and credits through additional payment collection", () => {
+    const afterRefund = invoiceFinancialPosition(10_000, 6_000, 2_000);
+    expect(afterRefund).toMatchObject({ grossPaidCents: 6_000, netCollectedCents: 4_000, balanceCents: 6_000, status: "partially_paid" });
+
+    const afterAdditionalPayment = invoiceFinancialPosition(10_000, 9_000, 2_000);
+    expect(afterAdditionalPayment).toMatchObject({ grossPaidCents: 9_000, netCollectedCents: 7_000, balanceCents: 3_000, status: "partially_paid" });
+
+    const afterCredit = invoiceFinancialPosition(10_000, 9_000, 2_000, 1_000);
+    expect(afterCredit).toMatchObject({ netCollectedCents: 7_000, creditedCents: 1_000, balanceCents: 2_000 });
+    expect(settledPaymentStatuses).toContain("partially_refunded");
   });
   it("calculates gross pay deterministically", () => {
     expect(calculateGrossPay({ approvedMinutes: 600, hourlyRateCents: 2000, overtimeAfterMinutes: 480, jobsCompleted: 4, perJobCents: 100, mileageTenths: 120, mileageRateCentsPerMile: 67 }).grossCents).toBe(23204);

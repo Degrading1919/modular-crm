@@ -1,5 +1,5 @@
 import { sql, type SQL } from "drizzle-orm";
-import { DomainError, requirePermission } from "@modular-crm/domain";
+import { DomainError, requirePermission, settledPaymentStatuses } from "@modular-crm/domain";
 import { rows, uuidArray, type DbRow } from "./sql";
 import { requireStaff, type SessionActor } from "./actor";
 import { json } from "./http";
@@ -12,6 +12,8 @@ type Period = Readonly<{ startDate: string; endDateExclusive: string; startAt: s
 const reportTypes: readonly ReportType[] = ["financial", "customers", "jobs", "routes", "staff", "inventory", "locations"];
 const reportRanges: readonly ReportRange[] = ["week", "month", "quarter", "year"];
 const csvRowLimit = 5_000;
+
+const settledPaymentStatusSql = sql.join(settledPaymentStatuses.map((status) => sql`${status}`), sql`, `);
 
 function authorize(actor: SessionActor, permissions: readonly ("reports.operational_read" | "reports.financial_read" | "reports.staff_read" | "reports.payroll_read" | "reports.inventory_read" | "reports.franchise_read" | "reports.export" | "organization.rollup_reports_read")[]): ReportingActor {
   requireStaff(actor);
@@ -300,7 +302,7 @@ async function financialReport(actor: ReportingActor, period: Period, locationId
       GROUP BY i.organization_location_id
     ), payment_totals AS (
       SELECT c.location_id,
-        coalesce(sum(p.amount_minor) FILTER (WHERE p.status IN ('succeeded', 'refunded') AND p.received_at >= ${period.startAt}::timestamptz AND p.received_at < ${period.endAt}::timestamptz), 0)::bigint AS gross_collected_cents,
+        coalesce(sum(p.amount_minor) FILTER (WHERE p.status IN (${settledPaymentStatusSql}) AND p.received_at >= ${period.startAt}::timestamptz AND p.received_at < ${period.endAt}::timestamptz), 0)::bigint AS gross_collected_cents,
         count(p.id) FILTER (WHERE p.status = 'failed' AND p.created_at >= ${period.startAt}::timestamptz AND p.created_at < ${period.endAt}::timestamptz)::int AS failed_payments
       FROM customer_scope c LEFT JOIN payments p ON p.tenant_id = c.tenant_id AND p.customer_id = c.id
       GROUP BY c.location_id
@@ -679,7 +681,7 @@ async function locationsReport(actor: ReportingActor, period: Period, locationId
         AND i.issued_at >= ${period.startAt}::timestamptz AND i.issued_at < ${period.endAt}::timestamptz
         AND i.status NOT IN ('draft', 'void') AND i.voided_at IS NULL GROUP BY i.organization_location_id
     ), payment_totals AS (
-      SELECT c.location_id, coalesce(sum(p.amount_minor) FILTER (WHERE p.status IN ('succeeded', 'refunded')
+      SELECT c.location_id, coalesce(sum(p.amount_minor) FILTER (WHERE p.status IN (${settledPaymentStatusSql})
         AND p.received_at >= ${period.startAt}::timestamptz AND p.received_at < ${period.endAt}::timestamptz), 0)::bigint AS gross_collected_cents
       FROM customer_scope c LEFT JOIN payments p ON p.tenant_id = c.tenant_id AND p.customer_id = c.id
       GROUP BY c.location_id
