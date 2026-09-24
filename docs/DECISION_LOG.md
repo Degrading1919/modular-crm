@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-09-24 — Industry Packs use a canonical evidence-backed research profile
+
+- **Status:** Accepted
+- **Area:** Industry Packs
+- **Decision:** Prospective Industry Packs are researched through the canonical `docs/research/INDUSTRY_RESEARCH_PROFILE_TEMPLATE.md` contract, with completed profiles stored under `docs/research/industry-packs/<industry-key>.md`. Research preserves evidence, uncertainty, workflow realities, packaging signals, and candidate core-platform gaps before findings are translated into runtime pack configuration.
+- **Rationale:** A shared profile lets multiple research agents work in parallel without inventing incompatible schemas and keeps source evidence separate from the compact runtime Industry Pack.
+- **Authoritative doc:** `docs/INDUSTRY_PACKS.md`
+
 ## 2026-09-24 — Successful payments can send a receipt
 
 - **Status:** Accepted
