@@ -36,6 +36,12 @@ Completed profiles belong under `docs/research/industry-packs/<industry-key>.md`
 
 Research workers should map findings to the existing `IndustryPack` contract, explicitly distinguish Industry Pack configuration from candidate shared-platform gaps, and leave unsupported or irrelevant fields unknown rather than inventing defaults. Multiple industries may be researched in parallel as long as each worker produces an independent profile using the same template.
 
+### Preferred candidate pool
+
+Use The Sweaty Startup's [Businesses I Love](https://www.sweatystartup.com/blog/businesses-i-love) list as the preferred starting pool when generating prospective service-business industries to research. It is a candidate source, not evidence that every listed business deserves a separate Industry Pack. Research should still determine whether a candidate has a distinct enough operating model to justify its own pack, should be represented as a variant of another pack, or is a poor fit for the platform.
+
+Prioritize breadth of operating models when selecting batches so the research stress-tests the horizontal platform rather than repeatedly sampling near-identical route-service businesses.
+
 ## First reference Industry Pack: Pet Waste Removal
 
 Pet waste removal is the first complete reference implementation and should prove that the shared platform can support a route-dense recurring service business end to end.
