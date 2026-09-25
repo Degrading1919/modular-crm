@@ -3,12 +3,8 @@ import { expect, test } from "@playwright/test";
 const password = "Demo12345!";
 
 type CapabilityCatalog = {
-  modules: Array<{
-    key: string;
-    entitled: boolean;
-    enabled: boolean;
-    usable: boolean;
-  }>;
+  commercialTermsConfigured: boolean;
+  modules: Array<{ key: string; entitled: boolean; enabled: boolean; usable: boolean }>;
 };
 
 test("a new owner can choose recommended capabilities and manage them without losing records", async ({ page }) => {
@@ -29,17 +25,17 @@ test("a new owner can choose recommended capabilities and manage them without lo
   await page.getByRole("button", { name: /Continue/ }).click();
 
   // Industry Pack answers change the recommendation set before the owner accepts it.
-  await expect(page.getByRole("heading", { name: "Choose what helps you run your business." })).toBeVisible();
-  await page.getByRole("button", { name: "Customize" }).click();
+  await expect(page.getByRole("heading", { name: "Choose the tools you need now" })).toBeVisible();
+  await page.getByRole("button", { name: "Choose different tools" }).click();
   const fieldTechnicians = page.getByLabel("Do you send technicians or crews to customer properties?");
   await fieldTechnicians.selectOption("yes");
-  await page.getByRole("button", { name: "Update suggestions" }).click();
+  await page.getByRole("button", { name: "Refresh suggestions" }).click();
   await expect(page.getByText("Suggestions updated for the answers you gave.")).toBeVisible();
   const fieldOperations = page.getByRole("checkbox", { name: /Field Operations/ });
   await expect(fieldOperations).toBeChecked();
   await expect(page.getByText("Suggested", { exact: true }).first()).toBeVisible();
   await page.getByRole("button", { name: "Back to suggestions" }).click();
-  await page.getByRole("button", { name: "Accept recommended tools" }).click();
+  await page.getByRole("button", { name: "Continue with these tools" }).click();
 
   // Complete the minimum onboarding records through the same authenticated API so the
   // test can exercise capability management without repeating unrelated onboarding UI.
@@ -66,28 +62,27 @@ test("a new owner can choose recommended capabilities and manage them without lo
   expect(createdInvoice.status()).toBe(201);
   const invoiceId = (await createdInvoice.json()).item.id as string;
 
-  // Add an additional module later, then remove billing. The server must deny new
-  // invoice writes while the previously created invoice remains readable.
+  // In this V1, an explicit owner selection creates an unpriced self-service
+  // grant. Recommendations alone do not grant access; choosing a tool does.
   await page.goto("/app/capabilities");
-  await expect(page.getByRole("heading", { name: "My capabilities" })).toBeVisible();
-  const inventory = page.getByRole("checkbox", { name: /Inventory and Supplies/ });
+  await expect(page.getByRole("heading", { name: "Tools for your business" })).toBeVisible();
+  const inventory = page.getByRole("checkbox", { name: "Use Inventory and Supplies" });
   await expect(inventory).toBeEnabled();
+  await expect(page.locator(".module-setting").filter({ hasText: "Inventory and Supplies" })).toContainText("Access: Not included");
   if (!(await inventory.isChecked())) await inventory.check();
-  await page.getByRole("button", { name: "Save my capabilities" }).click();
+  await page.getByRole("button", { name: "Save tool choices" }).click();
   await expect(page.getByText("Your capability choices are saved.")).toBeVisible();
-  const afterAdding = await page.request.get("/api/v1/capabilities");
-  expect(afterAdding.ok()).toBeTruthy();
-  const addedCatalog = (await afterAdding.json()).item as CapabilityCatalog;
-  expect(addedCatalog.modules.find((module) => module.key === "inventory-and-supplies")).toMatchObject({
-    entitled: true,
-    enabled: true,
-    usable: true,
-  });
+  await expect(page.locator(".module-setting").filter({ hasText: "Inventory and Supplies" })).toContainText("Access: Included");
+  const afterConfiguration = await page.request.get("/api/v1/capabilities");
+  expect(afterConfiguration.ok()).toBeTruthy();
+  const catalog = (await afterConfiguration.json()).item as CapabilityCatalog;
+  expect(catalog.commercialTermsConfigured).toBe(false);
+  expect(catalog.modules.find((module) => module.key === "inventory-and-supplies")).toMatchObject({ entitled: true, enabled: true, usable: true });
 
-  const billing = page.getByRole("checkbox", { name: /Billing and Payments/ });
+  const billing = page.getByRole("checkbox", { name: "Use Billing and Payments" });
   await expect(billing).toBeChecked();
   await billing.uncheck();
-  await page.getByRole("button", { name: "Save my capabilities" }).click();
+  await page.getByRole("button", { name: "Save tool choices" }).click();
   await expect(page.getByText("Your capability choices are saved.")).toBeVisible();
 
   const deniedInvoice = await page.request.post("/api/v1/invoices", {

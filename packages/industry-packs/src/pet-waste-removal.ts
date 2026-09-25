@@ -64,7 +64,7 @@ export const PET_WASTE_REMOVAL_PACK: IndustryPack = {
     { key: "confirm_property", label: "Confirm the service address", required: true },
     { key: "review_safety", label: "Review access and safety notes", required: true },
     { key: "perform_cleanup", label: "Complete the cleanup", required: true },
-    { key: "completion_photo", label: "Add a completion photo when required", required: false },
+    { key: "completion_photo", label: "Add a completion photo", required: false },
     { key: "technician_note", label: "Add a note when needed", required: false },
   ],
   noncompletionReasons: [

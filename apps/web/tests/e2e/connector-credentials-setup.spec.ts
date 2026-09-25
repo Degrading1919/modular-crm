@@ -66,6 +66,8 @@ test("owner can save, connect, and remove live connection details without exposi
 
   await page.goto("/app/connections");
   const card = page.locator(`[data-connector-key="${connectorKey}"]`);
+  await expect(card.getByRole("button", { name: "Connect", exact: true })).toBeDisabled();
+  await card.getByText("Set up connection", { exact: true }).click();
   await expect(card.getByLabel("Account token")).toHaveAttribute("maxlength", "64");
   await expect(card.getByText("Find this in your provider account settings.")).toBeVisible();
   await expect(page.getByText("Demo connection · no real messages or charges")).toBeVisible();
@@ -77,6 +79,7 @@ test("owner can save, connect, and remove live connection details without exposi
   await savedResponse;
   await expect(card.getByText(/Connection details saved/)).toBeVisible();
   await expect(field).toHaveValue("");
+  await expect(card.getByText("Replace saved details", { exact: true })).toBeVisible();
   await expect(page.locator("body")).not.toContainText(secret);
   expect(calls.find((call) => call.path.endsWith("/credentials"))?.body).toEqual({ credentials: { accountToken: secret } });
   expect(calls.some((call) => call.path.includes(secret))).toBe(false);

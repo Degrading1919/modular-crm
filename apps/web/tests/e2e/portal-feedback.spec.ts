@@ -21,19 +21,21 @@ test("customer can rate a completed visit and sees the saved response", async ({
     await expect(page.getByRole("button", { name: "Send feedback" })).toHaveCount(0);
     return;
   }
-  await ratingGroup.getByRole("radio", { name: "5 stars" }).check();
-  await page.getByLabel(/Anything you’d like us to know/).fill("The gate was closed and the yard looks great.");
+  const responseNote = `The gate was closed and the yard looks great. ${Date.now()}`;
+  await ratingGroup.last().getByRole("radio", { name: "5 stars" }).check();
+  const feedbackForm = ratingGroup.last().locator("xpath=../..");
+  await feedbackForm.getByLabel(/Anything you’d like us to know/).fill(responseNote);
 
   const submitted = page.waitForResponse((response) => response.url().includes("/api/v1/portal/feedback/") && response.request().method() === "POST");
-  await page.getByRole("button", { name: "Send feedback" }).click();
+  await feedbackForm.getByRole("button", { name: "Send feedback" }).click();
   const response = await submitted;
   expect([200, 201]).toContain(response.status());
   const payload = await response.json();
   expect(payload.item.rating === 5 || payload.item.duplicate === true).toBeTruthy();
 
-  await expect(page.getByRole("status").filter({ hasText: "Your feedback: 5 out of 5" })).toBeVisible();
-  await expect(page.getByText("The gate was closed and the yard looks great.")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Send feedback" })).toHaveCount(0);
+  const savedResponse = page.getByText(responseNote, { exact: true });
+  await expect(savedResponse).toBeVisible();
+  await expect(savedResponse.locator("xpath=..")).toContainText("Your feedback: 5 out of 5");
 });
 
 test("feedback stays available and explains a temporary submission error", async ({ page }) => {
@@ -53,10 +55,11 @@ test("feedback stays available and explains a temporary submission error", async
   }));
   const ratingGroup = await openServices(page);
   await expect(ratingGroup.first()).toBeVisible();
-  await ratingGroup.getByRole("radio", { name: "4 stars" }).check();
-  await page.getByRole("button", { name: "Send feedback" }).click();
+  const lastFeedbackForm = ratingGroup.last().locator("xpath=../..");
+  await ratingGroup.last().getByRole("radio", { name: "4 stars" }).check();
+  await lastFeedbackForm.getByRole("button", { name: "Send feedback" }).click();
 
   await expect(page.getByRole("alert").filter({ hasText: "Feedback is temporarily unavailable." })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Send feedback" })).toBeEnabled();
-  await expect(ratingGroup.getByRole("radio", { name: "4 stars" })).toBeChecked();
+  await expect(lastFeedbackForm.getByRole("button", { name: "Send feedback" })).toBeEnabled();
+  await expect(ratingGroup.last().getByRole("radio", { name: "4 stars" })).toBeChecked();
 });

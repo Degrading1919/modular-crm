@@ -20,16 +20,16 @@ test("an issued invoice triggers an active automation and records its action", a
 
   await page.goto("/app/automations");
   await page.getByRole("button", { name: "Create a rule" }).click();
-  await page.getByLabel("Rule name").fill(ruleName);
-  await page.getByLabel("What should this rule do?").fill("Create a team follow-up when an invoice is issued.");
+  await page.getByLabel("Name this rule").fill(ruleName);
+  await page.getByLabel("Description (optional)").fill("Create a team follow-up when an invoice is issued.");
   await page.locator("#automation-trigger").selectOption("invoice.issued");
   await page.locator("#automation-action").selectOption("create_ticket");
   await page.locator("#automation-ticket-title").fill(ticketTitle);
   await page.locator("#automation-ticket-description").fill("Follow up on the newly issued invoice.");
-  await page.getByRole("button", { name: "Turn on rule" }).click();
+  await page.getByRole("button", { name: "Save and turn on" }).click();
 
   const ruleCard = page.locator("article.action-item").filter({ hasText: ruleName });
-  await expect(page.getByText("Automation rule saved.")).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Automation saved and turned on for future matching activity." })).toBeVisible();
   await expect(ruleCard.getByText("On", { exact: true })).toBeVisible();
 
   await page.goto("/app/invoices");

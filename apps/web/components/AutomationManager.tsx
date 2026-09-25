@@ -154,14 +154,17 @@ export default function AutomationManager({
   }
 
   function closeBuilder() { setCreating(false); setEditingRule(null); }
-  async function saved() {
+  async function saved(rule?: AutomationRuleBuilderRule) {
     closeBuilder();
-    setNotice("Automation rule saved.");
+    const wasTurnedOn = (rule?.status ?? editingRule?.status) === "active";
+    setNotice(wasTurnedOn ? "Automation saved and turned on for future matching activity." : "Automation saved as a draft.");
     await refresh();
     onChanged?.();
   }
 
   return <div className="stack" aria-label="Automation manager">
+    {error && <p className="notice notice-error" role="alert">{error}</p>}
+    {notice && <p className="notice notice-success" role="status" aria-live="polite">{notice}</p>}
     <section className="card card-pad stack" aria-labelledby="automation-rules-heading">
       <div className="card-heading">
         <div>
@@ -171,24 +174,24 @@ export default function AutomationManager({
         </div>
         <button type="button" className="btn btn-primary" onClick={() => { setEditingRule(null); setCreating(true); }}>Create a rule</button>
       </div>
-      {loadingRules ? <p role="status" className="subtle">Loading automations…</p> : rules.length === 0 ?
-        <div className="empty"><h3>No automation rules yet</h3><p>Create a rule to send a follow-up or remind your team when something happens.</p></div> :
+      {loadingRules ? <p role="status" className="subtle">Loading automation rules…</p> : rules.length === 0 ?
+        <div className="empty"><h3>No automation rules yet</h3><p>Create a rule to send a customer message or add a follow-up for your team when something happens.</p><button type="button" className="btn btn-secondary" onClick={() => { setEditingRule(null); setCreating(true); }}>Create your first rule</button></div> :
         <div className="stack">
-          {rules.map((rule) => <article className="action-item" key={rule.id}>
+          {rules.map((rule) => <article className="action-item" key={rule.id} style={{ alignItems: "flex-start", flexWrap: "wrap" }}>
             <div className="action-icon" aria-hidden="true">✦</div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <strong>{rule.name}</strong>
+            <div style={{ flex: "1 1 240px", minWidth: 0 }}>
+              <strong style={{ overflowWrap: "anywhere" }}>{rule.name}</strong>
               <p className="subtle" style={{ margin: "4px 0" }}>{rule.description || automationTriggerLabel(rule.triggerConfig?.event ?? rule.trigger)}</p>
               <p className="subtle" style={{ margin: 0, fontSize: ".8rem" }}>
-                {automationTriggerLabel(rule.triggerConfig?.event ?? rule.trigger)} · Last run: {rule.lastRunAt ? date(rule.lastRunAt) : "Never"}
+                Starts when: {automationTriggerLabel(rule.triggerConfig?.event ?? rule.trigger)} · Last run: {rule.lastRunAt ? date(rule.lastRunAt) : "Never"}
               </p>
             </div>
             <span className={statusClass(rule.status)}>{statusLabel(rule.status)}</span>
-            <div className="inline-actions">
+            <div className="inline-actions" style={{ flex: "1 1 100%", justifyContent: "flex-end" }}>
               <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setCreating(false); setEditingRule(rule); }}>Edit</button>
               <button type="button" className="btn btn-secondary btn-sm" onClick={() => setSelectedRuleId(rule.id)} aria-label={`View history for ${rule.name}`}>History</button>
-              <button type="button" className="btn btn-secondary btn-sm" onClick={() => void changeStatus(rule)} disabled={busyRuleId === rule.id}>
-                {busyRuleId === rule.id ? "Saving…" : rule.status === "active" ? "Pause" : "Turn on"}
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => void changeStatus(rule)} disabled={Boolean(busyRuleId)}>
+                {busyRuleId === rule.id ? "Saving…" : rule.status === "active" ? "Pause rule" : "Turn on rule"}
               </button>
             </div>
           </article>)}
@@ -198,9 +201,9 @@ export default function AutomationManager({
     {(creating || editingRule) && <section className="card card-pad stack" aria-labelledby="automation-builder-heading">
       <div className="card-heading">
         <div><p className="eyebrow">Automation setup</p><h2 id="automation-builder-heading">{editingRule ? `Edit ${editingRule.name}` : "Create an automation rule"}</h2></div>
-        <button type="button" className="btn btn-secondary" onClick={closeBuilder}>Close</button>
+        <button type="button" className="btn btn-secondary" onClick={closeBuilder}>Cancel</button>
       </div>
-      <AutomationRuleBuilder key={editingRule?.id ?? "new"} initialRule={editingRule ?? undefined} endpoint={rulesEndpoint} onCancel={closeBuilder} onSaved={() => void saved()} />
+      <AutomationRuleBuilder key={editingRule?.id ?? "new"} initialRule={editingRule ?? undefined} endpoint={rulesEndpoint} onCancel={closeBuilder} onSaved={(rule) => void saved(rule)} />
     </section>}
 
     <section className="card card-pad stack" aria-labelledby="automation-history-heading">
@@ -214,8 +217,6 @@ export default function AutomationManager({
           </select>
         </div>
       </div>
-      {error && <p className="notice notice-error" role="alert">{error}</p>}
-      {notice && <p className="notice notice-success" role="status">{notice}</p>}
       {loadingRuns ? <p role="status" className="subtle">Loading run history…</p> : runs.length === 0 ?
         <div className="empty"><h3>No runs to show</h3><p>When an automation matches a business event, its progress will appear here.</p></div> :
         <div className="stack">

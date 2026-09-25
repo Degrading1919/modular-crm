@@ -35,7 +35,7 @@ test("connector marketplace groups test connections and scopes connection state 
 
   await page.goto("/app/connections");
   await expect(page.getByText(/Optional connections for Pet Waste Removal/)).toBeVisible();
-  const accountingGroup = page.getByRole("heading", { name: /Sync Accounting.*Suggested for Pet Waste Removal/ });
+  const accountingGroup = page.getByRole("heading", { name: /Accounting.*Suggested for Pet Waste Removal/ });
   await expect(accountingGroup).toBeVisible();
   const accountingCard = page.locator(".module-card").filter({ has: page.getByRole("heading", { name: "Test accounting", exact: true }) });
   await expect(accountingCard.getByText(/Demo connection/)).toBeVisible();

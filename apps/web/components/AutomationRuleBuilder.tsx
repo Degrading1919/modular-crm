@@ -71,6 +71,13 @@ function readConditions(value: unknown): ConditionDraft[] {
   });
 }
 
+function conditionSummary(condition: ConditionDraft, trigger: TriggerOption): string {
+  const field = trigger.fields.find((candidate) => candidate.path === condition.field)?.label ?? "Selected detail";
+  const operator = OPERATORS.find((candidate) => candidate.value === condition.operator)?.label ?? "matches";
+  if (["exists", "not_exists"].includes(condition.operator)) return `${field} ${operator}`;
+  return `${field} ${operator} “${condition.value || "…"}”`;
+}
+
 /** Build the small, declarative payload accepted by the tenant automation API. */
 export function buildAutomationRulePayload(input: {
   name: string; description: string; trigger: string; conditions: readonly ConditionDraft[];
@@ -107,17 +114,23 @@ export default function AutomationRuleBuilder({ initialRule, endpoint = "/automa
   const [ticketDescription, setTicketDescription] = useState(asText(initialConfiguration.description));
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [removedConditionCount, setRemovedConditionCount] = useState(0);
   const selectedTrigger = triggerFor(trigger);
 
   function changeTrigger(value: string) {
     const next = triggerFor(value);
     setTrigger(next.event);
-    setConditions((current) => current.filter((condition) => next.fields.some((field) => field.path === condition.field)));
+    const compatible = conditions.filter((condition) => next.fields.some((field) => field.path === condition.field));
+    setRemovedConditionCount(conditions.length - compatible.length);
+    setConditions(compatible);
   }
 
   function addCondition() {
     const field = selectedTrigger.fields[0];
-    if (field) setConditions((current) => [...current, { field: field.path, operator: "equals", value: "" }]);
+    if (field) {
+      setRemovedConditionCount(0);
+      setConditions((current) => [...current, { field: field.path, operator: "equals", value: "" }]);
+    }
   }
 
   async function save(status: "draft" | "active", event?: FormEvent<HTMLFormElement>) {
@@ -140,36 +153,38 @@ export default function AutomationRuleBuilder({ initialRule, endpoint = "/automa
 
   return <form className="stack" onSubmit={(event) => void save("draft", event)}>
     <section className="card card-pad stack" aria-labelledby="automation-trigger-heading">
-      <div><p className="eyebrow">Step 1</p><h2 id="automation-trigger-heading">When this happens</h2><p className="subtle">Choose the business moment that should start this rule.</p></div>
+      <div><p className="eyebrow">Step 1 of 3</p><h2 id="automation-trigger-heading">Choose what starts the rule</h2><p className="subtle">Give it a name, then choose the business activity that should start it.</p></div>
       <div className="form-grid">
-        <div className="field full"><label htmlFor="automation-name">Rule name</label><input id="automation-name" value={name} onChange={(event) => setName(event.target.value)} maxLength={120} required placeholder="For example, follow up after a missed visit" /></div>
-        <div className="field full"><label htmlFor="automation-description">What should this rule do? <span className="subtle">(optional)</span></label><input id="automation-description" value={description} onChange={(event) => setDescription(event.target.value)} maxLength={600} /></div>
+        <div className="field full"><label htmlFor="automation-name">Name this rule</label><input id="automation-name" value={name} onChange={(event) => setName(event.target.value)} maxLength={120} required placeholder="For example, follow up after a service visit" /></div>
+        <div className="field full"><label htmlFor="automation-description">Description <span className="subtle">(optional)</span></label><input id="automation-description" value={description} onChange={(event) => setDescription(event.target.value)} maxLength={600} placeholder="A short note for your team" /></div>
         <div className="field full"><label htmlFor="automation-trigger">When this happens</label><select id="automation-trigger" value={trigger} onChange={(event) => changeTrigger(event.target.value)}>{TRIGGERS.map((option) => <option key={option.event} value={option.event}>{option.label}</option>)}</select></div>
       </div>
     </section>
 
     <section className="card card-pad stack" aria-labelledby="automation-conditions-heading">
-      <div><p className="eyebrow">Step 2</p><h2 id="automation-conditions-heading">Only if <span className="subtle">(optional)</span></h2><p className="subtle">Every check you add must match. Leave this empty to run each time.</p></div>
+      <div><p className="eyebrow">Step 2 of 3</p><h2 id="automation-conditions-heading">Add conditions <span className="subtle">(optional)</span></h2><p className="subtle">The rule runs only when every condition matches. Leave this empty to run it for each matching activity.</p></div>
+      {removedConditionCount > 0 && <p className="notice notice-info" role="status">{removedConditionCount} condition{removedConditionCount === 1 ? " was" : "s were"} removed because {removedConditionCount === 1 ? "it does" : "they do"} not apply to the selected activity.</p>}
+      {conditions.length > 0 && <div className="notice notice-info" aria-live="polite"><span><strong>Run only when all are true</strong><br />{conditions.map((condition) => conditionSummary(condition, selectedTrigger)).join(" · ")}</span></div>}
       {conditions.map((condition, index) => {
         const field = selectedTrigger.fields.find((candidate) => candidate.path === condition.field) ?? selectedTrigger.fields[0];
         const operatorNeedsValue = !["exists", "not_exists"].includes(condition.operator);
         const fieldOperators = field?.kind === "number" ? OPERATORS : TEXT_OPERATORS;
         return <div className="form-grid" key={`${index}-${condition.field}`}>
-          <div className="field"><label htmlFor={`automation-field-${index}`}>Check</label><select id={`automation-field-${index}`} value={condition.field} onChange={(event) => setConditions((current) => current.map((item, itemIndex) => {
+          <div className="field"><label htmlFor={`automation-field-${index}`}>Activity detail</label><select id={`automation-field-${index}`} value={condition.field} onChange={(event) => setConditions((current) => current.map((item, itemIndex) => {
             if (itemIndex !== index) return item;
             const nextField = selectedTrigger.fields.find((candidate) => candidate.path === event.target.value);
             return { ...item, field: event.target.value, operator: nextField?.kind !== "number" && item.operator === "greater_than" ? "equals" : item.operator };
           }))}>{selectedTrigger.fields.map((candidate) => <option key={candidate.path} value={candidate.path}>{candidate.label}</option>)}</select></div>
-          <div className="field"><label htmlFor={`automation-operator-${index}`}>Rule</label><select id={`automation-operator-${index}`} value={condition.operator} onChange={(event) => setConditions((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, operator: event.target.value } : item))}>{fieldOperators.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
-          {operatorNeedsValue && <div className="field"><label htmlFor={`automation-value-${index}`}>Value</label><input id={`automation-value-${index}`} type={field?.kind === "number" ? "number" : "text"} value={condition.value} onChange={(event) => setConditions((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))} required min={condition.operator === "greater_than" ? "0" : undefined} /></div>}
-          <div className="inline-actions"><button type="button" className="btn btn-secondary" aria-label={`Remove check ${index + 1}`} onClick={() => setConditions((current) => current.filter((_, itemIndex) => itemIndex !== index))}>Remove check</button></div>
+          <div className="field"><label htmlFor={`automation-operator-${index}`}>How it matches</label><select id={`automation-operator-${index}`} value={condition.operator} onChange={(event) => setConditions((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, operator: event.target.value } : item))}>{fieldOperators.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
+          {operatorNeedsValue && <div className="field"><label htmlFor={`automation-value-${index}`}>{field?.kind === "number" ? "Amount (in cents)" : "Matching value"}</label><input id={`automation-value-${index}`} type={field?.kind === "number" ? "number" : "text"} value={condition.value} onChange={(event) => setConditions((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item))} required step={field?.kind === "number" ? "any" : undefined} aria-describedby={field?.kind === "number" ? `automation-value-help-${index}` : undefined} />{field?.kind === "number" && <small id={`automation-value-help-${index}`}>Enter a whole amount in cents. For example, $25.00 is 2500 cents.</small>}</div>}
+          <div className="inline-actions"><button type="button" className="btn btn-secondary" aria-label={`Remove condition ${index + 1}`} onClick={() => setConditions((current) => current.filter((_, itemIndex) => itemIndex !== index))}>Remove condition</button></div>
         </div>;
       })}
-      {conditions.length < 5 && <div><button type="button" className="btn btn-secondary" onClick={addCondition}>Add a check</button></div>}
+      {conditions.length < 5 && <div><button type="button" className="btn btn-secondary" onClick={addCondition}>Add a condition</button></div>}
     </section>
 
     <section className="card card-pad stack" aria-labelledby="automation-action-heading">
-      <div><p className="eyebrow">Step 3</p><h2 id="automation-action-heading">Then do this</h2><p className="subtle">Messages go to the customer connected to the event. You can review the rule before turning it on.</p></div>
+      <div><p className="eyebrow">Step 3 of 3</p><h2 id="automation-action-heading">Choose what happens</h2><p className="subtle">Messages go to the customer linked to the activity. An office follow-up is added for your team.</p></div>
       <div className="field"><label htmlFor="automation-action">What should happen?</label><select id="automation-action" value={action} onChange={(event) => setAction(event.target.value as AutomationActionType)}>{ACTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
       {(action === "send_email" || action === "send_sms") && <div className="form-grid">
         {action === "send_email" && <div className="field full"><label htmlFor="automation-email-subject">Email subject</label><input id="automation-email-subject" value={subject} onChange={(event) => setSubject(event.target.value)} maxLength={180} required /></div>}
@@ -182,13 +197,13 @@ export default function AutomationRuleBuilder({ initialRule, endpoint = "/automa
     </section>
 
     <section className="card card-pad stack" aria-labelledby="automation-review-heading">
-      <div><p className="eyebrow">Review</p><h2 id="automation-review-heading">Check your rule</h2><p className="subtle">When {TRIGGERS.find((option) => option.event === trigger)?.label.toLowerCase()}{conditions.length ? ` and ${conditions.length} check${conditions.length === 1 ? "" : "s"} match` : ""}, {ACTIONS.find((option) => option.value === action)?.label.toLowerCase()}.</p><p className="subtle">Turning on a rule lets it act on future matching events. You can pause it later.</p></div>
+      <div><p className="eyebrow">Review</p><h2 id="automation-review-heading">Review before saving</h2><p><strong>When:</strong> {TRIGGERS.find((option) => option.event === trigger)?.label}</p>{conditions.length > 0 && <div><strong>Only when all are true:</strong><ul>{conditions.map((condition, index) => <li key={`${condition.field}-${index}`}>{conditionSummary(condition, selectedTrigger)}</li>)}</ul></div>}<p><strong>Then:</strong> {ACTIONS.find((option) => option.value === action)?.label}</p><p className="subtle">Turning on this rule applies it to future activity. You can pause it at any time.</p></div>
     </section>
     {error && <p className="notice notice-error" role="alert">{error}</p>}
     <div className="inline-actions">
       {onCancel && <button type="button" className="btn btn-secondary" onClick={onCancel} disabled={saving}>Cancel</button>}
-      <button type="submit" className="btn btn-secondary" disabled={saving}>{saving ? "Saving…" : "Save draft"}</button>
-      <button type="button" className="btn btn-primary" disabled={saving} onClick={(event) => { const form = event.currentTarget.form; if (form?.reportValidity()) void save("active"); }}>Turn on rule</button>
+      <button type="submit" className="btn btn-secondary" disabled={saving}>{saving ? "Saving…" : "Save as draft"}</button>
+      <button type="button" className="btn btn-primary" disabled={saving} onClick={(event) => { const form = event.currentTarget.form; if (form?.reportValidity()) void save("active"); }}>{saving ? "Saving…" : "Save and turn on"}</button>
     </div>
   </form>;
 }

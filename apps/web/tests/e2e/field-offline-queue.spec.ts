@@ -102,7 +102,7 @@ test("field queue preserves operation identity and evidence through retry, confl
     const attempts: Array<Record<string, unknown>> = [];
     let transientFailuresRemaining = 2;
     const savedEvidence = `Evidence retained across reconnect ${unique}`;
-    await field.getByLabel("What should the office know?").fill(savedEvidence);
+    await field.getByLabel("Share an update with the office").fill(savedEvidence);
     await field.getByRole("button", { name: "Save note" }).click();
     const firstOperation = await field.getByLabel(/Queued update/).first();
     await expect(firstOperation).toContainText(/pending sync/i);
@@ -139,12 +139,12 @@ test("field queue preserves operation identity and evidence through retry, confl
     const conflictEvidence = `Keep this evidence for office review ${unique}`;
     await field.unroute(notePath);
     await field.route(notePath, async (route) => route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: { code: "CONFLICT", message: "The job changed while you were offline.", details: { expectedState: "in_progress", currentState: "canceled" } } }) }));
-    await field.getByLabel("What should the office know?").fill(conflictEvidence);
+    await field.getByLabel("Share an update with the office").fill(conflictEvidence);
     await field.getByRole("button", { name: "Save note" }).click();
     const conflict = field.getByLabel(/Queued update/).first();
     await expect(conflict).toContainText(/needs review/i);
-    await expect(conflict).toContainText("Expected state: in_progress");
-    await expect(conflict).toContainText("Current state: canceled");
+    await expect(conflict).toContainText("The job changed while you were offline.");
+    await expect(conflict).toContainText("Ask the office to review it before trying again.");
     await expect(conflict.getByText(conflictEvidence).first()).toBeVisible();
 
     await field.reload();

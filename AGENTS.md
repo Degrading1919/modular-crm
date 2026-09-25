@@ -44,6 +44,8 @@ Prefer language such as:
 
 Avoid exposing provider or implementation terminology unless needed.
 
+For frontend implementation and review, follow `.agents/skills/modular-crm-product-design/SKILL.md` and `docs/V1_UX_DESIGN.md`. The project-specific guidance is the primary design authority; keep the shared tokens and components consistent with it.
+
 ## Research standard
 
 When implementing a major capability:

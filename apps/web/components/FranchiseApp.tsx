@@ -50,6 +50,7 @@ export default function FranchiseApp() {
   const [statements, setStatements] = useState<RoyaltyStatement[]>([]);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState("");
@@ -84,7 +85,10 @@ export default function FranchiseApp() {
     if (!selectedId) { setRules([]); setStatements([]); return; }
     let active = true;
     setDetailLoading(true);
+    setDetailError("");
     setError("");
+    setRules([]);
+    setStatements([]);
     Promise.all([
       api<{ items?: RoyaltyRule[] }>(`/franchise/agreements/${selectedId}/rules`),
       api<{ items?: RoyaltyStatement[] }>(`/franchise/agreements/${selectedId}/statements`),
@@ -92,7 +96,7 @@ export default function FranchiseApp() {
       if (!active) return;
       setRules(unwrapItems(ruleResult));
       setStatements(unwrapItems(statementResult));
-    }).catch((issue) => { if (active) setError((issue as Error).message); })
+    }).catch((issue) => { if (active) { setError((issue as Error).message); setDetailError((issue as Error).message); } })
       .finally(() => { if (active) setDetailLoading(false); });
     return () => { active = false; };
   }, [selectedId]);
@@ -146,8 +150,8 @@ export default function FranchiseApp() {
     {error && <Notice kind="error" text={error}/>}
     {notice && <Notice kind="success" text={notice}/>}
     <div className="card card-pad" style={{ marginTop: 18 }}>
-      <div className="card-heading"><div><div className="eyebrow">Organization</div><h2 style={{ margin: "4px 0" }}>Franchise units</h2></div><span className="table-secondary">{agreements.length} active agreements</span></div>
-      {loading ? <Loading/> : agreements.length ? <div className="stack" style={{ marginBottom: 20 }}>{agreements.map((row) => <button key={row.agreement.id} type="button" className={`action-item ${selectedId === row.agreement.id ? "selected" : ""}`} style={{ textAlign: "left", width: "100%", cursor: "pointer" }} onClick={() => setSelectedId(row.agreement.id)}><div style={{ flex: 1 }}><strong>{row.child.displayName}</strong><p>{row.agreement.effectiveFrom}{row.agreement.effectiveTo ? ` – ${row.agreement.effectiveTo}` : " · ongoing"}</p></div><Badge status={row.agreement.active && row.child.active ? "active" : "inactive"}/></button>)}</div> : <Empty title="No franchise units yet" description="Add a unit below to start organizing child locations and royalty agreements."/>}
+      <div className="card-heading"><div><div className="eyebrow">Organization</div><h2 style={{ margin: "4px 0" }}>Franchise units</h2></div><span className="table-secondary">{agreements.length} agreements</span></div>
+      {loading ? <Loading label="Loading franchise units…"/> : agreements.length ? <div className="stack" style={{ marginBottom: 20 }}>{agreements.map((row) => <button key={row.agreement.id} type="button" className={`action-item ${selectedId === row.agreement.id ? "selected" : ""}`} aria-pressed={selectedId === row.agreement.id} style={{ textAlign: "left", width: "100%", cursor: "pointer" }} onClick={() => setSelectedId(row.agreement.id)}><div style={{ flex: 1, minWidth: 0 }}><strong>{row.child.displayName}</strong><p>{row.agreement.effectiveFrom}{row.agreement.effectiveTo ? ` – ${row.agreement.effectiveTo}` : " · ongoing"}</p></div><Badge status={row.agreement.active && row.child.active ? "active" : "inactive"}/></button>)}</div> : !error ? <Empty title="No franchise units yet" description="Add a unit below to start organizing child locations and royalty agreements."/> : null}
       <h3 style={{ margin: "20px 0 12px" }}>Add a unit</h3>
       <form className="form-grid" onSubmit={createUnit}>
         <Field label="Unit name" required value={unit.displayName} onChange={(displayName) => setUnit({ ...unit, displayName })}/>
@@ -168,11 +172,13 @@ export default function FranchiseApp() {
       <section className="card card-pad">
         <div className="eyebrow">{selected.child.displayName}</div><h2 style={{ margin: "4px 0 8px" }}>Royalty rule</h2>
         <p className="subtle">Apply a percentage to invoiced revenue for periods within the agreement dates.</p>
-        {rules.length > 0 && <div className="stack" style={{ marginBottom: 16 }}>{rules.map((rule) => <div className="action-item" key={rule.id}><div style={{ flex: 1 }}><strong>{(Number(rule.definition.rateBasisPoints) / 100).toFixed(2)}% of invoiced revenue</strong><p>From {rule.effectiveFrom}{rule.effectiveTo ? ` through ${rule.effectiveTo}` : " · ongoing"}</p></div><Badge status={rule.active ? "active" : "inactive"}/></div>)}</div>}
-        {rules.some((rule) => rule.active) ? <p className="subtle" style={{ fontSize: ".85rem" }}>This agreement already has an active rule. Add a new unit to configure its first rule; overlapping active rules are rejected.</p> : <form className="form-grid" onSubmit={createRule}>
-          <Field label="Royalty percentage" type="number" min="0.01" max="100" step="0.01" required value={ratePercent} onChange={setRatePercent}/>
-          <div className="form-actions"><button className="btn btn-secondary" type="submit" disabled={busy === "rule"}>{busy === "rule" ? "Saving…" : "Save royalty rule"}</button></div>
-        </form>}
+        {detailLoading ? <Loading label="Loading agreement details…"/> : detailError ? <Notice kind="error" text={`Couldn’t load this agreement’s details. ${detailError}`}/> : <>
+          {rules.length > 0 && <div className="stack" style={{ marginBottom: 16 }}>{rules.map((rule) => <div className="action-item" key={rule.id}><div style={{ flex: 1 }}><strong>{(Number(rule.definition.rateBasisPoints) / 100).toFixed(2)}% of invoiced revenue</strong><p>From {rule.effectiveFrom}{rule.effectiveTo ? ` through ${rule.effectiveTo}` : " · ongoing"}</p></div><Badge status={rule.active ? "active" : "inactive"}/></div>)}</div>}
+          {rules.some((rule) => rule.active) ? <p className="subtle" style={{ fontSize: ".85rem" }}>This agreement already has an active rule. Add a new unit to configure its first rule; overlapping active rules are rejected.</p> : <form className="form-grid" onSubmit={createRule}>
+            <Field label="Royalty percentage" type="number" min="0.01" max="100" step="0.01" required value={ratePercent} onChange={setRatePercent}/>
+            <div className="form-actions"><button className="btn btn-secondary" type="submit" disabled={busy === "rule"}>{busy === "rule" ? "Saving…" : "Save royalty rule"}</button></div>
+          </form>}
+        </>}
       </section>
       <section className="card card-pad">
         <div className="eyebrow">Statements</div><h2 style={{ margin: "4px 0 8px" }}>Calculate a period</h2>
@@ -183,7 +189,7 @@ export default function FranchiseApp() {
           <div className="form-actions"><button className="btn btn-primary" type="submit" disabled={busy === "statement"}>{busy === "statement" ? "Calculating…" : "Calculate statement"}</button></div>
         </form>
         <div className="divider"/><h3>Statement history</h3>
-        {detailLoading ? <Loading/> : statements.length ? <div className="stack">{statements.map((statement) => <article className="action-item" key={statement.id}><div style={{ flex: 1 }}><strong>{statement.periodStart} – {statement.periodEnd}</strong><p>{Number(statement.calculationSnapshot?.invoices?.length ?? 0)} issued invoices · basis {money(Number(statement.basisAmountMinor), statement.currency)}</p></div><div style={{ textAlign: "right" }}><Badge status={statement.status}/><div className="amount" style={{ marginTop: 5 }}>{money(Number(statement.royaltyAmountMinor), statement.currency)}</div><Link className="table-action" href={`/app/documents/royalty-statement/${statement.id}`}>View statement</Link></div></article>)}</div> : <Empty title="No statements yet" description="Calculate a period after confirming that a royalty rule covers its full date range."/>}
+        {detailLoading ? <Loading label="Loading statement history…"/> : detailError ? <p className="subtle">Statement history could not be loaded. The error appears above.</p> : statements.length ? <div className="stack">{statements.map((statement) => <article className="action-item" key={statement.id}><div style={{ flex: 1 }}><strong>{statement.periodStart} – {statement.periodEnd}</strong><p>{Number(statement.calculationSnapshot?.invoices?.length ?? 0)} issued invoices · basis {money(Number(statement.basisAmountMinor), statement.currency)}</p></div><div style={{ textAlign: "right" }}><Badge status={statement.status}/><div className="amount" style={{ marginTop: 5 }}>{money(Number(statement.royaltyAmountMinor), statement.currency)}</div><Link className="table-action" href={`/app/documents/royalty-statement/${statement.id}`}>View statement</Link></div></article>)}</div> : <Empty title="No statements yet" description="Calculate a period after confirming that a royalty rule covers its full date range."/>}
       </section>
     </div>}
   </>;

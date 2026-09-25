@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { api, friendly } from "./api";
 
 type IconName = "grid" | "users" | "calendar" | "route" | "briefcase" | "receipt" | "chart" | "globe" | "plug" | "settings" | "spark" | "bell" | "menu" | "close" | "arrow" | "plus" | "check" | "clock" | "map" | "wallet" | "search" | "chevron" | "external" | "download" | "person" | "shield" | "box" | "ticket" | "send" | "building" | "time" | "more" | "warning" | "refresh";
@@ -57,20 +57,70 @@ export function Badge({ status }: { status?: string | null }) {
 }
 
 export function Empty({ title, description, action }: { title: string; description: string; action?: React.ReactNode }) {
-  return <div className="empty"><div className="empty-icon"><Icon name="spark" size={24}/></div><h3>{title}</h3><p>{description}</p>{action}</div>;
+  return <div className="empty"><h3>{title}</h3><p>{description}</p>{action}</div>;
 }
 
 export function Notice({ text, kind = "info", onClose }: { text: string; kind?: "info" | "success" | "error"; onClose?: () => void }) {
-  return <div className={`notice notice-${kind}`} role={kind === "error" ? "alert" : "status"}><span>{text}</span>{onClose && <button type="button" className="icon-button" onClick={onClose} aria-label="Dismiss"><Icon name="close" size={15}/></button>}</div>;
+  return <div className={`notice notice-${kind}`} role={kind === "error" ? "alert" : "status"} aria-atomic="true"><span>{text}</span>{onClose && <button type="button" className="icon-button" onClick={onClose} aria-label="Dismiss"><Icon name="close" size={15}/></button>}</div>;
 }
 
 export function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
+  const titleId = useId();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+
   useEffect(() => {
-    function onKey(event: KeyboardEvent) { if (event.key === "Escape") onClose(); }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    onCloseRef.current = onClose;
   }, [onClose]);
-  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div role="dialog" aria-modal="true" aria-label={title} className="modal"><div className="modal-heading"><h2>{title}</h2><button className="icon-button" type="button" onClick={onClose} aria-label="Close"><Icon name="close"/></button></div>{children}</div></div>;
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const initialTarget = dialog.querySelector<HTMLElement>("[autofocus]") ?? dialog.querySelector<HTMLElement>("h2") ?? dialog;
+    initialTarget.focus();
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+
+      if (event.key !== "Tab" || !dialog) return;
+      const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )).filter((element) => element.getAttribute("aria-hidden") !== "true" && element.getClientRects().length > 0);
+
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+    };
+  }, []);
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} className="modal"><div className="modal-heading"><h2 id={titleId} tabIndex={-1}>{title}</h2><button className="icon-button" type="button" onClick={onClose} aria-label="Close"><Icon name="close"/></button></div>{children}</div></div>;
 }
 
 export function useResource<T>(path: string | null, initial: T) {

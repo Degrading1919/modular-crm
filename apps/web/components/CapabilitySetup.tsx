@@ -56,17 +56,22 @@ export function initiallySelectedModuleKeys(modules: readonly CapabilityModule[]
 
 export default function CapabilitySetup({
   mode,
+  setupProgress,
   onComplete,
+  onBackToIndustry,
   onSaved,
   canManage = true,
 }: {
   mode: "setup" | "manage";
+  setupProgress?: { step: number; total: number };
   onComplete?: (catalog: CapabilityCatalog | null) => void;
+  onBackToIndustry?: () => void;
   onSaved?: () => void;
   canManage?: boolean;
 }) {
   const result = useResourceCapabilities();
   const catalog = result.catalog;
+  const titleRef = useRef<HTMLHeadingElement>(null);
   const initialized = useRef(false);
   const completed = useRef(false);
   const [answers, setAnswers] = useState<Record<string, AnswerValue>>({});
@@ -91,6 +96,10 @@ export default function CapabilitySetup({
       onComplete?.(catalog);
     }
   }, [catalog, result.error, result.loading, mode, onComplete]);
+
+  useEffect(() => {
+    if (mode === "setup" && !result.loading && catalog) titleRef.current?.focus();
+  }, [catalog, mode, result.loading]);
 
   async function updateRecommendations(): Promise<boolean> {
     setRefreshing(true); setError("");
@@ -148,9 +157,10 @@ export default function CapabilitySetup({
   if (result.loading) return <Loading label="Loading your business tools…"/>;
 
   if (result.error || !catalog) {
-    return <CapabilityShell mode={mode}>
+    return <CapabilityShell mode={mode} setupProgress={setupProgress}>
       <Notice kind="error" text={result.error || "Your business tools could not be loaded. Please try again."}/>
       <div className="inline-actions" style={{ marginTop: 18 }}>
+        {mode === "setup" && onBackToIndustry && <button type="button" className="btn btn-secondary" onClick={onBackToIndustry}>Back to industry</button>}
         <button type="button" className="btn btn-secondary" onClick={result.reload}>Try again</button>
         {mode === "setup" && <button type="button" className="btn btn-primary" onClick={() => onComplete?.(null)}>Continue to business setup</button>}
       </div>
@@ -173,63 +183,63 @@ export default function CapabilitySetup({
     setAnswers(next); setSuggestionsStale(true);
   }
 
-  return <CapabilityShell mode={mode}>
+  return <CapabilityShell mode={mode} setupProgress={setupProgress}>
     <section className="card card-pad" aria-labelledby="capability-setup-title">
       {mode === "setup" ? <>
-        <div className="eyebrow">Your business tools</div>
-        <h1 id="capability-setup-title">Choose what helps you run your business.</h1>
-        <p className="subtle">We’ve picked a starting set based on {catalog.packName || "your business"}. You can change these choices later.</p>
+        <div className="eyebrow">Suggested tools</div>
+        <h1 id="capability-setup-title" ref={titleRef} tabIndex={-1}>Choose the tools you need now</h1>
+        <p className="subtle">These suggestions fit {catalog.packName || "your business"}. Choose what you need today. You can add tools later.</p>
         {!customizing && <>
-          <div className="stack" style={{ marginTop: 22 }}>
+          <div className="module-list" style={{ marginTop: 18 }}>
             {sortedModules.filter((module) => module.required || recommendedKeys.includes(module.key)).map((module) => <CapabilitySummary key={module.key} module={module} recommended={recommendedKeys.includes(module.key)}/>) }
           </div>
-          <div className="onboarding-footer" style={{ marginTop: 26 }}>
-            <button type="button" className="btn btn-secondary" onClick={() => setCustomizing(true)}>Customize</button>
-            <button type="button" className="btn btn-primary" disabled={busy} onClick={() => saveSetup("recommended")}>{busy ? "Saving…" : "Accept recommended tools"}<Icon name="arrow" size={16}/></button>
+          <div className="onboarding-footer" style={{ marginTop: 22 }}>
+            {onBackToIndustry ? <button type="button" className="btn btn-secondary" onClick={onBackToIndustry}>Back to industry</button> : <span/>}
+            <div className="inline-actions"><button type="button" className="btn btn-secondary" onClick={() => setCustomizing(true)}>Choose different tools</button>
+            <button type="button" className="btn btn-primary" disabled={busy} onClick={() => saveSetup("recommended")}>{busy ? "Saving…" : "Continue with these tools"}<Icon name="arrow" size={16}/></button></div>
           </div>
         </>}
         {customizing && <>
-          {questionFields.length > 0 && <div className="card card-pad" style={{ boxShadow: "none", background: "#f7f8f4", marginTop: 20 }}>
-            <h2>Tell us a little about your work</h2>
-            <p className="subtle" style={{ fontSize: ".85rem" }}>Your answers help us suggest tools that fit. You can skip any question.</p>
-            <div className="stack" style={{ marginTop: 16 }}>
+          {questionFields.length > 0 && <section className="recommendation-answers" aria-labelledby="recommendation-answers-title" style={{ marginTop: 20 }}>
+            <h2 id="recommendation-answers-title">A few questions about your work</h2>
+            <p className="subtle">Your answers help us tailor these suggestions. Skip anything you’re unsure about.</p>
+            <div className="stack" style={{ marginTop: 14 }}>
               {questionFields.map((question) => <div className="field" key={question.key}>
                 <label htmlFor={`capability-answer-${question.key}`}>{question.prompt}</label>
                 <RecommendationAnswer question={question} value={answers[question.key]} id={`capability-answer-${question.key}`} onChange={(value) => updateAnswer(question, value)}/>
               </div>)}
             </div>
-            <button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: 16 }} disabled={refreshing || !suggestionsStale} onClick={updateRecommendations}>{refreshing ? "Updating suggestions…" : "Update suggestions"}</button>
-          </div>}
-          <div className="card-heading" style={{ marginTop: 24 }}><h2>Choose the tools you want</h2><span className="muted-label">Required tools stay on</span></div>
-          <div className="stack" style={{ marginTop: 12 }}>
-            {sortedModules.map((module) => <label className="card card-pad" key={module.key} style={{ boxShadow: "none", cursor: module.required || module.available === false ? "default" : "pointer" }}>
-              <span className="checkbox-row"><input type="checkbox" checked={requiredKeys.has(module.key) || moduleKeys.includes(module.key)} disabled={module.required || module.available === false || busy} onChange={(event) => setModuleKeys((previous) => event.target.checked ? [...new Set([...previous, module.key])] : previous.filter((key) => key !== module.key))}/><strong>{module.name}</strong>{module.required && <span className="badge badge-neutral">Needed</span>}{recommendedKeys.includes(module.key) && !module.required && <span className="badge badge-good">Suggested</span>}</span>
-              <span className="subtle" style={{ display: "block", fontSize: ".84rem", margin: "7px 0 0 29px" }}>{module.description || "Tools to support this part of your business."}</span>
+            <button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: 14 }} disabled={refreshing || !suggestionsStale} onClick={updateRecommendations}>{refreshing ? "Updating suggestions…" : "Refresh suggestions"}</button>
+          </section>}
+          <div className="section-title" style={{ marginTop: 24 }}><h2>Choose tools</h2><span className="muted-label">Core tools stay on</span></div>
+          <div className="module-list">
+            {sortedModules.map((module) => <label className={`module-option ${module.required || module.available === false ? "disabled" : ""}`} key={module.key}>
+              <input type="checkbox" checked={requiredKeys.has(module.key) || moduleKeys.includes(module.key)} disabled={module.required || module.available === false || busy} onChange={(event) => setModuleKeys((previous) => event.target.checked ? [...new Set([...previous, module.key])] : previous.filter((key) => key !== module.key))}/>
+              <span className="module-option-copy"><span className="inline-actions"><strong>{module.name}</strong>{module.required && <span className="badge badge-neutral">Core</span>}{recommendedKeys.includes(module.key) && !module.required && <span className="badge badge-good">Suggested</span>}</span><span className="subtle">{module.description || "Tools to support this part of your business."}</span></span>
             </label>)}
           </div>
           <div className="onboarding-footer" style={{ marginTop: 26 }}>
-            <button type="button" className="btn btn-secondary" disabled={busy || refreshing} onClick={returnToSuggestions}>Back to suggestions</button>
-            <button type="button" className="btn btn-primary" disabled={busy} onClick={() => saveSetup("custom")}>{busy ? "Saving…" : "Save my choices"}<Icon name="arrow" size={16}/></button>
+            <div className="inline-actions">{onBackToIndustry && <button type="button" className="btn btn-secondary" disabled={busy || refreshing} onClick={onBackToIndustry}>Back to industry</button>}<button type="button" className="btn btn-secondary" disabled={busy || refreshing} onClick={returnToSuggestions}>Back to suggestions</button></div>
+            <button type="button" className="btn btn-primary" disabled={busy} onClick={() => saveSetup("custom")}>{busy ? "Saving…" : "Continue with these tools"}<Icon name="arrow" size={16}/></button>
           </div>
         </>}
       </> : <>
-        <div className="page-head" style={{ marginBottom: 22 }}><div><div className="eyebrow">Your workspace</div><h1 id="capability-setup-title">My capabilities</h1><p>Choose the tools your business needs. You can update this list as your work changes.</p></div></div>
+        <div className="page-head" style={{ marginBottom: 22 }}><div><div className="eyebrow">Workspace settings</div><h1 id="capability-setup-title">Tools for your business</h1><p>Choose which tools are active and which appear in your navigation.</p></div></div>
         {!canManage && <div className="notice notice-info" style={{ marginBottom: 18 }}>Only a workspace owner can change these choices.</div>}
-        <div className="stack">
+        <div className="module-list">
           {sortedModules.map((module) => {
             const selected = requiredKeys.has(module.key) || moduleKeys.includes(module.key);
-            return <div className="card card-pad" key={module.key}>
-              <label className="checkbox-row"><input type="checkbox" checked={selected} disabled={!canManage || module.required || module.available === false || busy} onChange={(event) => setModuleKeys((previous) => event.target.checked ? [...new Set([...previous, module.key])] : previous.filter((key) => key !== module.key))}/><strong>{module.name}</strong>{module.required && <span className="badge badge-neutral">Needed</span>}{module.recommended && <span className="badge badge-good">Suggested</span>}</label>
-              <p className="subtle" style={{ margin: "8px 0 0 28px", fontSize: ".84rem" }}>{module.description || "Tools to support this part of your business."}</p>
-              <div className="inline-actions" style={{ justifyContent: "space-between", margin: "14px 0 0 28px" }}>
-                <span className="muted-label">{module.usable ? "Ready to use" : selected ? "Selected, but not ready yet" : "Not selected"}</span>
+            return <div className="module-option module-setting" key={module.key}>
+              <label className="module-toggle"><input type="checkbox" aria-label={`Use ${module.name}`} checked={selected} disabled={!canManage || module.required || module.available === false || busy} onChange={(event) => setModuleKeys((previous) => event.target.checked ? [...new Set([...previous, module.key])] : previous.filter((key) => key !== module.key))}/></label>
+              <div className="module-option-copy"><div className="inline-actions"><strong>{module.name}</strong>{module.required && <span className="badge badge-neutral">Core</span>}{module.recommended && <span className="badge badge-good">Suggested</span>}</div><p className="subtle">{module.description || "Tools to support this part of your business."}</p><div className="module-status"><span>Access: {module.required || module.entitled ? "Included" : "Not included"}</span><span>Tool: {module.enabled ? "On" : "Off"}</span><span>{module.usable ? "Ready to use" : selected ? "Selected, setup needed" : "Not selected"}</span></div></div>
+              <div className="module-option-actions">
                 {canManage && selected && module.usable && !module.required && <label className="checkbox-row"><input type="checkbox" checked={module.uiProminence !== "hidden"} disabled={busy} onChange={(event) => changeNavigation(module, event.target.checked)}/>Show in navigation</label>}
               </div>
             </div>;
           })}
         </div>
         {canManage && questionFields.length > 0 && <details style={{ marginTop: 20 }}><summary className="link" style={{ cursor: "pointer" }}>Update the details used for suggestions</summary><div className="stack" style={{ marginTop: 15 }}>{questionFields.map((question) => <div className="field" key={question.key}><label htmlFor={`manage-answer-${question.key}`}>{question.prompt}</label><RecommendationAnswer question={question} value={answers[question.key]} id={`manage-answer-${question.key}`} onChange={(value) => updateAnswer(question, value)}/></div>)}</div><button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: 16 }} disabled={refreshing || !suggestionsStale} onClick={updateRecommendations}>{refreshing ? "Updating suggestions…" : "Update suggestions"}</button></details>}
-        {canManage && <div className="inline-actions" style={{ marginTop: 24 }}><button type="button" className="btn btn-primary" disabled={busy} onClick={() => saveSetup("custom")}>{busy ? "Saving…" : "Save my capabilities"}</button></div>}
+        {canManage && <div className="inline-actions" style={{ marginTop: 24 }}><button type="button" className="btn btn-primary" disabled={busy} onClick={() => saveSetup("custom")}>{busy ? "Saving…" : "Save tool choices"}</button></div>}
       </>}
       {error && <div style={{ marginTop: 18 }}><Notice kind="error" text={error}/></div>}
       {notice && <div style={{ marginTop: 18 }}><Notice kind="success" text={notice}/></div>}
@@ -238,7 +248,7 @@ export default function CapabilitySetup({
 }
 
 function CapabilitySummary({ module, recommended }: { module: CapabilityModule; recommended: boolean }) {
-  return <div className="card card-pad" style={{ boxShadow: "none" }}><div className="inline-actions" style={{ justifyContent: "space-between" }}><strong>{module.name}</strong>{module.required ? <span className="badge badge-neutral">Needed</span> : recommended ? <span className="badge badge-good">Suggested</span> : null}</div><p className="subtle" style={{ margin: "8px 0 0", fontSize: ".84rem" }}>{module.description || "Tools to support this part of your business."}</p></div>;
+  return <div className="module-summary"><div className="inline-actions"><strong>{module.name}</strong>{module.required ? <span className="badge badge-neutral">Core</span> : recommended ? <span className="badge badge-good">Suggested</span> : null}</div><p className="subtle">{module.description || "Tools to support this part of your business."}</p></div>;
 }
 
 function RecommendationAnswer({ question, value, id, onChange }: { question: CapabilityQuestion; value: AnswerValue | undefined; id: string; onChange: (value: string) => void }) {
@@ -251,9 +261,9 @@ function RecommendationAnswer({ question, value, id, onChange }: { question: Cap
   </select>;
 }
 
-function CapabilityShell({ children, mode }: { children: React.ReactNode; mode: "setup" | "manage" }) {
+function CapabilityShell({ children, mode, setupProgress }: { children: React.ReactNode; mode: "setup" | "manage"; setupProgress?: { step: number; total: number } }) {
   if (mode === "manage") return <>{children}</>;
-  return <div className="onboarding"><header className="onboarding-header"><Link href="/app/dashboard"><Logo/></Link><span className="badge badge-neutral">Choose your tools</span></header><main className="onboarding-main">{children}</main></div>;
+  return <div className="onboarding"><header className="onboarding-header"><Link href="/app/dashboard"><Logo/></Link><span className="muted-label">Step {setupProgress?.step ?? 1} of {setupProgress?.total ?? 1} · Tools</span></header><main className="onboarding-main">{setupProgress && <div className="onboarding-progress" role="progressbar" aria-label="Setup progress" aria-valuemin={1} aria-valuemax={setupProgress.total} aria-valuenow={setupProgress.step} aria-valuetext={`Step ${setupProgress.step} of ${setupProgress.total}: Your tools`}>{Array.from({ length: setupProgress.total }, (_, index) => <span key={index} className={index < setupProgress.step ? "done" : ""} aria-hidden="true"/>)}</div>}{children}</main></div>;
 }
 
 function useResourceCapabilities() {

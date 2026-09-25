@@ -154,22 +154,24 @@ export default function InventoryOperations() {
 
   async function createItem(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const values = new FormData(event.currentTarget);
-    const stock = optionalQuantity(String(values.get("quantity") ?? ""), "Starting quantity");
-    const reorderThreshold = optionalQuantity(String(values.get("reorderThreshold") ?? ""), "Reorder level");
-    const unitCostMinor = amountInMinor(String(values.get("unitCost") ?? ""));
-    await submitAction("item", async () => {
-      await api("/inventory", body({
-        name: String(values.get("name") ?? "").trim(),
-        sku: String(values.get("sku") ?? "").trim() || undefined,
-        unit: String(values.get("unit") ?? "").trim() || "unit",
-        quantity: stock,
-        reorderThreshold,
-        locationId: String(values.get("locationId") ?? "") || undefined,
-        unitCostMinor,
-      }));
-      setNewItem(false);
-    }, "Inventory item added.");
+    try {
+      const values = new FormData(event.currentTarget);
+      const stock = optionalQuantity(String(values.get("quantity") ?? ""), "Starting quantity");
+      const reorderThreshold = optionalQuantity(String(values.get("reorderThreshold") ?? ""), "Reorder level");
+      const unitCostMinor = amountInMinor(String(values.get("unitCost") ?? ""));
+      await submitAction("item", async () => {
+        await api("/inventory", body({
+          name: String(values.get("name") ?? "").trim(),
+          sku: String(values.get("sku") ?? "").trim() || undefined,
+          unit: String(values.get("unit") ?? "").trim() || "unit",
+          quantity: stock,
+          reorderThreshold,
+          locationId: String(values.get("locationId") ?? "") || undefined,
+          unitCostMinor,
+        }));
+        setNewItem(false);
+      }, "Inventory item added.");
+    } catch (issue) { setError(errorText(issue)); }
   }
 
   async function createVendor(event: React.FormEvent<HTMLFormElement>) {
@@ -234,7 +236,7 @@ export default function InventoryOperations() {
     <section className="card card-pad" aria-labelledby="inventory-stock-title">
       <div className="card-heading"><div><div className="eyebrow">Supplies</div><h2 id="inventory-stock-title">Stock on hand</h2></div><button className="btn btn-primary btn-sm" type="button" onClick={() => setNewItem((open) => !open)}>{newItem ? "Close" : "Add inventory item"}</button></div>
       <p className="subtle" style={{ fontSize: ".86rem", marginTop: 0 }}>Track supplies across your branches and team vehicles. Receipts, transfers, and job usage keep the balances current.</p>
-      {newItem && <form className="card card-pad" style={{ marginBottom: 16 }} onSubmit={createItem}>
+      {newItem && <form className="stack" style={{ marginBottom: 16, padding: "16px 0", borderBottom: "1px solid var(--line)" }} onSubmit={createItem}>
         <h3 style={{ marginTop: 0 }}>Add an item</h3>
         <div className="form-grid">
           <div className="field"><label htmlFor="inventory-name">Item name</label><input id="inventory-name" name="name" minLength={2} maxLength={160} required/></div>
@@ -248,12 +250,12 @@ export default function InventoryOperations() {
         {!activeLocations.length && <Notice kind="error" text="No active branch is available to hold stock."/>}
         <div className="modal-footer"><button className="btn btn-secondary" type="button" onClick={() => setNewItem(false)}>Cancel</button><button className="btn btn-primary" type="submit" disabled={saving === "item" || !activeLocations.length}>{saving === "item" ? "Saving…" : "Add item"}</button></div>
       </form>}
-      {data.items.length ? <div className="data-table-wrap"><table className="data-table"><thead><tr><th>Item</th><th>Stock across locations</th><th>Low-stock level</th><th>Status</th><th>Actions</th></tr></thead><tbody>{data.items.map((item) => <tr key={item.id}>
+      {data.items.length ? <div className="data-table-wrap" role="region" aria-label="Inventory by item" tabIndex={0}><table className="data-table"><thead><tr><th>Item</th><th>Stock across locations</th><th>Low-stock level</th><th>Status</th><th>Actions</th></tr></thead><tbody>{data.items.map((item) => <tr key={item.id}>
         <td><strong className="table-primary">{item.name}</strong><span className="table-secondary">{item.sku || `Counted by ${item.unit || "unit"}`}</span></td>
         <td>{Number(item.quantity).toLocaleString()} {item.unit || "unit"}<div className="table-secondary">{(item.locations ?? []).map((stock) => `${stock.locationName}: ${stock.quantity}`).join(" · ") || "No stock locations yet"}</div></td>
         <td>{item.locations?.some((stock) => stock.reorderThreshold != null) ? item.locations.filter((stock) => stock.reorderThreshold != null).map((stock) => `${stock.locationName}: ${stock.reorderThreshold}`).join(" · ") : "Not set"}</td>
         <td><Badge status={item.status}/></td>
-        <td><div className="inline-actions"><button className="btn btn-secondary btn-sm" type="button" onClick={() => { setReceiveItem(item.id); setTransferItem(""); setConsumeItem(""); }}>Receive</button><button className="btn btn-secondary btn-sm" type="button" onClick={() => { setTransferItem(item.id); setReceiveItem(""); setConsumeItem(""); }}>Transfer</button><button className="btn btn-secondary btn-sm" type="button" onClick={() => { setConsumeItem(item.id); setReceiveItem(""); setTransferItem(""); }}>Use on job</button></div></td>
+        <td><div className="inline-actions"><button className="btn btn-secondary btn-sm" type="button" aria-label={`Receive ${item.name}`} onClick={() => { setReceiveItem(item.id); setTransferItem(""); setConsumeItem(""); }}>Receive</button><button className="btn btn-secondary btn-sm" type="button" aria-label={`Transfer ${item.name}`} onClick={() => { setTransferItem(item.id); setReceiveItem(""); setConsumeItem(""); }}>Transfer</button><button className="btn btn-secondary btn-sm" type="button" aria-label={`Use ${item.name} on a job`} onClick={() => { setConsumeItem(item.id); setReceiveItem(""); setTransferItem(""); }}>Use on job</button></div></td>
       </tr>)}</tbody></table></div> : <Empty title="No inventory items yet" description="Add your first supply to start tracking stock by branch and team vehicle."/>}
     </section>
 
@@ -357,7 +359,7 @@ function PurchaseOrderEditor({ vendors, items, locations, saving, onCancel, onSu
 }) {
   const [rowCount, setRowCount] = useState(1);
   const [formError, setFormError] = useState("");
-  return <form className="card card-pad" onSubmit={(event) => { event.preventDefault(); setFormError(""); onSubmit(event).catch((issue) => setFormError(errorText(issue))); }}>
+  return <form className="stack" style={{ margin: "12px 0", padding: "16px 0", borderTop: "1px solid var(--line)", borderBottom: "1px solid var(--line)" }} onSubmit={(event) => { event.preventDefault(); setFormError(""); onSubmit(event).catch((issue) => setFormError(errorText(issue))); }}>
     <h3 style={{ marginTop: 0 }}>New purchase order</h3>
     <div className="form-grid">
       <div className="field"><label htmlFor="po-vendor">Vendor</label><select id="po-vendor" name="vendorId" required><option value="">Choose a vendor</option>{vendors.map((vendor) => <option key={vendor.id} value={vendor.id}>{vendor.name}</option>)}</select></div>

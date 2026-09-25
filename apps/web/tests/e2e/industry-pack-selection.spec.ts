@@ -12,16 +12,17 @@ test("a new owner can choose a non-default Industry Pack and use its setup", asy
   await page.getByRole("button", { name: "Create account" }).click();
 
   await expect(page.getByRole("heading", { name: "What kind of business do you run?" })).toBeVisible();
-  await page.getByLabel("Search supported businesses").fill("party rentals");
+  await page.getByLabel("Search business types").fill("party rentals");
   const partyRentals = page.getByRole("radio", { name: /Party Rentals/ });
   await expect(partyRentals).toBeVisible();
-  await expect(partyRentals).toHaveAttribute("aria-checked", "false");
+  await expect(partyRentals).not.toBeChecked();
   await partyRentals.click();
+  await expect(partyRentals).toBeChecked();
   await page.getByRole("button", { name: /Continue/ }).click();
 
-  await expect(page.getByRole("heading", { name: "Choose what helps you run your business." })).toBeVisible();
-  await expect(page.getByText(/based on Party Rentals/)).toBeVisible();
-  await page.getByRole("button", { name: "Accept recommended tools" }).click();
+  await expect(page.getByRole("heading", { name: "Choose the tools you need now" })).toBeVisible();
+  await expect(page.getByText(/suggestions fit Party Rentals/)).toBeVisible();
+  await page.getByRole("button", { name: "Continue with these tools" }).click();
 
   await expect(page.getByRole("heading", { name: "Tell us about your business." })).toBeVisible();
   await page.getByLabel("Business name").fill(`Party Setup ${suffix}`);

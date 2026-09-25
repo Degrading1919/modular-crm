@@ -146,9 +146,9 @@ test("V1 lifecycle: estimate approval through field work, billing, and feedback"
   expect(fieldJobs.some((job) => job.id === jobId && job.serviceName === serviceName)).toBe(true);
   await technician.goto(`/field/job/${jobId}`);
   await expect(technician.getByRole("heading", { name: "Carter Household" })).toBeVisible();
-  await expect(technician.getByRole("definition").filter({ hasText: serviceName })).toBeVisible();
+  await expect(technician.getByText(serviceName, { exact: true })).toBeVisible();
   await technician.getByRole("button", { name: "Start job" }).click();
-  await technician.getByLabel("What should the office know?").fill(completionNote);
+  await technician.getByLabel("Share an update with the office").fill(completionNote);
   await technician.getByLabel(/Confirm the service address/).check();
   await technician.getByLabel(/Review access and safety notes/).check();
   await technician.getByLabel(/Complete the cleanup/).check();

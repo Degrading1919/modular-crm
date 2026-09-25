@@ -10,7 +10,7 @@ test("public signup accepts demo payment and creates one customer service plan",
 
   await page.goto("/site/happy-yards/signup");
   await expect(page.getByRole("heading", { name: "Where do you need service?" })).toBeVisible();
-  await page.getByLabel("Service Address street address").fill(`${Math.floor(Math.random() * 90_000) + 10_000} Maple Street, Augusta, GA`);
+  await page.getByLabel("Service Address").fill(`${Math.floor(Math.random() * 90_000) + 10_000} Maple Street, Augusta, GA`);
   await page.getByLabel("ZIP code").fill("30909");
   await page.getByRole("button", { name: /Check availability/i }).click();
 

@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-09-25 — Use one Modular CRM product design authority
+
+- **Status:** Accepted
+- **Area:** UX
+- **Decision:** All frontend work and UX review follow `.agents/skills/modular-crm-product-design/SKILL.md` and `docs/V1_UX_DESIGN.md`. Use one restrained operational design system, make workflow and responsive/accessibility behavior explicit, and validate meaningful changes in the running product without treating automated scans as proof of usability.
+- **Rationale:** A single product-specific authority adapts useful external guidance to the needs of owners, office staff, field workers, and customers, and prevents independently implemented surfaces from drifting into inconsistent or generic patterns.
+- **Authoritative doc:** `docs/V1_UX_DESIGN.md`
+
 ## 2026-09-25 — Industry Pack defaults configure supported shared runtime behavior
 
 - **Status:** Accepted

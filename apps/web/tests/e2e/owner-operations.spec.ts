@@ -33,12 +33,13 @@ test("owner records inventory movements and refunds a collected invoice payment"
   await expect(page.getByText("Stock received.")).toBeVisible();
   await expect(page.getByRole("row", { name: new RegExp(itemName) })).toContainText("4 unit");
 
-  await page.getByRole("row", { name: new RegExp(itemName) }).getByRole("button", { name: "Use on job" }).click();
-  await expect(page.getByLabel("Job")).toBeVisible();
-  await expect(page.getByLabel("Job").locator("option").nth(1)).toBeAttached();
+  await page.getByRole("row", { name: new RegExp(itemName) }).getByRole("button", { name: new RegExp(`Use ${itemName} on a job`) }).click();
+  const jobSelect = page.getByLabel("Job", { exact: true });
+  await expect(jobSelect).toBeVisible();
+  await expect(jobSelect.locator("option").nth(1)).toBeAttached();
   await page.getByLabel("Quantity (unit)").fill("1");
   await page.getByLabel("Take stock from").selectOption({ index: 1 });
-  await page.getByLabel("Job").selectOption({ index: 1 });
+  await jobSelect.selectOption({ index: 1 });
   await page.getByRole("button", { name: "Record material used" }).click();
   await expect(page.getByText("Material usage recorded on the job.")).toBeVisible();
   await expect(page.getByRole("row", { name: new RegExp(itemName) })).toContainText("3 unit");
