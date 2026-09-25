@@ -54,6 +54,10 @@ This repository is the source of truth. New implementation work should begin her
 
 - [REFERENCE_IMPLEMENTATIONS.md](./REFERENCE_IMPLEMENTATIONS.md)
 - [research/SWEEP_AND_GO_FEATURE_AUDIT.md](./research/SWEEP_AND_GO_FEATURE_AUDIT.md)
+- [research/SWEATY_STARTUP_INDUSTRY_CANDIDATES.md](./research/SWEATY_STARTUP_INDUSTRY_CANDIDATES.md)
+- [research/SWEATY_STARTUP_RESEARCH_SYNTHESIS.md](./research/SWEATY_STARTUP_RESEARCH_SYNTHESIS.md)
+- [research/INDUSTRY_RESEARCH_PROFILE_TEMPLATE.md](./research/INDUSTRY_RESEARCH_PROFILE_TEMPLATE.md)
+- Profiles: `docs/research/industry-packs/`
 
 ## Agent workflow
 
