@@ -3,6 +3,7 @@ import {
   PET_WASTE_REMOVAL_PACK,
   evaluateProductCapabilityRecommendations,
   getIndustryPack,
+  listIndustryPacks,
   materializeIndustryPack,
   validateIndustryPack,
   type IndustryPack,
@@ -16,6 +17,18 @@ it("ships a complete configuration-only reference pack", () => {
   expect(PET_WASTE_REMOVAL_PACK.locationFields.find((field) => field.key === "gate_code")?.sensitive).toBe(true);
   expect(PET_WASTE_REMOVAL_PACK.pricingTemplates.every((template) => template.requiresTenantAmount)).toBe(true);
   expect(getIndustryPack("pet-waste-removal")).toBe(PET_WASTE_REMOVAL_PACK);
+});
+
+it("registers each stable industry key once and validates the complete registry", () => {
+  const packs = listIndustryPacks();
+  const keys = packs.map((pack) => pack.key);
+  expect(packs).toHaveLength(152);
+  expect(new Set(keys).size).toBe(keys.length);
+  for (const pack of packs) {
+    validateIndustryPack(pack);
+    expect(pack.version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(getIndustryPack(pack.key)).toBe(pack);
+  }
 });
 
 it("detaches installed defaults from package data", () => {

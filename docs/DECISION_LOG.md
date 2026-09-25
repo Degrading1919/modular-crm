@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-09-24 — Validated Industry Packs drive searchable onboarding
+
+- **Status:** Accepted
+- **Area:** Industry Packs
+- **Decision:** Onboarding enumerates validated static Industry Packs and lets an owner choose one before capability setup. The selected pack supplies its supported setup defaults and capability recommendations; tenant entitlements remain controlled by capability setup and subscription state.
+- **Rationale:** A business should receive relevant setup without requiring industry-specific application code or a separate deployment, while recommendations remain separate from commercial authorization.
+- **Authoritative doc:** `docs/INDUSTRY_PACKS.md`
+
 ## 2026-09-24 — Research candidate industries exhaustively before consolidation
 
 - **Status:** Accepted

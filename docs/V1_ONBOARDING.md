@@ -23,15 +23,9 @@ Verify email without blocking exploration where security policy permits.
 
 ## Step 1 — What kind of business do you run?
 
-Show searchable Industry Packs.
+Show searchable Industry Packs from the validated runtime registry.
 
-Initial production reference:
-
-- Pet Waste Removal
-
-Future packs may be unavailable/coming soon without changing onboarding architecture.
-
-Selecting a pack installs its defaults into a tenant configuration version.
+The owner selects a supported business before capability setup. The selected pack supplies relevant terminology, service choices, website starting copy, and capability recommendations; setup records its stable key and version. Pack recommendations guide the commercial capability choice but do not grant access. Only registered packs are shown as supported. After the owner saves capability choices, the industry choice is fixed for that onboarding run so pack recommendations and stored answers cannot drift apart.
 
 ## Step 2 — Business basics
 

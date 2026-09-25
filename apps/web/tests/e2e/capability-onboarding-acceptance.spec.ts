@@ -23,6 +23,11 @@ test("a new owner can choose recommended capabilities and manage them without lo
   await page.getByRole("button", { name: "Create account" }).click();
   await expect(page).toHaveURL(/\/onboarding$/);
 
+  // Industry selection now precedes capability recommendations so they use the selected pack.
+  await expect(page.getByRole("heading", { name: "What kind of business do you run?" })).toBeVisible();
+  await page.getByRole("radio", { name: /Pet Waste Removal/ }).click();
+  await page.getByRole("button", { name: /Continue/ }).click();
+
   // Industry Pack answers change the recommendation set before the owner accepts it.
   await expect(page.getByRole("heading", { name: "Choose what helps you run your business." })).toBeVisible();
   await page.getByRole("button", { name: "Customize" }).click();
@@ -44,7 +49,7 @@ test("a new owner can choose recommended capabilities and manage them without lo
   });
   expect(businessStep.status()).toBe(200);
   const servicesStep = await page.request.patch("/api/v1/onboarding", {
-    data: { step: 3, data: { services: { recurring: { enabled: true, price: "45" } } } },
+    data: { step: 3, data: { services: { "recurring-cleanup": { enabled: true, price: "45" } } } },
   });
   expect(servicesStep.status()).toBe(200);
   const completed = await page.request.post("/api/v1/onboarding/complete", { data: { publishWebsite: false } });

@@ -21,7 +21,7 @@ export type CapabilityModule = {
 };
 
 export type CapabilityFeature = { name?: string; visible?: boolean; usable?: boolean };
-export type CapabilityQuestion = { key: string; prompt: string; answerType?: string };
+export type CapabilityQuestion = { key: string; prompt: string; answerType?: "boolean" | "number" | "enum"; options?: string[] };
 export type CapabilityCatalog = {
   modules: CapabilityModule[];
   features: Record<string, CapabilityFeature>;
@@ -160,7 +160,18 @@ export default function CapabilitySetup({
   const requiredKeys = new Set(catalog.modules.filter((module) => module.required).map((module) => module.key));
   const recommendedKeys = catalog.recommendedModuleKeys ?? [];
   const sortedModules = [...catalog.modules].sort((left, right) => Number(Boolean(right.required)) - Number(Boolean(left.required)) || left.name.localeCompare(right.name));
-  const questionFields = (catalog.questions ?? []).filter((question) => question.answerType === "boolean");
+  const questionFields = catalog.questions ?? [];
+  function updateAnswer(question: CapabilityQuestion, value: string) {
+    const next = { ...answers };
+    if (value === "") delete next[question.key];
+    else if (question.answerType === "boolean") next[question.key] = value === "yes";
+    else if (question.answerType === "number") {
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed)) return;
+      next[question.key] = parsed;
+    } else next[question.key] = value;
+    setAnswers(next); setSuggestionsStale(true);
+  }
 
   return <CapabilityShell mode={mode}>
     <section className="card card-pad" aria-labelledby="capability-setup-title">
@@ -184,14 +195,7 @@ export default function CapabilitySetup({
             <div className="stack" style={{ marginTop: 16 }}>
               {questionFields.map((question) => <div className="field" key={question.key}>
                 <label htmlFor={`capability-answer-${question.key}`}>{question.prompt}</label>
-                <select id={`capability-answer-${question.key}`} value={answers[question.key] === true ? "yes" : answers[question.key] === false ? "no" : ""} onChange={(event) => {
-                  const next = { ...answers };
-                  if (event.target.value === "") delete next[question.key];
-                  else next[question.key] = event.target.value === "yes";
-                  setAnswers(next); setSuggestionsStale(true);
-                }}>
-                  <option value="">Skip this question</option><option value="yes">Yes</option><option value="no">No</option>
-                </select>
+                <RecommendationAnswer question={question} value={answers[question.key]} id={`capability-answer-${question.key}`} onChange={(value) => updateAnswer(question, value)}/>
               </div>)}
             </div>
             <button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: 16 }} disabled={refreshing || !suggestionsStale} onClick={updateRecommendations}>{refreshing ? "Updating suggestions…" : "Update suggestions"}</button>
@@ -224,7 +228,7 @@ export default function CapabilitySetup({
             </div>;
           })}
         </div>
-        {canManage && questionFields.length > 0 && <details style={{ marginTop: 20 }}><summary className="link" style={{ cursor: "pointer" }}>Update the details used for suggestions</summary><div className="stack" style={{ marginTop: 15 }}>{questionFields.map((question) => <div className="field" key={question.key}><label htmlFor={`manage-answer-${question.key}`}>{question.prompt}</label><select id={`manage-answer-${question.key}`} value={answers[question.key] === true ? "yes" : answers[question.key] === false ? "no" : ""} onChange={(event) => { const next = { ...answers }; if (!event.target.value) delete next[question.key]; else next[question.key] = event.target.value === "yes"; setAnswers(next); setSuggestionsStale(true); }}><option value="">Skip this question</option><option value="yes">Yes</option><option value="no">No</option></select></div>)}</div><button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: 16 }} disabled={refreshing || !suggestionsStale} onClick={updateRecommendations}>{refreshing ? "Updating suggestions…" : "Update suggestions"}</button></details>}
+        {canManage && questionFields.length > 0 && <details style={{ marginTop: 20 }}><summary className="link" style={{ cursor: "pointer" }}>Update the details used for suggestions</summary><div className="stack" style={{ marginTop: 15 }}>{questionFields.map((question) => <div className="field" key={question.key}><label htmlFor={`manage-answer-${question.key}`}>{question.prompt}</label><RecommendationAnswer question={question} value={answers[question.key]} id={`manage-answer-${question.key}`} onChange={(value) => updateAnswer(question, value)}/></div>)}</div><button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: 16 }} disabled={refreshing || !suggestionsStale} onClick={updateRecommendations}>{refreshing ? "Updating suggestions…" : "Update suggestions"}</button></details>}
         {canManage && <div className="inline-actions" style={{ marginTop: 24 }}><button type="button" className="btn btn-primary" disabled={busy} onClick={() => saveSetup("custom")}>{busy ? "Saving…" : "Save my capabilities"}</button></div>}
       </>}
       {error && <div style={{ marginTop: 18 }}><Notice kind="error" text={error}/></div>}
@@ -235,6 +239,16 @@ export default function CapabilitySetup({
 
 function CapabilitySummary({ module, recommended }: { module: CapabilityModule; recommended: boolean }) {
   return <div className="card card-pad" style={{ boxShadow: "none" }}><div className="inline-actions" style={{ justifyContent: "space-between" }}><strong>{module.name}</strong>{module.required ? <span className="badge badge-neutral">Needed</span> : recommended ? <span className="badge badge-good">Suggested</span> : null}</div><p className="subtle" style={{ margin: "8px 0 0", fontSize: ".84rem" }}>{module.description || "Tools to support this part of your business."}</p></div>;
+}
+
+function RecommendationAnswer({ question, value, id, onChange }: { question: CapabilityQuestion; value: AnswerValue | undefined; id: string; onChange: (value: string) => void }) {
+  if (question.answerType === "number") return <input id={id} type="number" step="any" value={typeof value === "number" ? String(value) : ""} onChange={(event) => onChange(event.target.value)} />;
+  if (question.answerType === "enum") return <select id={id} value={typeof value === "string" ? value : ""} onChange={(event) => onChange(event.target.value)}>
+    <option value="">Skip this question</option>{(question.options ?? []).map((option) => <option key={option} value={option}>{option.replaceAll("_", " ")}</option>)}
+  </select>;
+  return <select id={id} value={value === true ? "yes" : value === false ? "no" : ""} onChange={(event) => onChange(event.target.value)}>
+    <option value="">Skip this question</option><option value="yes">Yes</option><option value="no">No</option>
+  </select>;
 }
 
 function CapabilityShell({ children, mode }: { children: React.ReactNode; mode: "setup" | "manage" }) {

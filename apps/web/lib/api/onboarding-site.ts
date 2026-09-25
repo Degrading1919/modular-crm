@@ -1,10 +1,11 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import {
-  auditEvents, connectorInstallations, domains, domainEvents, organizationLocations, organizations,
-  priceRules, serviceZones, services, siteContents, sites, tenants,
+  auditEvents, automationRules, connectorInstallations, domains, domainEvents, organizationLocations, organizations,
+  priceRules, serviceZones, services, siteContents, sites, tenants, ticketTypeDefinitions,
+  tenantCapabilityGrants,
 } from "@modular-crm/db";
 import { DomainError, requirePermission } from "@modular-crm/domain";
-import { getIndustryPack } from "@modular-crm/industry-packs";
+import { getIndustryPack, listIndustryPacks } from "@modular-crm/industry-packs";
 import { z } from "zod";
 import { getDb } from "../db";
 import { requireStaff, type SessionActor } from "./actor";
@@ -17,7 +18,7 @@ const areaStepSchema = z.object({ areaType: z.enum(["zip", "radius", "later"]).d
   .superRefine((data, context) => {
     if (data.areaType === "radius" && data.radiusMiles === undefined) context.addIssue({ code: "custom", path: ["radiusMiles"], message: "Enter a service radius from 1 to 500 miles." });
   });
-const serviceStepSchema = z.object({ services: z.record(z.string(), serviceInput).optional().default({}), additionalPetPricing: z.enum(["yes", "no", "quote"]).default("yes") });
+const serviceStepSchema = z.object({ services: z.record(z.string(), serviceInput).optional().default({}) });
 const stepSchemas: Record<number, z.ZodTypeAny> = {
   0: z.object({ packKey: z.string().min(1).max(80).optional() }),
   1: z.object({ businessName: z.string().trim().min(2).max(160), phone: blankable(40), email: z.union([z.email().max(254), z.literal("")]).optional().default(""), address: blankable(250), timezone: z.enum(["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles"]).default("America/New_York"), brandColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional() }),
@@ -113,21 +114,23 @@ async function ensureMockConnector(tx: Tx, actor: SessionActor, key: string, ena
 }
 
 async function applyServiceSetup(tx: Tx, actor: SessionActor, organization: OrgRow, data: z.infer<typeof serviceStepSchema>) {
-  const aliases: Record<string, string> = {
-    recurring: "recurring-cleanup", one_time: "one-time-cleanup", initial: "initial-cleanup",
-    deodorizer: "deodorizer", commercial: "commercial-property-cleanup",
-  };
-  const defaults: Record<string, boolean> = { recurring: true, one_time: true, initial: true, deodorizer: false, commercial: false };
+  const [tenant] = await tx.select({ industryPackKey: tenants.industryPackKey }).from(tenants).where(eq(tenants.id, actor.tenantId)).limit(1);
+  const pack = tenant?.industryPackKey ? getIndustryPack(tenant.industryPackKey) : undefined;
+  if (!pack) throw new DomainError("CONFLICT", "Choose a supported industry before setting up services.", 409);
+  const packServices = new Map(pack.services.map((service) => [service.key, service]));
+  if (Object.keys(data.services).some((key) => !packServices.has(key))) {
+    throw new DomainError("VALIDATION_ERROR", "One selected service is not part of this industry setup.", 422);
+  }
   const catalog = await tx.select().from(services).where(and(eq(services.tenantId, actor.tenantId), eq(services.organizationId, organization.id)));
-  const selected = Object.entries(aliases).filter(([uiKey]) => data.services[uiKey]?.enabled ?? defaults[uiKey]);
+  const selected = pack.services.filter((service) => data.services[service.key]?.enabled ?? service.defaultEnabled ?? false);
   if (!selected.length) throw new DomainError("VALIDATION_ERROR", "Choose at least one service to continue.", 422);
-  for (const [uiKey, serviceKey] of Object.entries(aliases)) {
-    const service = catalog.find((item) => item.key === serviceKey);
+  for (const packService of pack.services) {
+    const service = catalog.find((item) => item.key === packService.key);
     if (!service) continue;
-    const enabled = data.services[uiKey]?.enabled ?? defaults[uiKey];
+    const enabled = data.services[packService.key]?.enabled ?? packService.defaultEnabled ?? false;
     await tx.update(services).set({ active: enabled }).where(and(eq(services.tenantId, actor.tenantId), eq(services.id, service.id)));
-    const amountMinor = enabled ? priceInMinor(data.services[uiKey]?.price) : null;
-    const ruleName = `Onboarding starting price: ${service.name}`;
+    const amountMinor = enabled ? priceInMinor(data.services[packService.key]?.price) : null;
+    const ruleName = `Onboarding starting price: ${packService.key}`;
     const [priorRule] = await tx.select().from(priceRules).where(and(eq(priceRules.tenantId, actor.tenantId), eq(priceRules.organizationId, organization.id), eq(priceRules.name, ruleName))).limit(1);
     if (amountMinor !== null) {
       const values = {
@@ -138,15 +141,112 @@ async function applyServiceSetup(tx: Tx, actor: SessionActor, organization: OrgR
       else await tx.insert(priceRules).values(values);
     } else if (priorRule?.active) await tx.update(priceRules).set({ active: false }).where(eq(priceRules.id, priorRule.id));
   }
-  const petRuleName = "Onboarding additional-pet price review";
-  const [petRule] = await tx.select().from(priceRules).where(and(eq(priceRules.tenantId, actor.tenantId), eq(priceRules.organizationId, organization.id), eq(priceRules.name, petRuleName))).limit(1);
-  const mode = data.additionalPetPricing;
-  const effects = { type: "mark_quote_required", reason: "Additional pets need a service-price review." };
-  const conditions = mode === "yes" ? { field: "fields.petCount", operator: "greater_than", value: 1 } : {};
-  if (mode === "quote" || mode === "yes") {
-    if (petRule) await tx.update(priceRules).set({ conditions, effects, active: true }).where(eq(priceRules.id, petRule.id));
-    else await tx.insert(priceRules).values({ tenantId: actor.tenantId, organizationId: organization.id, name: petRuleName, priority: 60, conditions, effects, active: true, source: "tenant" });
-  } else if (petRule?.active) await tx.update(priceRules).set({ active: false }).where(eq(priceRules.id, petRule.id));
+  const obsoleteRules = await tx.select({ id: priceRules.id, name: priceRules.name, active: priceRules.active }).from(priceRules).where(and(
+    eq(priceRules.tenantId, actor.tenantId), eq(priceRules.organizationId, organization.id),
+  ));
+  const livePriceRuleNames = new Set(pack.services.map((service) => `Onboarding starting price: ${service.key}`));
+  for (const rule of obsoleteRules) {
+    if (rule.name.startsWith("Onboarding starting price:") && !livePriceRuleNames.has(rule.name) && rule.active) {
+      await tx.update(priceRules).set({ active: false }).where(and(eq(priceRules.id, rule.id), eq(priceRules.tenantId, actor.tenantId)));
+    }
+  }
+  return selected.map((service) => service.key);
+}
+
+function onboardingPackView(packKey: string | null) {
+  const pack = packKey ? getIndustryPack(packKey) : undefined;
+  if (!pack) return null;
+  return {
+    key: pack.key,
+    displayName: pack.displayName,
+    summary: pack.website.heroDescription,
+    services: pack.services.map(({ key, name, kind, estimatedMinutes, defaultEnabled }) => ({ key, name, kind, estimatedMinutes, defaultEnabled })),
+    website: { template: pack.website.template, heroHeadline: pack.website.heroHeadline, heroDescription: pack.website.heroDescription },
+  };
+}
+
+async function applyIndustryPackSetup(tx: Tx, actor: SessionActor, organization: OrgRow, packKey: string) {
+  const pack = getIndustryPack(packKey);
+  if (!pack) throw new DomainError("VALIDATION_ERROR", "Choose an available industry to continue.", 422);
+  const existingServices = await tx.select().from(services).where(and(eq(services.tenantId, actor.tenantId), eq(services.organizationId, organization.id)));
+  const servicesByKey = new Map(existingServices.map((service) => [service.key, service]));
+  const selectedKeys = new Set(pack.services.map((service) => service.key));
+  for (const prior of existingServices) {
+    if (!selectedKeys.has(prior.key) && prior.active) {
+      await tx.update(services).set({ active: false }).where(and(eq(services.id, prior.id), eq(services.tenantId, actor.tenantId)));
+    }
+  }
+  for (const service of pack.services) {
+    const current = servicesByKey.get(service.key);
+    const values = {
+      name: service.name,
+      serviceType: service.kind,
+      defaultDurationMinutes: service.estimatedMinutes ?? 30,
+      active: service.defaultEnabled ?? false,
+    };
+    if (current) await tx.update(services).set(values).where(and(eq(services.id, current.id), eq(services.tenantId, actor.tenantId)));
+    else await tx.insert(services).values({ tenantId: actor.tenantId, organizationId: organization.id, key: service.key, ...values });
+  }
+
+  const [site] = await tx.select().from(sites).where(and(eq(sites.tenantId, actor.tenantId), eq(sites.organizationId, organization.id))).orderBy(asc(sites.createdAt)).limit(1);
+  if (site) {
+    await tx.update(sites).set({ templateKey: pack.website.template === "classic" ? "classic" : "fresh", templateVersion: "1" })
+      .where(and(eq(sites.id, site.id), eq(sites.tenantId, actor.tenantId)));
+    const [content] = await tx.select().from(siteContents).where(and(eq(siteContents.tenantId, actor.tenantId), eq(siteContents.siteId, site.id), eq(siteContents.contentKey, "home"))).limit(1);
+    const previousContent = object(content?.content);
+    const nextContent = { ...previousContent, headline: pack.website.heroHeadline, description: pack.website.heroDescription };
+    if (content) await tx.update(siteContents).set({ content: nextContent, version: content.version + 1 }).where(and(eq(siteContents.id, content.id), eq(siteContents.tenantId, actor.tenantId)));
+    else await tx.insert(siteContents).values({ tenantId: actor.tenantId, siteId: site.id, contentKey: "home", content: nextContent });
+  }
+
+  const priorRules = await tx.select().from(automationRules).where(and(eq(automationRules.tenantId, actor.tenantId), eq(automationRules.source, "industry_pack")));
+  const desiredRuleKeys = new Set(pack.defaultAutomations.map((recipe) => recipe.sourceKey));
+  for (const rule of priorRules) {
+    if (!rule.sourceKey || !desiredRuleKeys.has(rule.sourceKey)) {
+      await tx.update(automationRules).set({ status: "draft", archivedAt: new Date() })
+        .where(and(eq(automationRules.id, rule.id), eq(automationRules.tenantId, actor.tenantId)));
+    }
+  }
+  for (const recipe of pack.defaultAutomations) {
+    const existing = priorRules.find((rule) => rule.sourceKey === recipe.sourceKey && rule.archivedAt === null);
+    const values = {
+      name: recipe.name,
+      description: recipe.description,
+      status: recipe.enabledByDefault ? "active" : "draft",
+      triggerConfig: { event: recipe.event, ...(recipe.filters ? { filters: recipe.filters } : {}) },
+      conditions: {},
+      actions: recipe.actions.map((action) => ({ actionType: action.actionType, configuration: action.configuration })),
+      archivedAt: null,
+    };
+    if (existing) await tx.update(automationRules).set({ ...values, version: existing.version + 1 })
+      .where(and(eq(automationRules.id, existing.id), eq(automationRules.tenantId, actor.tenantId)));
+    else await tx.insert(automationRules).values({ tenantId: actor.tenantId, source: "industry_pack", sourceKey: recipe.sourceKey, version: 1, ...values, createdByMembershipId: actor.membershipId });
+  }
+
+  const requiredTicketTypes = new Set(pack.defaultAutomations.flatMap((recipe) => recipe.actions
+    .filter((action) => action.actionType === "create_ticket")
+    .map((action) => String(action.configuration.type))));
+  for (const key of requiredTicketTypes) {
+    const [existing] = await tx.select({ id: ticketTypeDefinitions.id }).from(ticketTypeDefinitions).where(and(
+      eq(ticketTypeDefinitions.tenantId, actor.tenantId), eq(ticketTypeDefinitions.key, key),
+    )).limit(1);
+    if (!existing) await tx.insert(ticketTypeDefinitions).values({
+      tenantId: actor.tenantId,
+      key,
+      name: key.split(/[_-]+/).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" "),
+    });
+  }
+
+  await tx.update(tenants).set({ industryPackKey: pack.key, industryPackVersion: pack.version }).where(eq(tenants.id, actor.tenantId));
+}
+
+async function revokeLegacySignupRecommendations(tx: Tx, actor: SessionActor) {
+  const oldRecommendations = await tx.select({ id: tenantCapabilityGrants.id }).from(tenantCapabilityGrants).where(and(
+    eq(tenantCapabilityGrants.tenantId, actor.tenantId), eq(tenantCapabilityGrants.source, "signup_recommendation"), isNull(tenantCapabilityGrants.revokedAt),
+  ));
+  const revokedAt = new Date();
+  for (const grant of oldRecommendations) await tx.update(tenantCapabilityGrants).set({ revokedAt, updatedAt: revokedAt })
+    .where(and(eq(tenantCapabilityGrants.id, grant.id), eq(tenantCapabilityGrants.tenantId, actor.tenantId)));
 }
 
 async function applyAreaSetup(tx: Tx, actor: SessionActor, site: SiteRow, data: z.infer<typeof areaStepSchema>, settings: Record<string, unknown>) {
@@ -180,11 +280,32 @@ async function applyStep(tx: Tx, actor: SessionActor, step: number, rawData: Rec
   const priorOnboarding = object(settings.onboarding);
   const savedData = object(priorOnboarding.data);
   const mergedData = { ...savedData, [step]: data } as Record<string, Record<string, unknown>>;
+  let activePackKey = tenant.industryPackKey;
+  let changedPack = false;
   if (step === 0) {
-    const packKey = stringValue(data.packKey) || tenant.industryPackKey || "pet-waste-removal";
+    const packKey = stringValue(data.packKey) || tenant.industryPackKey;
+    if (!packKey) throw new DomainError("VALIDATION_ERROR", "Choose a supported business to continue.", 422);
     const pack = getIndustryPack(packKey);
     if (!pack) throw new DomainError("VALIDATION_ERROR", "Choose an available industry to continue.", 422);
-    await tx.update(tenants).set({ industryPackKey: pack.key, industryPackVersion: pack.version }).where(eq(tenants.id, actor.tenantId));
+    if (priorOnboarding.completed === true && tenant.industryPackKey !== pack.key) {
+      throw new DomainError("CONFLICT", "Industry setup can only be changed before onboarding is complete.", 409);
+    }
+    changedPack = tenant.industryPackKey !== pack.key;
+    if (changedPack && settings.capabilitySetupComplete === true) {
+      throw new DomainError("CONFLICT", "Choose your industry before saving capability choices.", 409);
+    }
+    if (tenant.industryPackKey !== pack.key || tenant.industryPackVersion !== pack.version) {
+      await applyIndustryPackSetup(tx, actor, organization, pack.key);
+    }
+    await revokeLegacySignupRecommendations(tx, actor);
+    if (changedPack) {
+      await recordStaffEvent(tx, actor, {
+        type: "tenant.industry_pack_changed", action: "tenant.industry_pack_changed", entityType: "tenant", entityId: actor.tenantId,
+        before: { packKey: tenant.industryPackKey, packVersion: tenant.industryPackVersion },
+        after: { packKey: pack.key, packVersion: pack.version },
+      });
+    }
+    activePackKey = pack.key;
   } else if (step === 1) {
     const businessName = stringValue(data.businessName);
     const timezone = stringValue(data.timezone) || "America/New_York";
@@ -199,7 +320,11 @@ async function applyStep(tx: Tx, actor: SessionActor, step: number, rawData: Rec
   } else if (step === 2) {
     await applyAreaSetup(tx, actor, site, areaStepSchema.parse(rawData), settings);
   } else if (step === 3) {
-    await applyServiceSetup(tx, actor, organization, serviceStepSchema.parse(rawData));
+    const serviceKeys = await applyServiceSetup(tx, actor, organization, serviceStepSchema.parse(rawData));
+    await recordStaffEvent(tx, actor, {
+      type: "tenant.industry_services_configured", action: "tenant.industry_services_configured", entityType: "tenant", entityId: actor.tenantId,
+      after: { packKey: tenant.industryPackKey, serviceKeys },
+    });
   } else if (step === 4) {
     const paymentMode = stringValue(data.paymentMode) || "demo";
     await ensureMockConnector(tx, actor, "mock-payments", paymentMode === "demo");
@@ -221,11 +346,12 @@ async function applyStep(tx: Tx, actor: SessionActor, step: number, rawData: Rec
   }
   const currentOnboarding = object(object(tenant.settings).onboarding);
   const currentSaved = object(currentOnboarding.data);
-  const nextAnswers = { ...currentSaved, [step]: data };
+  const nextAnswers: Record<string, unknown> = { ...currentSaved, [step]: data };
+  if (step === 0 && changedPack) nextAnswers["3"] = { services: {} };
   const nextStep = Math.max(Number(currentOnboarding.step) || 0, Math.min(9, step + 1));
   const updatedSettings = { ...object((await tx.select({ settings: tenants.settings }).from(tenants).where(eq(tenants.id, actor.tenantId)).limit(1))[0]?.settings), onboarding: { ...currentOnboarding, data: nextAnswers, step: nextStep, completed: false } };
   await tx.update(tenants).set({ settings: updatedSettings }).where(eq(tenants.id, actor.tenantId));
-  return { item: { step: nextStep, data: nextAnswers } };
+  return { item: { step: nextStep, data: nextAnswers, pack: onboardingPackView(activePackKey) } };
 }
 
 async function snapshotFromDraft(tx: Tx, site: SiteRow, organization: OrgRow, tenantSettings: Record<string, unknown>) {
@@ -338,7 +464,13 @@ export async function handleOnboardingSite(request: Request, path: string[], act
     if (path.length === 1 && request.method === "GET") {
       const { tenant } = await scopeRows(actor);
       const onboarding = object(object(tenant.settings).onboarding);
-      return json({ item: { step: Number.isInteger(onboarding.step) ? Math.min(9, Math.max(0, Number(onboarding.step))) : 0, data: object(onboarding.data), complete: onboarding.completed === true } });
+      const activePackKey = tenant.industryPackKey;
+      const availableIndustries = listIndustryPacks().map((pack) => ({ key: pack.key, displayName: pack.displayName, summary: pack.website.heroDescription }));
+      return json({ item: {
+        step: Number.isInteger(onboarding.step) ? Math.min(9, Math.max(0, Number(onboarding.step))) : 0,
+        data: object(onboarding.data), complete: onboarding.completed === true,
+        packKey: activePackKey, pack: onboardingPackView(activePackKey), availableIndustries,
+      } });
     }
     if (path.length === 1 && request.method === "PATCH") {
       const input = await readBody(request, patchOnboardingSchema);

@@ -28,6 +28,14 @@ A pack may define:
 - inventory/part defaults where relevant
 - route/service-duration assumptions
 
+## Runtime registration and onboarding
+
+Runtime packs are static, validated configuration registered through `packages/industry-packs/src/packs/index.ts` and the package registry. The onboarding experience enumerates the validated registry, so adding a pack cohort does not require industry-specific application routes or deployments. Keep each researched business type as its own pack unless the evidence and configuration clearly support sharing without erasing meaningful differences.
+
+During onboarding, the owner selects a supported pack before capability setup. The selected pack supplies its service list, customer language, website starting copy, and capability recommendations; the tenant records the selected pack key and version. Recommendations remain suggestions: the capability setup and entitlement systems decide what the tenant can use. Do not copy unsupported pack fields into behavior the shared platform does not implement.
+
+The current research-to-runtime coverage, complete pack keys, and profiles intentionally left research-only are recorded in the [Industry Pack implementation status](./research/INDUSTRY_PACK_IMPLEMENTATION_STATUS.md).
+
 ## Research before implementation
 
 Prospective Industry Packs should be researched using [the canonical Industry Research Profile template](./research/INDUSTRY_RESEARCH_PROFILE_TEMPLATE.md) before runtime implementation.

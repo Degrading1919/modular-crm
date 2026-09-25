@@ -41,6 +41,7 @@ This repository is the source of truth. New implementation work should begin her
 ## Industry Packs
 
 - [INDUSTRY_PACKS.md](./INDUSTRY_PACKS.md)
+- [research/INDUSTRY_PACK_IMPLEMENTATION_STATUS.md](./research/INDUSTRY_PACK_IMPLEMENTATION_STATUS.md)
 - [industry-packs/PET_WASTE_REMOVAL.md](./industry-packs/PET_WASTE_REMOVAL.md)
 
 ## Build verification
