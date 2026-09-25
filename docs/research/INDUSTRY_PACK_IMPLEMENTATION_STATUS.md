@@ -23,6 +23,8 @@ The website template preference is persisted during onboarding, but the public s
 
 Capability selection remains provider-neutral and reports `commercialTermsConfigured: false`. An owner's explicit capability selection creates an `owner_selection` grant in the current V1 self-service setup; there is no configured price or billing transaction attached to that selection. Commercial packaging and billing must be connected before treating those grants as paid subscriptions.
 
+The research pressure areas around typed measurements, versioned approvals and issued records, reservable capacity, project change/milestone controls, and meter-triggered maintenance recurrence are not executable Industry Pack behavior in this pass. Pack fields and workflow labels can describe some of these needs, but the current consumers do not provide their operational invariants, state transitions, or transactional handling. They remain candidates for separately justified shared-platform work; this implementation did not fabricate those behaviors in pack configuration.
+
 No application-specific database tables or migrations were added for these packs.
 
 ## Stable capability keys
