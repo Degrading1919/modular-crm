@@ -48,6 +48,8 @@ Conversion is idempotent.
 - A recurring generator should create jobs far enough ahead for routing/visibility using a configurable horizon.
 - Generator reruns are idempotent and cannot duplicate an occurrence.
 - Changing a recurrence applies prospectively from an effective date.
+- Service-plan frequency and price changes retain dated versions; newly generated jobs use the version effective on their service date, while previously generated jobs and invoices keep their snapshots.
+- Future generated jobs are kept by default when a plan changes. An explicit `cancel_unstarted` policy cancels generated draft, unscheduled, and scheduled jobs from the effective date; dispatched or started work remains intact, and new eligible occurrences can then be generated.
 - Bulk weather/holiday operations may skip/reschedule many jobs while preserving per-job history.
 - Estimated duration may come from service, price rule, Industry Pack, customer, or historical override.
 

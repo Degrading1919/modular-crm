@@ -75,7 +75,9 @@ async function routeView(actor: SessionActor, id?: string) {
   const data = await rows(sql`select rp.*, u.name as technician_name from route_plans rp
     join memberships m on m.id=rp.membership_id and m.tenant_id=rp.tenant_id
     join "user" u on u.id=m.user_id
-    where rp.tenant_id=${actor.tenantId} and (${actor.allLocations} or rp.organization_location_id = any(${uuidArray(actor.locationIds)}))
+    where rp.tenant_id=${actor.tenantId} and m.organization_id=${actor.organizationId}
+      and (${actor.allLocations} or rp.organization_location_id = any(${uuidArray(actor.locationIds)}))
+      ${actor.role === "technician" ? sql`and rp.membership_id=${actor.membershipId} and rp.status in ('published','started','completed')` : sql``}
     ${id ? sql`and rp.id=${id}` : sql``} order by rp.route_date desc limit ${id ? 1 : 100}`);
   if (id && !data.length) throw new DomainError("NOT_FOUND", "Route not found.", 404);
   return Promise.all(data.map(async (route) => {
@@ -86,7 +88,12 @@ async function routeView(actor: SessionActor, id?: string) {
       join customers c on c.id=j.customer_id and c.tenant_id=j.tenant_id
       join services s on s.id=j.service_id and s.tenant_id=j.tenant_id
       join service_locations sl on sl.id=j.service_location_id and sl.tenant_id=j.tenant_id
-      where rs.tenant_id=${actor.tenantId} and rs.route_plan_id=${route.id} order by rs.sequence`);
+      where rs.tenant_id=${actor.tenantId} and rs.route_plan_id=${route.id}
+        and j.organization_id=${actor.organizationId} and j.organization_location_id=${route.organization_location_id}
+        and j.scheduled_date=${route.route_date}
+        and (${actor.allLocations} or j.organization_location_id = any(${uuidArray(actor.locationIds)}))
+        ${actor.role === "technician" ? sql`and exists (select 1 from job_assignments ja where ja.tenant_id=j.tenant_id and ja.job_id=j.id and ja.membership_id=${actor.membershipId} and ja.removed_at is null)` : sql``}
+      order by rs.sequence`);
     return normalized({ ...route, date: route.route_date, technicianName: route.technician_name,
       distanceMiles: Number(route.estimated_distance_meters ?? 0) / 1609.344,
       driveMinutes: Math.round(Number(route.estimated_drive_seconds ?? 0) / 60),
@@ -132,9 +139,16 @@ async function mutateRoute(request: Request, actor: SessionActor, id: string, ac
     if (!stops.length) throw new DomainError("VALIDATION_ERROR", "Add stops before publishing.", 422);
     await db.transaction(async (tx) => {
       await tx.update(routePlans).set({ status: "published", publishedAt: new Date(), updatedAt: new Date() }).where(and(eq(routePlans.id, id), eq(routePlans.tenantId, actor.tenantId)));
-      await tx.update(jobs).set({ status: "dispatched", assignedRouteId: id, updatedAt: new Date() }).where(and(eq(jobs.tenantId, actor.tenantId), sql`${jobs.id} = any(${uuidArray(stops.map((stop) => stop.jobId))})`, eq(jobs.status, "scheduled")));
+      const dispatched = await tx.update(jobs).set({ status: "dispatched", assignedRouteId: id, updatedAt: new Date() })
+        .where(and(eq(jobs.tenantId, actor.tenantId), sql`${jobs.id} = any(${uuidArray(stops.map((stop) => stop.jobId))})`, eq(jobs.status, "scheduled")))
+        .returning({ id: jobs.id, customerId: jobs.customerId, organizationLocationId: jobs.organizationLocationId });
+      for (const job of dispatched) await recordEvent(actor, {
+        type: "job.dispatched", entityType: "job", entityId: job.id,
+        payload: { customerId: job.customerId, jobId: job.id, routeId: id },
+        locationId: job.organizationLocationId,
+      }, tx);
+      await recordEvent(actor, { type: "route.published", entityType: "route", entityId: id, locationId: route.organizationLocationId, auditAction: "route.publish" }, tx);
     });
-    await recordEvent(actor, { type: "route.published", entityType: "route", entityId: id, locationId: route.organizationLocationId, auditAction: "route.publish" });
   } else if (action === "optimize") {
     assertTransition("route", route.status, "optimized");
     const routing = await getCapability(actor.tenantId, "routing");

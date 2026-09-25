@@ -32,7 +32,6 @@ export function environmentSecretResolver(env: Record<string, string | undefined
 }
 
 export async function registerWorkerHandlers(db: Database, boss: PgBoss, resolveSecret: WebhookSecretResolver): Promise<void> {
-  const registry = createMockConnectorRegistry();
   await boss.work(QUEUES.publishOutbox, async () => {
     const [events, messages, automations, webhooks] = await Promise.all([
       publishPendingDomainEvents(db, boss), enqueuePendingMessages(db, boss),
@@ -53,7 +52,7 @@ export async function registerWorkerHandlers(db: Database, boss: PgBoss, resolve
     for (const job of jobs) await processAutomationRun(db, boss, job.data);
   });
   await boss.work<OutboundMessageJob>(QUEUES.outboundMessage, async (jobs) => {
-    for (const job of jobs) await processOutboundMessage(db, registry, job.data);
+    for (const job of jobs) await processOutboundMessage(db, createMockConnectorRegistry({ includePlannedProviders: true }), job.data);
   });
   await boss.work<WebhookDeliveryJob>(QUEUES.webhookDelivery, async (jobs) => {
     for (const job of jobs) await processWebhookDelivery(db, boss, job.data, resolveSecret);

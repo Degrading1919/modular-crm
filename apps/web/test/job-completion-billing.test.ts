@@ -12,7 +12,7 @@ const { getDbMock } = vi.hoisted(() => ({ getDbMock: vi.fn() }));
 vi.mock("../lib/db.ts", () => ({ getDb: getDbMock }));
 
 process.env.DATABASE_URL ??= "postgres://localhost:5433/modular_crm_test";
-const { transitionJob } = await import("../lib/api/workflows.ts");
+const { handleWorkflow, transitionJob } = await import("../lib/api/workflows.ts");
 
 let pglite: PGlite;
 let db: Database;
@@ -46,6 +46,18 @@ async function addJob(input: { customerId: string; serviceId: string; locationId
 }
 
 describe("job completion billing", () => {
+  it("rejects completion through the generic status route and uses state-specific permissions", async () => {
+    const job = await addJob({ customerId: seedIds.carter, serviceId: seedIds.weeklyService, locationId: seedIds.augusta, planId: null });
+    const request = new Request(`http://localhost/api/v1/jobs/${job.id}/transition`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "completed", completedChecklist: true, proofProvided: true }),
+    });
+    await expect(handleWorkflow(request, ["jobs", job.id, "transition"], owner)).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    const startOnly = { ...owner, permissions: new Set(["jobs.read", "jobs.start"]) } as SessionActor;
+    await expect(transitionJob(startOnly, job.id, "canceled", { reason: "customer_requested" })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect((await db.select().from(jobs).where(eq(jobs.id, job.id)))[0]?.status).toBe("in_progress");
+  });
+
   it("issues one immutable invoice for a billable on-completion plan and returns it on retry", async () => {
     const job = await addJob({ customerId: seedIds.carter, serviceId: seedIds.weeklyService, locationId: seedIds.augusta, planId: seedIds.carterPlan, priceSnapshot: { amountMinor: 2_750, currency: "USD" } });
 
@@ -77,6 +89,19 @@ describe("job completion billing", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ item: { status: "completed" } });
     expect(await db.select().from(invoiceItems).where(and(eq(invoiceItems.tenantId, seedIds.happyTenant), eq(invoiceItems.jobId, job.id)))).toHaveLength(0);
+  });
+
+  it("bills a public-signup price snapshot with its frozen tax breakdown", async () => {
+    const snapshot = { pricedAt: "2026-01-01T00:00:00.000Z", result: {
+      currency: "USD", subtotalMinor: 2_500, taxMinor: 175, totalMinor: 2_675, discountMinor: 250,
+    } };
+    const job = await addJob({ customerId: seedIds.carter, serviceId: seedIds.weeklyService, locationId: seedIds.augusta, planId: seedIds.carterPlan, priceSnapshot: snapshot });
+    const response = await transitionJob(owner, job.id, "completed", { completedChecklist: true });
+    const body = await response.json() as { invoice: { id: string } };
+    const [invoice] = await db.select().from(invoices).where(eq(invoices.id, body.invoice.id));
+    const [line] = await db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, body.invoice.id));
+    expect(invoice).toMatchObject({ subtotalMinor: 2_500n, taxMinor: 175n, totalMinor: 2_675n, balanceMinor: 2_675n });
+    expect(line).toMatchObject({ unitAmountMinor: 2_500n, taxMinor: 175n, totalMinor: 2_675n });
   });
 
   it("does not issue per-job invoices for a recurring-period billing plan", async () => {

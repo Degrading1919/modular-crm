@@ -4,6 +4,8 @@ const dbHarness = vi.hoisted(() => ({
   selectResults: [] as Array<Record<string, unknown> | Array<Record<string, unknown>>>,
   updateResults: [] as Array<Record<string, unknown>>,
   updateSets: [] as Array<Record<string, unknown>>,
+  eventCalls: [] as Array<{ event: Record<string, unknown>; writer: unknown }>,
+  transactionWriter: {} as Record<string, unknown>,
 }));
 
 vi.mock("../lib/db", () => ({
@@ -27,7 +29,32 @@ vi.mock("../lib/db", () => ({
         return { where: () => ({ returning: async () => dbHarness.updateResults.splice(0, 1) }) };
       },
     }),
+    transaction: async (callback: (tx: unknown) => Promise<unknown>) => {
+      const tx = {
+        select: () => ({
+          from() { return this; },
+          innerJoin() { return this; },
+          where() { return this; },
+          orderBy() { return this; },
+          limit: async () => {
+            const result = dbHarness.selectResults.shift();
+            return Array.isArray(result) ? result : result ? [result] : [];
+          },
+        }),
+        update: () => ({
+          set(values: Record<string, unknown>) {
+            dbHarness.updateSets.push(values);
+            return { where: () => ({ returning: async () => dbHarness.updateResults.splice(0, 1) }) };
+          },
+        }),
+      };
+      dbHarness.transactionWriter = tx;
+      return callback(tx);
+    },
   }),
+}));
+vi.mock("../lib/api/events", () => ({
+  recordEvent: async (_actor: unknown, event: Record<string, unknown>, writer: unknown) => { dbHarness.eventCalls.push({ event, writer }); },
 }));
 
 // The API handler imports the shared auth configuration, which creates a lazy pg Pool at module load.
@@ -44,6 +71,7 @@ beforeEach(() => {
   dbHarness.selectResults = [];
   dbHarness.updateResults = [];
   dbHarness.updateSets = [];
+  dbHarness.eventCalls = [];
 });
 
 const identity = { tenantId: "tenant-a", id: "rule-a", version: 1 };
@@ -111,6 +139,9 @@ describe("automation run retry API", () => {
     expect(dbHarness.updateSets).toHaveLength(1);
     expect(dbHarness.updateSets[0]).toMatchObject({ nextRetryAt: null });
     expect(dbHarness.updateSets[0]).not.toHaveProperty("contextSnapshot");
+    expect(dbHarness.eventCalls).toHaveLength(1);
+    expect(dbHarness.eventCalls[0]?.event).toMatchObject({ type: "automation_run.retry_requested", auditAction: "automation.run_retry" });
+    expect(dbHarness.eventCalls[0]?.writer).toBe(dbHarness.transactionWriter);
   });
 
   it("does not mark or update terminal failures as retryable", async () => {

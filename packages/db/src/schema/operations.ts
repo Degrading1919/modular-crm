@@ -44,6 +44,7 @@ export const jobs = pgTable("jobs", {
   internalSummary: text("internal_summary"), customerSummary: text("customer_summary"), customFields: jsonObject("custom_fields"),
 }, (t) => [
   uniqueIndex("jobs_tenant_id_id_ux").on(t.tenantId, t.id),
+  uniqueIndex("jobs_tenant_customer_id_ux").on(t.tenantId, t.customerId, t.id),
   foreignKey({ columns: [t.tenantId, t.customerId], foreignColumns: [customers.tenantId, customers.id], name: "jobs_customer_tenant_fk" }),
   foreignKey({ columns: [t.tenantId, t.organizationId], foreignColumns: [organizations.tenantId, organizations.id], name: "jobs_organization_tenant_fk" }),
   foreignKey({ columns: [t.tenantId, t.organizationLocationId], foreignColumns: [organizationLocations.tenantId, organizationLocations.id], name: "jobs_branch_tenant_fk" }),
@@ -63,7 +64,10 @@ export const appointments = pgTable("appointments", {
   windowStart: timestamp("window_start", { withTimezone: true }), windowEnd: timestamp("window_end", { withTimezone: true }),
   timezone: text("timezone").notNull(), version: integer("version").notNull().default(1),
   replacedAppointmentId: uuid("replaced_appointment_id"),
-}, (t) => [index("appointments_job_idx").on(t.tenantId, t.jobId)]);
+}, (t) => [
+  foreignKey({ columns: [t.tenantId, t.jobId], foreignColumns: [jobs.tenantId, jobs.id], name: "appointments_job_tenant_fk" }),
+  index("appointments_job_idx").on(t.tenantId, t.jobId),
+]);
 
 export const jobAssignments = pgTable("job_assignments", {
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), jobId: uuid("job_id").notNull(),
@@ -102,10 +106,14 @@ export const fieldOperationReceipts = pgTable("field_operation_receipts", {
 ]);
 
 export const recurringGenerationLedger = pgTable("recurring_generation_ledger", {
-  ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), servicePlanId: uuid("service_plan_id").notNull().references(() => servicePlans.id),
+  ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), servicePlanId: uuid("service_plan_id").notNull(),
   occurrenceKey: text("occurrence_key").notNull(), intendedDate: date("intended_date").notNull(),
-  jobId: uuid("job_id").references(() => jobs.id), status: status(), generatedAt: timestamp("generated_at", { withTimezone: true }),
-}, (t) => [uniqueIndex("recurring_ledger_occurrence_ux").on(t.servicePlanId, t.occurrenceKey)]);
+  jobId: uuid("job_id"), status: status(), generatedAt: timestamp("generated_at", { withTimezone: true }),
+}, (t) => [
+  foreignKey({ columns: [t.tenantId, t.servicePlanId], foreignColumns: [servicePlans.tenantId, servicePlans.id], name: "recurring_ledger_plan_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.jobId], foreignColumns: [jobs.tenantId, jobs.id], name: "recurring_ledger_job_tenant_fk" }),
+  uniqueIndex("recurring_ledger_occurrence_ux").on(t.servicePlanId, t.occurrenceKey),
+]);
 
 export const routePlans = pgTable("route_plans", {
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), organizationLocationId: uuid("organization_location_id").references(() => organizationLocations.id),
@@ -171,33 +179,54 @@ export const files = pgTable("files", {
 export const fileLinks = pgTable("file_links", {
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), fileId: uuid("file_id").notNull().references(() => files.id),
   entityType: text("entity_type").notNull(), entityId: uuid("entity_id").notNull(), purpose: text("purpose").notNull(),
-}, (t) => [index("file_links_entity_idx").on(t.tenantId, t.entityType, t.entityId)]);
+}, (t) => [
+  foreignKey({ columns: [t.tenantId, t.fileId], foreignColumns: [files.tenantId, files.id], name: "file_links_file_tenant_fk" }),
+  index("file_links_entity_idx").on(t.tenantId, t.entityType, t.entityId),
+]);
 
 export const completionProofs = pgTable("completion_proofs", {
-  ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), jobId: uuid("job_id").notNull().references(() => jobs.id),
-  completedAt: timestamp("completed_at", { withTimezone: true }).notNull(), completedByMembershipId: uuid("completed_by_membership_id").references(() => memberships.id),
-  summary: text("summary"), signatureFileId: uuid("signature_file_id").references(() => files.id), snapshot: jsonObject("snapshot"),
-}, (t) => [index("completion_proofs_job_idx").on(t.tenantId, t.jobId)]);
+  ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), jobId: uuid("job_id").notNull(),
+  completedAt: timestamp("completed_at", { withTimezone: true }).notNull(), completedByMembershipId: uuid("completed_by_membership_id"),
+  summary: text("summary"), signatureFileId: uuid("signature_file_id"), snapshot: jsonObject("snapshot"),
+}, (t) => [
+  foreignKey({ columns: [t.tenantId, t.jobId], foreignColumns: [jobs.tenantId, jobs.id], name: "completion_proofs_job_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.completedByMembershipId], foreignColumns: [memberships.tenantId, memberships.id], name: "completion_proofs_member_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.signatureFileId], foreignColumns: [files.tenantId, files.id], name: "completion_proofs_file_tenant_fk" }),
+  index("completion_proofs_job_idx").on(t.tenantId, t.jobId),
+]);
 
 export const shifts = pgTable("shifts", {
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), membershipId: uuid("membership_id").notNull().references(() => memberships.id),
   organizationLocationId: uuid("organization_location_id").references(() => organizationLocations.id), status: status(),
   clockInAt: timestamp("clock_in_at", { withTimezone: true }).notNull(), clockOutAt: timestamp("clock_out_at", { withTimezone: true }),
   notes: text("notes"), approvedByMembershipId: uuid("approved_by_membership_id").references(() => memberships.id),
-}, (t) => [index("shifts_member_idx").on(t.tenantId, t.membershipId, t.clockInAt)]);
+}, (t) => [
+  uniqueIndex("shifts_tenant_id_id_ux").on(t.tenantId, t.id),
+  foreignKey({ columns: [t.tenantId, t.membershipId], foreignColumns: [memberships.tenantId, memberships.id], name: "shifts_member_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.organizationLocationId], foreignColumns: [organizationLocations.tenantId, organizationLocations.id], name: "shifts_location_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.approvedByMembershipId], foreignColumns: [memberships.tenantId, memberships.id], name: "shifts_approver_tenant_fk" }),
+  index("shifts_member_idx").on(t.tenantId, t.membershipId, t.clockInAt),
+]);
 
 export const breaks = pgTable("breaks", {
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), shiftId: uuid("shift_id").notNull().references(() => shifts.id),
   breakType: text("break_type").notNull(), startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
   endedAt: timestamp("ended_at", { withTimezone: true }), paid: boolean("paid").notNull().default(false),
-});
+}, (t) => [foreignKey({ columns: [t.tenantId, t.shiftId], foreignColumns: [shifts.tenantId, shifts.id], name: "breaks_shift_tenant_fk" })]);
 
 export const timeEntries = pgTable("time_entries", {
-  ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), membershipId: uuid("membership_id").notNull().references(() => memberships.id),
-  shiftId: uuid("shift_id").references(() => shifts.id), jobId: uuid("job_id").references(() => jobs.id), source: text("source").notNull(),
+  ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), membershipId: uuid("membership_id").notNull(),
+  shiftId: uuid("shift_id"), jobId: uuid("job_id"), source: text("source").notNull(),
   startsAt: timestamp("starts_at", { withTimezone: true }).notNull(), endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
   durationSeconds: integer("duration_seconds").notNull(), correctionOfId: uuid("correction_of_id"), approvalStatus: status(), note: text("note"),
-}, (t) => [index("time_entries_member_idx").on(t.tenantId, t.membershipId, t.startsAt)]);
+}, (t) => [
+  uniqueIndex("time_entries_tenant_id_id_ux").on(t.tenantId, t.id),
+  foreignKey({ columns: [t.tenantId, t.membershipId], foreignColumns: [memberships.tenantId, memberships.id], name: "time_entries_member_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.shiftId], foreignColumns: [shifts.tenantId, shifts.id], name: "time_entries_shift_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.jobId], foreignColumns: [jobs.tenantId, jobs.id], name: "time_entries_job_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.correctionOfId], foreignColumns: [t.tenantId, t.id], name: "time_entries_correction_tenant_fk" }),
+  index("time_entries_member_idx").on(t.tenantId, t.membershipId, t.startsAt),
+]);
 
 export const mileageRecords = pgTable("mileage_records", {
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), membershipId: uuid("membership_id").notNull().references(() => memberships.id),
@@ -205,4 +234,10 @@ export const mileageRecords = pgTable("mileage_records", {
   jobId: uuid("job_id").references(() => jobs.id), source: text("source").notNull(), distanceMeters: integer("distance_meters").notNull(),
   odometerStart: integer("odometer_start"), odometerEnd: integer("odometer_end"), personalVehicle: boolean("personal_vehicle").notNull().default(false),
   occurredOn: date("occurred_on").notNull(),
-}, (t) => [index("mileage_records_member_idx").on(t.tenantId, t.membershipId, t.occurredOn)]);
+}, (t) => [
+  foreignKey({ columns: [t.tenantId, t.membershipId], foreignColumns: [memberships.tenantId, memberships.id], name: "mileage_records_member_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.shiftId], foreignColumns: [shifts.tenantId, shifts.id], name: "mileage_records_shift_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.routePlanId], foreignColumns: [routePlans.tenantId, routePlans.id], name: "mileage_records_route_tenant_fk" }),
+  foreignKey({ columns: [t.tenantId, t.jobId], foreignColumns: [jobs.tenantId, jobs.id], name: "mileage_records_job_tenant_fk" }),
+  index("mileage_records_member_idx").on(t.tenantId, t.membershipId, t.occurredOn),
+]);

@@ -1669,6 +1669,8 @@ Outbox/domain-event source.
 
 Index: published_at for worker/outbox processing
 
+When an event identifies a location, its organization_id is the organization that owns that location; actor_type and actor_id retain the initiator's identity. This allows an authorized parent actor to perform child-unit work while keeping event scope internally consistent. Tenant-scoped domain events and audit records for a business mutation are persisted in the same transaction as that mutation.
+
 ### audit_events
 
 - id

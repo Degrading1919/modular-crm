@@ -28,6 +28,22 @@ A pack may define:
 - inventory/part defaults where relevant
 - route/service-duration assumptions
 
+## Research before implementation
+
+Prospective Industry Packs should be researched using [the canonical Industry Research Profile template](./research/INDUSTRY_RESEARCH_PROFILE_TEMPLATE.md) before runtime implementation.
+
+Completed profiles belong under `docs/research/industry-packs/<industry-key>.md`. The profile preserves the evidence, uncertainty, competitor context, operator complaints, workflow realities, capability needs, and core-platform gaps behind the pack. The runtime Industry Pack should contain the resulting configuration, not the research corpus itself.
+
+Research workers should map findings to the existing `IndustryPack` contract, explicitly distinguish Industry Pack configuration from candidate shared-platform gaps, and leave unsupported or irrelevant fields unknown rather than inventing defaults. Multiple industries may be researched in parallel as long as each worker produces an independent profile using the same template.
+
+### Preferred candidate pool
+
+Use The Sweaty Startup's [Businesses I Love](https://www.sweatystartup.com/blog/businesses-i-love) list as the preferred starting pool when generating prospective service-business industries to research.
+
+Research as many viable candidates from the source pool as practical, including industries that appear redundant, adjacent, or operationally similar. Do not pre-collapse similar candidates before research. Each candidate should receive its own evidence-backed profile so similarities and differences are measured rather than assumed.
+
+The completed research may later conclude that several candidates should share one runtime Industry Pack, use a common pack with variants, remain separate packs, or are poor fits for the platform. That consolidation decision belongs after the evidence exists, not before it. Parallel research batches should therefore optimize for coverage of the candidate pool rather than representative sampling alone.
+
 ## First reference Industry Pack: Pet Waste Removal
 
 Pet waste removal is the first complete reference implementation and should prove that the shared platform can support a route-dense recurring service business end to end.
@@ -62,6 +78,8 @@ The pack should cover at minimum:
 - pet-waste-specific website signup/onboarding defaults
 
 The reference pack should demonstrate Industry Pack configuration rather than introduce pet-waste-specific tables unless a shared configurable entity cannot reasonably represent the requirement.
+
+Default automation recipes must use emitted domain events and recipient-bearing payloads. The pet-waste pack distinguishes completed customer signups from requests needing office review; route reminders trigger from each dispatched job rather than a route-wide event without a customer; and pause-review tickets filter change-request events to `type=pause`. Payment receipts use `payment.succeeded` and its customer identity, and remain drafts until the business enables them. Pack setup supplies the ticket type required by its plan-change review recipe.
 
 ## Future examples
 

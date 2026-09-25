@@ -4,6 +4,86 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-09-24 — Research candidate industries exhaustively before consolidation
+
+- **Status:** Accepted
+- **Area:** Industry Packs
+- **Decision:** Research as many viable industries from the preferred candidate pool as practical, including near-duplicate and operationally similar businesses. Give each candidate its own evidence-backed research profile before deciding whether it becomes a distinct Industry Pack, a shared-pack variant, or no pack at all.
+- **Rationale:** Similar businesses can still differ in terminology, pricing, field data, workflows, customer expectations, packaging, or software pain. Pre-grouping them would hide those differences and reduce the value of the research corpus.
+- **Authoritative doc:** `docs/INDUSTRY_PACKS.md`
+
+## 2026-09-24 — Sweaty Startup list seeds Industry Pack candidate generation
+
+- **Status:** Accepted
+- **Area:** Industry Packs
+- **Decision:** Use The Sweaty Startup's `Businesses I Love` list as the preferred starting pool for generating prospective service-business Industry Pack candidates. Inclusion in the list does not itself justify a separate pack; the canonical industry research profile still determines whether a candidate needs its own pack, belongs as a variant, or is a poor fit.
+- **Rationale:** The list provides a broad, service-business-focused universe spanning home services, trades, vehicles, events, business services, real estate, hospitality, and specialized field work, which is well suited to parallel research and platform stress-testing.
+- **Authoritative doc:** `docs/INDUSTRY_PACKS.md`
+
+## 2026-09-24 — Industry Packs use a canonical evidence-backed research profile
+
+- **Status:** Accepted
+- **Area:** Industry Packs
+- **Decision:** Prospective Industry Packs are researched through the canonical `docs/research/INDUSTRY_RESEARCH_PROFILE_TEMPLATE.md` contract, with completed profiles stored under `docs/research/industry-packs/<industry-key>.md`. Research preserves evidence, uncertainty, workflow realities, packaging signals, and candidate core-platform gaps before findings are translated into runtime pack configuration.
+- **Rationale:** A shared profile lets multiple research agents work in parallel without inventing incompatible schemas and keeps source evidence separate from the compact runtime Industry Pack.
+- **Authoritative doc:** `docs/INDUSTRY_PACKS.md`
+
+## 2026-09-24 — Successful payments can send a receipt
+
+- **Status:** Accepted
+- **Area:** Industry Packs
+- **Decision:** The pet-waste Industry Pack includes a `payment.succeeded` receipt email recipe addressed to the customer carried by the event, installed as a draft until the business enables it. Pause-review tickets filter customer change requests to `type=pause`.
+- **Rationale:** Businesses need a demonstrable receipt workflow without unexpectedly changing existing customers' messaging behavior.
+- **Authoritative doc:** `docs/INDUSTRY_PACKS.md`
+
+## 2026-09-24 — Production requires a private auth signing key
+
+- **Status:** Accepted
+- **Area:** Architecture
+- **Decision:** Local development may use the example auth signing secret, while production builds and runtime require a unique secret of at least 32 characters.
+- **Rationale:** A public repository value cannot protect production sessions or signed links.
+- **Authoritative doc:** `README.md`
+
+## 2026-09-24 — Location events carry resource organization context
+
+- **Status:** Accepted
+- **Area:** Architecture
+- **Decision:** A location-scoped domain event identifies the location's organization, while actor fields identify the initiating person. Business mutations, their domain events, and audit records commit together.
+- **Rationale:** Parent staff may act within an authorized child franchise location; using the parent's organization as the event's resource scope violates tenant-safe constraints and prevents valid work.
+- **Authoritative doc:** `docs/V1_DATABASE_SCHEMA.md`
+
+## 2026-09-24 — Machine API scopes describe implemented operations
+
+- **Status:** Accepted
+- **Area:** Implementation
+- **Decision:** V1 API credentials offer write scopes only for customer and lead operations that the machine API implements. Other business resources remain read-only until their write endpoints and contracts are implemented.
+- **Rationale:** A granted scope must correspond to a usable operation rather than promising a route that always returns not found.
+- **Authoritative doc:** `docs/V1_PUBLIC_API.md`
+
+## 2026-09-24 — Background messages honor tenant installations and consent
+
+- **Status:** Accepted
+- **Area:** Connectors
+- **Decision:** The worker selects a tenant's persisted messaging installation at send time, preferring live service over test delivery and never silently falling back to a mock when a configured service is unavailable. Implicit mock delivery requires the explicit local `MOCK_CONNECTORS=true` setting. Transactional consent and notification preferences are stored in the same form the worker enforces.
+- **Rationale:** Owners must be able to trust both delivery mode and their customers' contact choices.
+- **Authoritative doc:** `docs/CONNECTOR_SYSTEM.md`
+
+## 2026-09-24 — Industry automation recipes follow recipient-bearing events
+
+- **Status:** Accepted
+- **Area:** Industry Packs
+- **Decision:** Default Industry Pack automations filter customer signups and manual-review requests separately, and customer reminders use per-job dispatch events with a customer identity. Pack setup provides any ticket definitions needed by enabled recipes.
+- **Rationale:** A route-wide event has no single recipient, and a manual-review lead cannot receive a customer confirmation.
+- **Authoritative doc:** `docs/INDUSTRY_PACKS.md`
+
+## 2026-09-24 — Effective-dated service-plan changes preserve generated work
+
+- **Status:** Accepted
+- **Area:** Product
+- **Decision:** Service-plan frequency and price changes take effect prospectively and retain dated versions so newly generated jobs use the frequency and price effective on the service date. Keep previously generated future jobs and their snapshots by default; allow an explicit `cancel_unstarted` choice to cancel only generated draft, unscheduled, and scheduled jobs from the cutover date, preserving dispatched/started jobs and all prior job and invoice snapshots.
+- **Rationale:** A future price or schedule update must apply consistently to newly generated work while preserving customer commitments and an auditable operational/financial history.
+- **Authoritative doc:** `docs/V1_BUSINESS_RULES.md`
+
 ## 2026-09-24 — Infrastructure connectors use platform-owned configuration
 
 - **Status:** Accepted

@@ -30,6 +30,7 @@ export default function DocumentViewer({ document, backHref = "/app", routePath 
       {document.lines.length > 0 && <table className="document-lines"><thead><tr><th>Description</th><th>Qty</th><th>Rate</th><th className="money">Amount</th></tr></thead><tbody>
         {document.lines.map((line: DocumentLine, index) => <tr key={`${line.description}-${index}`}><td>{line.description}</td><td>{line.quantity ?? ""}</td><td>{line.amountMinor == null ? "" : formatMoney(line.amountMinor, line.currency ?? currency)}</td><td className="money">{line.totalMinor == null ? "" : formatMoney(line.totalMinor, line.currency ?? currency)}</td></tr>)}
       </tbody></table>}
+      {document.proofPhotoUrl && <p><a href={document.proofPhotoUrl} target="_blank" rel="noreferrer">View service photo</a></p>}
       {document.totals.length > 0 && <dl className="document-totals">{document.totals.map((total) => <div key={total.label}><dt>{total.label}</dt><dd>{formatMoney(total.amountMinor, total.currency ?? currency)}</dd></div>)}</dl>}
       {document.terms && <section className="document-terms"><h2>Terms</h2><p>{document.terms}</p></section>}
       <footer>Thank you for your business.</footer>

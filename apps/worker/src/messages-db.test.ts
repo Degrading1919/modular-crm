@@ -8,6 +8,7 @@ it("honors channel preferences and SMS consent before an outbound send", () => {
   expect(suppressReason({ channel: "sms" }, { emailEnabled: true, smsEnabled: true }, { state: "opted_in" })).toBeUndefined();
   expect(suppressReason({ channel: "email" }, undefined, { state: "opted_out" })).toBe("customer_suppressed");
   expect(preferenceKeysForTemplate("cleanup-completed")).toContain("job_completed");
+  expect(preferenceKeysForTemplate("cleanup-completed")).toContain("general");
 });
 
 it("uses a tenant-bound mock, preserves idempotency and surfaces expired authorization", async () => {

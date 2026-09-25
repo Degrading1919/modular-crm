@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, notInArray } from "drizzle-orm";
 import { membershipLocationScopes, memberships, organizationLocations, portalAccess, portalLocationAccess, rolePermissions, roleTemplates, serviceLocations, tenants } from "@modular-crm/db";
 import { DomainError, permissionsForRole, type Actor, type Permission, type RoleTemplate } from "@modular-crm/domain";
 import { auth } from "../auth";
@@ -54,13 +54,25 @@ export async function resolveActor(request: Request): Promise<SessionActor | nul
   const tenant = portalRows[0]!.tenant;
   const sameTenant = portalRows.filter((row) => row.tenant.id === tenant.id);
   const accessIds = sameTenant.map((row) => row.access.id);
-  const locations = accessIds.length === 0 ? [] : await db.select({ locationId: portalLocationAccess.serviceLocationId })
-    .from(portalLocationAccess).where(and(eq(portalLocationAccess.tenantId, tenant.id), inArray(portalLocationAccess.portalAccessId, accessIds)));
+  const locations = accessIds.length === 0 ? [] : await db.select({
+    customerId: portalAccess.customerId,
+    locationId: serviceLocations.id,
+  }).from(portalLocationAccess)
+    .innerJoin(portalAccess, and(eq(portalAccess.id, portalLocationAccess.portalAccessId), eq(portalAccess.tenantId, portalLocationAccess.tenantId)))
+    .innerJoin(serviceLocations, and(
+      eq(serviceLocations.id, portalLocationAccess.serviceLocationId),
+      eq(serviceLocations.tenantId, portalLocationAccess.tenantId),
+      eq(serviceLocations.customerId, portalAccess.customerId),
+    ))
+    .where(and(eq(portalLocationAccess.tenantId, tenant.id), inArray(portalLocationAccess.portalAccessId, accessIds), eq(portalAccess.status, "active")));
+  const customerLocationIds = new Map<string, Set<string>>(sameTenant.map((row) => [row.access.customerId, new Set()]));
+  for (const location of locations) customerLocationIds.get(location.customerId)?.add(location.locationId);
   return {
     kind: "customer", userId: session.user.id, tenantId: tenant.id, tenantName: tenant.name, packKey: tenant.industryPackKey,
     email: session.user.email, name: session.user.name,
-    customerIds: new Set(sameTenant.map((row) => row.access.customerId)),
-    locationIds: new Set(locations.map((row) => row.locationId)),
+    customerIds: new Set(customerLocationIds.keys()),
+    locationIds: new Set([...customerLocationIds.values()].flatMap((ids) => [...ids])),
+    customerLocationIds,
   };
 }
 
@@ -79,12 +91,23 @@ export function locationFilter(actor: SessionActor): string[] | null {
   return actor.allLocations ? null : [...actor.locationIds];
 }
 
-export async function assertCustomerDocumentAccess(actor: SessionActor, customerId: string | null, organizationLocationId: string | null): Promise<void> {
-  if (actor.kind !== "customer" || !customerId || !actor.customerIds.has(customerId) || !organizationLocationId || actor.locationIds.size === 0) {
+export async function assertCustomerServiceLocationAccess(actor: SessionActor, customerId: string | null, serviceLocationId: string | null): Promise<void> {
+  if (actor.kind !== "customer" || !customerId || !serviceLocationId || !actor.customerLocationIds.get(customerId)?.has(serviceLocationId)) {
     throw new DomainError("NOT_FOUND", "Record not found.", 404);
   }
-  const [permitted] = await getDb().select({ id: serviceLocations.id }).from(serviceLocations)
+}
+
+export async function assertCustomerDocumentAccess(actor: SessionActor, customerId: string | null, organizationLocationId: string | null): Promise<void> {
+  const permittedLocationIds = actor.kind === "customer" && customerId ? actor.customerLocationIds.get(customerId) : undefined;
+  if (actor.kind !== "customer" || !customerId || !actor.customerIds.has(customerId) || !organizationLocationId || !permittedLocationIds?.size) {
+    throw new DomainError("NOT_FOUND", "Record not found.", 404);
+  }
+  const db = getDb();
+  const [permitted] = await db.select({ id: serviceLocations.id }).from(serviceLocations)
     .where(and(eq(serviceLocations.tenantId, actor.tenantId), eq(serviceLocations.customerId, customerId),
-      eq(serviceLocations.organizationLocationId, organizationLocationId), inArray(serviceLocations.id, [...actor.locationIds]))).limit(1);
-  if (!permitted) throw new DomainError("NOT_FOUND", "Record not found.", 404);
+      eq(serviceLocations.organizationLocationId, organizationLocationId), inArray(serviceLocations.id, [...permittedLocationIds]))).limit(1);
+  const [outOfScope] = await db.select({ id: serviceLocations.id }).from(serviceLocations)
+    .where(and(eq(serviceLocations.tenantId, actor.tenantId), eq(serviceLocations.customerId, customerId),
+      eq(serviceLocations.organizationLocationId, organizationLocationId), notInArray(serviceLocations.id, [...permittedLocationIds]))).limit(1);
+  if (!permitted || outOfScope) throw new DomainError("NOT_FOUND", "Record not found.", 404);
 }

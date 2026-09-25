@@ -17,6 +17,9 @@ vi.mock("../lib/api/capability-enforcement.ts", () => ({ requireTenantFeature: r
 
 process.env.DATABASE_URL ??= "postgres://localhost:5433/modular_crm_test";
 const { handleInvoiceRefund } = await import("../lib/api/refunds.ts");
+const { handleReporting } = await import("../lib/api/reporting.ts");
+const { handleWorkflow } = await import("../lib/api/workflows.ts");
+const { getDocument } = await import("../lib/api/documents.ts");
 
 let pglite: PGlite;
 let db: Database;
@@ -49,7 +52,7 @@ async function fixture() {
   const [invoice] = await db.insert(invoices).values({
     tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta,
     customerId: seedIds.carter, status: "partially_paid", invoiceNumber: `REFUND-${key}`, currency: "USD",
-    totalMinor: 10_000n, paidMinor: 6_000n, balanceMinor: 4_000n,
+    issuedAt: new Date(), totalMinor: 10_000n, paidMinor: 6_000n, balanceMinor: 4_000n,
   }).returning();
   if (!invoice) throw new Error("Invoice fixture was not created.");
   const [payment] = await db.insert(payments).values({
@@ -72,12 +75,22 @@ describe("invoice refunds", () => {
   it("supports partial then full refunds, persists linked records, and updates balance without exposing processor references", async () => {
     refundCalls.length = 0;
     const { invoice, payment } = await fixture();
+    const beforeReportResponse = await handleReporting(new Request("http://localhost/api/v1/reports?type=financial&range=month"), ["reports"], owner);
+    const beforeReport = (await beforeReportResponse!.json() as { item: { metrics: { key: string; value: number }[] } }).item;
+    const beforeMetric = (key: string) => beforeReport.metrics.find((item) => item.key === key)?.value ?? 0;
     const partial = await handleInvoiceRefund(request(invoice.id, { paymentId: payment.id, amountCents: 2_000, idempotencyKey: "partial-1" }), ["invoices", invoice.id, "refunds"], owner);
     expect(partial?.status).toBe(201);
     const first = await partial!.json() as { item: Record<string, unknown>; invoice: { balanceCents: number } };
     expect(first.invoice.balanceCents).toBe(6_000);
     expect(first.item).toMatchObject({ paymentId: payment.id, amountMinor: 2_000, status: "succeeded" });
     expect(first.item).not.toHaveProperty("providerReference");
+
+    const report = await handleReporting(new Request("http://localhost/api/v1/reports?type=financial&range=month"), ["reports"], owner);
+    const reportItem = (await report!.json() as { item: { metrics: { key: string; value: number }[] } }).item;
+    const afterMetric = (key: string) => reportItem.metrics.find((item) => item.key === key)?.value ?? 0;
+    expect(afterMetric("collectedCents")).toBe(beforeMetric("collectedCents") - 2_000);
+    expect(afterMetric("refundsCents")).toBe(beforeMetric("refundsCents") + 2_000);
+    expect(afterMetric("outstandingCents")).toBe(beforeMetric("outstandingCents") + 2_000);
 
     const retry = await handleInvoiceRefund(request(invoice.id, { paymentId: payment.id, amountCents: 2_000, idempotencyKey: "partial-1" }), ["invoices", invoice.id, "refunds"], owner);
     expect(retry?.status).toBe(200);
@@ -94,6 +107,54 @@ describe("invoice refunds", () => {
     const savedRefunds = await db.select().from(refunds).where(and(eq(refunds.tenantId, owner.tenantId), eq(refunds.paymentId, payment.id)));
     expect(savedRefunds).toHaveLength(2);
     expect(savedRefunds.reduce((sum, item) => sum + item.amountMinor, 0n)).toBe(6_000n);
+  });
+
+  it("keeps the balance reconciled when another payment follows a partial refund", async () => {
+    const { invoice, payment } = await fixture();
+    const reportRequest = () => new Request("http://localhost/api/v1/reports?type=financial&range=month");
+    const readReportMetrics = async () => {
+      const response = await handleReporting(reportRequest(), ["reports"], owner);
+      const report = (await response!.json() as { item: { metrics: { key: string; value: number }[] } }).item;
+      return Object.fromEntries(report.metrics.map(({ key, value }) => [key, value]));
+    };
+    const statementForCurrentMonth = async () => {
+      const now = new Date();
+      const period = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+      return getDocument(owner, "statement", seedIds.carter, { period });
+    };
+    const closingBalance = (document: Awaited<ReturnType<typeof statementForCurrentMonth>>) => {
+      const closing = document.totals.find(({ label }) => label.startsWith("Closing balance"));
+      if (!closing) throw new Error("Account statement did not include a closing balance.");
+      return Number(closing.amountMinor);
+    };
+    const reportBefore = await readReportMetrics();
+    const statementBefore = await statementForCurrentMonth();
+
+    const partial = await handleInvoiceRefund(request(invoice.id, { paymentId: payment.id, amountCents: 2_000, idempotencyKey: "refund-before-payment" }), ["invoices", invoice.id, "refunds"], owner);
+    expect(partial?.status).toBe(201);
+    expect((await partial!.json()).invoice.balanceCents).toBe(6_000);
+
+    const additionalPayment = await handleWorkflow(new Request(`http://localhost/api/v1/invoices/${invoice.id}/pay`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amountCents: 3_000, method: "manual", idempotencyKey: "payment-after-refund" }),
+    }), ["invoices", invoice.id, "pay"], owner);
+    expect(additionalPayment?.status).toBe(200);
+    expect((await additionalPayment!.json()).invoice.balanceCents).toBe(3_000);
+
+    const [savedInvoice] = await db.select().from(invoices).where(eq(invoices.id, invoice.id)).limit(1);
+    expect(savedInvoice).toMatchObject({ status: "partially_paid", paidMinor: 9_000n, balanceMinor: 3_000n });
+
+    const invoiceDocument = await getDocument(owner, "invoice", invoice.id);
+    expect(invoiceDocument.status).toBe("partially_paid");
+    expect(invoiceDocument.totals.find(({ label }) => label === "Paid")?.amountMinor).toBe(9_000n);
+    expect(invoiceDocument.totals.find(({ label }) => label === "Balance due")?.amountMinor).toBe(3_000n);
+
+    const statementAfter = await statementForCurrentMonth();
+    expect(closingBalance(statementAfter) - closingBalance(statementBefore)).toBe(-1_000);
+    const reportAfter = await readReportMetrics();
+    expect(reportAfter.collectedCents - reportBefore.collectedCents).toBe(1_000);
+    expect(reportAfter.outstandingCents - reportBefore.outstandingCents).toBe(-1_000);
+    expect(reportAfter.refundsCents - reportBefore.refundsCents).toBe(2_000);
   });
 
   it("rejects over-refunds and hides records from unauthorized actors", async () => {

@@ -35,16 +35,14 @@ Examples:
 - leads:read
 - leads:write
 - jobs:read
-- jobs:write
 - estimates:read
-- estimates:write
 - invoices:read
 - payments:read
 - service_plans:read
-- service_plans:write
 - tickets:read
-- tickets:write
 - webhooks:manage
+
+In V1, machine credentials can create and update customers and leads. The other listed business resources are read-only. Write scopes for those resources will be introduced with their corresponding API operations, validation, and idempotency contracts.
 
 ## Resource principles
 

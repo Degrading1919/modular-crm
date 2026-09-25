@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import {
   automationRules, grantRecommendedCapabilitySetup, installInitialCapabilityCatalog, memberships,
-  organizationLocations, organizations, roleTemplates, services, siteContents, sites, tenants,
+  organizationLocations, organizations, roleTemplates, services, siteContents, sites, tenants, ticketStatusDefinitions, ticketTypeDefinitions,
 } from "@modular-crm/db";
 import { DomainError } from "@modular-crm/domain";
 import { evaluateProductCapabilityRecommendations, PET_WASTE_REMOVAL_PACK } from "@modular-crm/industry-packs";
@@ -109,9 +109,11 @@ export async function handleAuthRoute(request: Request, path: string[]): Promise
       if (!branch || !role) throw new Error("Business setup failed");
       const [membership] = await tx.insert(memberships).values({ tenantId: tenant.id, userId, organizationId: organization.id, defaultLocationId: branch.id, roleTemplateId: role.id, status: "active", joinedAt: new Date() }).returning();
       await tx.insert(services).values(PET_WASTE_REMOVAL_PACK.services.map((service) => ({ tenantId: tenant.id, organizationId: organization.id, key: service.key, name: service.name, serviceType: service.kind, defaultDurationMinutes: service.estimatedMinutes ?? 20, active: service.defaultEnabled ?? false })));
+      await tx.insert(ticketTypeDefinitions).values({ tenantId: tenant.id, key: "plan_change_review", name: "Service plan change review" });
+      await tx.insert(ticketStatusDefinitions).values({ tenantId: tenant.id, key: "open", name: "Open", normalizedCategory: "open", sortOrder: 1 });
       const [site] = await tx.insert(sites).values({ tenantId: tenant.id, organizationId: organization.id, status: "draft", templateKey: PET_WASTE_REMOVAL_PACK.website.template, templateVersion: "1", slug, branding: { businessName: body.businessName }, settings: { serviceArea: [] } }).returning();
       if (site) await tx.insert(siteContents).values({ tenantId: tenant.id, siteId: site.id, contentKey: "home", content: { headline: PET_WASTE_REMOVAL_PACK.website.heroHeadline, description: PET_WASTE_REMOVAL_PACK.website.heroDescription } });
-      if (membership) await tx.insert(automationRules).values(PET_WASTE_REMOVAL_PACK.defaultAutomations.map((recipe) => ({ tenantId: tenant.id, name: recipe.name, description: recipe.description, source: "industry_pack", sourceKey: recipe.sourceKey, status: recipe.enabledByDefault ? "active" : "draft", version: 1, triggerConfig: { event: recipe.event }, conditions: {}, actions: recipe.actions.map((action) => ({ actionType: action.actionType, configuration: action.configuration })), createdByMembershipId: membership.id })));
+      if (membership) await tx.insert(automationRules).values(PET_WASTE_REMOVAL_PACK.defaultAutomations.map((recipe) => ({ tenantId: tenant.id, name: recipe.name, description: recipe.description, source: "industry_pack", sourceKey: recipe.sourceKey, status: recipe.enabledByDefault ? "active" : "draft", version: 1, triggerConfig: { event: recipe.event, ...(recipe.filters ? { filters: recipe.filters } : {}) }, conditions: {}, actions: recipe.actions.map((action) => ({ actionType: action.actionType, configuration: action.configuration })), createdByMembershipId: membership.id })));
     });
     return signupResponse;
   }

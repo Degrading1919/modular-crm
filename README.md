@@ -39,6 +39,8 @@ On macOS or Linux, use `cp .env.example .env` in place of `Copy-Item`. Keep the 
 
 The example environment also enables local custom-domain verification simulation. Production mode rejects simulated verification even if that development setting is present.
 
+The example `BETTER_AUTH_SECRET` is valid only for local development. Before `pnpm build` or a production start, set a unique secret of at least 32 characters in the environment; the production build and runtime reject the example value.
+
 Open the application at [http://localhost:3000](http://localhost:3000). Mailpit's local email inbox is available at [http://localhost:8025](http://localhost:8025), and the MinIO console at [http://localhost:9001](http://localhost:9001). The seeded tenants and playtest scenarios are documented in [V1 Seed and Playtest Scenarios](./docs/V1_SEED_SCENARIOS.md).
 
 The development seed creates these login accounts; each uses the development-only password `Demo12345!`:
