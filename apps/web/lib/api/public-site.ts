@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
 import {
@@ -10,12 +10,14 @@ import {
 import { DomainError } from "@modular-crm/domain";
 import { evaluatePrice, snapshotPriceResult, type PriceResult, type PriceRule, type PricingEffect } from "@modular-crm/pricing";
 import { evaluateConditions, type Condition } from "@modular-crm/config";
-import { getIndustryPack } from "@modular-crm/industry-packs";
+import { validatePackIntakeValues } from "@modular-crm/industry-packs";
 import { z } from "zod";
 import { getDb } from "../db";
 import { json } from "./http";
 import { requireTenantFeature } from "./capability-enforcement";
 import { encryptServiceAccessInstructions } from "./service-access";
+import { recurrencePresetSchedule, resolveTenantIndustryPack } from "./industry-pack-runtime";
+import { authSigningSecret } from "../runtime-secret";
 
 const PUBLIC_BODY_LIMIT = 64 * 1024;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
@@ -26,13 +28,12 @@ const rateWindows = new Map<string, { startedAt: number; count: number }>();
 const slugSchema = z.string().min(1).max(80).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i);
 const addressSchema = z.string().trim().min(3).max(250);
 const zipSchema = z.string().trim().min(3).max(16);
-const petSchema = z.object({ name: z.string().trim().min(1).max(100), size: z.enum(["small", "medium", "large", "extra_large"]).default("medium") });
 const eligibilitySchema = z.object({ slug: slugSchema, address: addressSchema, zip: zipSchema });
 const quoteSchema = eligibilitySchema.extend({
   serviceId: z.string().min(1).max(100), serviceKey: z.string().min(1).max(100).optional(),
-  frequency: z.enum(["twice_weekly", "weekly", "every_two_weeks", "every_four_weeks", "one_time"]),
-  petCount: z.number().int().min(0).max(20).optional(), pets: z.array(petSchema).max(20).optional(),
-  yardSize: z.enum(["small", "medium", "large", "extra_large"]).optional(), preferredDay: z.string().max(40).optional(),
+  frequency: z.string().trim().min(1).max(80).regex(/^[a-z][a-z0-9_-]*$/),
+  industryData: z.unknown().optional(),
+  preferredDay: z.string().max(80).optional(),
   requestDetails: z.string().trim().max(4000).optional(),
 });
 const contactSchema = z.object({
@@ -41,9 +42,8 @@ const contactSchema = z.object({
 });
 const signupSchema = eligibilitySchema.extend({
   contact: z.object({ name: z.string().trim().min(2).max(160), email: z.email().max(254), phone: z.string().trim().min(5).max(40) }),
-  service: z.object({ id: z.string().min(1).max(100), key: z.string().min(1).max(100).optional(), frequency: z.enum(["twice_weekly", "weekly", "every_two_weeks", "every_four_weeks", "one_time"]) }),
-  pets: z.array(petSchema).max(20).optional(),
-  yard: z.object({ size: z.enum(["small", "medium", "large", "extra_large"]).default("medium"), gateCode: z.string().max(250).optional().default(""), accessNotes: z.string().max(2000).optional().default("") }).optional(),
+  service: z.object({ id: z.string().min(1).max(100), key: z.string().min(1).max(100).optional(), frequency: z.string().trim().min(1).max(80).regex(/^[a-z][a-z0-9_-]*$/) }),
+  industryData: z.unknown().optional(),
   requestDetails: z.string().trim().max(4000).optional().default(""),
   preferredDay: z.string().max(40).optional().default(""), quoteId: z.string().max(100).optional(),
   paymentMethod: z.enum(["demo"]).optional(),
@@ -177,7 +177,6 @@ async function listSiteServices(site: typeof sites.$inferSelect) {
   const db = getDb();
   const records = await db.select().from(services).where(and(eq(services.tenantId, site.tenantId), eq(services.active, true), or(eq(services.organizationId, site.organizationId), isNull(services.organizationId)))).orderBy(asc(services.name));
   const ruleRecords = await db.select().from(priceRules).where(and(eq(priceRules.tenantId, site.tenantId), eq(priceRules.organizationId, site.organizationId), eq(priceRules.active, true)));
-  const rules = ruleRecords.map(toPriceRule).filter((rule): rule is PriceRule => !!rule);
   return records.filter((service) => service.serviceType !== "add_on" && service.serviceType !== "recovery").map((service) => {
     const matching = ruleRecords.filter((rule) => {
       const conditions = settingsObject(rule.conditions);
@@ -186,7 +185,7 @@ async function listSiteServices(site: typeof sites.$inferSelect) {
     }).sort((a, b) => b.priority - a.priority);
     const effect = matching[0] ? effectForEngine(matching[0].effects) : null;
     const basePriceCents = effect?.type === "set_base_amount" ? effect.amountMinor : null;
-    return { id: service.id, key: service.key, name: service.name, description: service.description ?? "", basePriceCents };
+    return { id: service.id, key: service.key, name: service.name, description: service.description ?? "", serviceType: service.serviceType, basePriceCents };
   });
 }
 
@@ -214,21 +213,28 @@ function stringValue(value: unknown): string { return typeof value === "string" 
 async function publicSiteView(row: PublicSiteRow): Promise<SiteSnapshot & { slug: string; template: string }> {
   const published = siteSnapshot(row.site);
   const data = published ?? await liveSiteContent(row.site, row.organization);
-  const pack = row.tenant.industryPackKey ? getIndustryPack(row.tenant.industryPackKey) : undefined;
-  const petPack = row.tenant.industryPackKey === "pet-waste-removal";
-  const legacyPetHeadlines = new Set(["A cleaner yard. A better day.", "A cleaner yard, every week"]);
-  const hasLegacyPetCopy = !petPack && (typeof data.tagline === "string" && legacyPetHeadlines.has(data.tagline.trim()));
+  const resolved = resolveTenantIndustryPack(row.tenant.industryPackKey, row.tenant.settings);
+  const pack = resolved?.pack;
+  const legacyHeadlines = new Set(["A cleaner yard. A better day.", "A cleaner yard, every week"]);
+  const hasLegacyPackCopy = !!pack && typeof data.tagline === "string" && legacyHeadlines.has(data.tagline.trim());
   return {
     ...data,
-    ...(pack ? {
+    ...(resolved && pack ? {
       industryPackKey: pack.key,
       industryName: pack.displayName,
       terminology: pack.terminology,
       serviceLocationTerm: pack.terminology.serviceLocation,
       websiteDefaults: { headline: pack.website.heroHeadline, description: pack.website.heroDescription },
+      websiteSections: pack.website.sections,
+      signupBehavior: pack.website.signupBehavior ?? "review",
+      industryIntake: {
+        formSteps: pack.formSteps,
+        locationFields: resolved.locationFields.filter((field) => field.type !== "media"),
+        assets: resolved.assets.map((asset) => ({ ...asset, fields: asset.fields.filter((field) => field.type !== "media") })),
+        recurrencePresets: resolved.recurrencePresets,
+      },
     } : {}),
-    ...(petPack ? { petIntake: true } : { petIntake: false }),
-    ...(hasLegacyPetCopy && pack ? { tagline: pack.website.heroHeadline, description: pack.website.heroDescription } : {}),
+    ...(hasLegacyPackCopy && pack ? { tagline: pack.website.heroHeadline, description: pack.website.heroDescription } : {}),
     slug: row.site.slug, template: row.site.templateKey,
   };
 }
@@ -283,7 +289,36 @@ async function loadTaxRate(site: typeof sites.$inferSelect, service: typeof serv
   return Math.max(0, Math.min(100_000, matching[0]?.rateBasisPoints ?? 0));
 }
 
-async function calculatePublicQuote(site: typeof sites.$inferSelect, input: z.infer<typeof quoteSchema>) {
+function camelFieldKey(key: string): string { return key.replace(/[-_]([a-z0-9])/g, (_, char: string) => char.toUpperCase()); }
+
+function pricingFields(resolved: ReturnType<typeof resolveTenantIndustryPack>, intake: ReturnType<typeof validatePackIntakeValues>, requestDetails: string): Record<string, unknown> {
+  const fields: Record<string, unknown> = { ...intake.location, requestDetails };
+  for (const [key, value] of Object.entries(intake.location)) fields[camelFieldKey(key)] = value;
+  let assetCount = 0;
+  for (const [assetKey, rows] of Object.entries(intake.assets)) {
+    fields[`${camelFieldKey(assetKey)}Count`] = rows.length;
+    const definition = resolved?.assets.find((asset) => asset.key === assetKey);
+    if (definition) fields[definition.pluralLabel.replace(/[^a-zA-Z0-9]+([a-zA-Z0-9])/g, (_, char: string) => char.toUpperCase()).replace(/^[A-Z]/, (char) => char.toLowerCase())] = rows.length;
+    assetCount += rows.length;
+    for (const [index, asset] of rows.entries()) for (const [fieldKey, value] of Object.entries(asset)) {
+      fields[`${camelFieldKey(assetKey)}.${camelFieldKey(fieldKey)}`] = value;
+      if (index === 0 && !(camelFieldKey(fieldKey) in fields)) fields[camelFieldKey(fieldKey)] = value;
+    }
+  }
+  fields.assetCount = assetCount;
+  return fields;
+}
+
+function parsePackIntake(row: PublicSiteRow, raw: unknown) {
+  const resolved = resolveTenantIndustryPack(row.tenant.industryPackKey, row.tenant.settings);
+  if (!resolved) return { resolved: undefined, intake: { location: {}, assets: {}, sensitive: { location: {}, assets: {} } } };
+  try { return { resolved, intake: validatePackIntakeValues(resolved, raw ?? { location: {}, assets: {} }) }; }
+  catch (error) { throw new DomainError("VALIDATION_ERROR", error instanceof Error ? error.message : "Check the industry-specific service details.", 422); }
+}
+
+async function calculatePublicQuote(row: PublicSiteRow, input: z.infer<typeof quoteSchema>) {
+  const site = row.site;
+  const { intake, resolved } = parsePackIntake(row, input.industryData);
   const db = getDb();
   const [service] = await db.select().from(services).where(and(
     eq(services.tenantId, site.tenantId), eq(services.active, true),
@@ -297,11 +332,8 @@ async function calculatePublicQuote(site: typeof sites.$inferSelect, input: z.in
   const zoneId = eligibility.zoneId;
   const context = {
     tenantId: site.tenantId, currency, at: new Date().toISOString(), serviceId: service.id, serviceKey: service.key,
-    frequency: input.frequency, quantity: input.pets?.length ?? input.petCount ?? 1, zoneId,
-    fields: {
-      petCount: input.pets?.length ?? input.petCount ?? 1, pets: input.pets?.length ?? input.petCount ?? 1,
-      yardSize: input.yardSize ?? "medium", requestDetails: input.requestDetails ?? "",
-    },
+    frequency: input.frequency, quantity: Math.max(1, Object.values(intake.assets).reduce((sum, rows) => sum + rows.length, 0)), zoneId,
+    fields: pricingFields(resolved, intake, input.requestDetails ?? ""),
     postalCode: input.zip,
   };
   const dbRules = await db.select().from(priceRules).where(and(eq(priceRules.tenantId, site.tenantId), eq(priceRules.organizationId, site.organizationId), eq(priceRules.active, true)));
@@ -316,9 +348,9 @@ async function calculatePublicQuote(site: typeof sites.$inferSelect, input: z.in
   }
   const quoteRequired = !eligibility.eligible || result.quoteRequired;
   const warnings = [...result.warnings, ...(eligibility.eligible ? [] : [eligibility.reason ?? "service_area_needs_review"] )];
-  const quoteId = createHash("sha256").update(JSON.stringify({
+  const quoteId = createHmac("sha256", authSigningSecret()).update(JSON.stringify({
     siteId: site.id, serviceId: service.id, frequency: input.frequency, zip: input.zip.trim().toUpperCase(),
-    petCount: input.pets?.length ?? input.petCount ?? 1, yardSize: input.yardSize ?? "medium", requestDetails: input.requestDetails ?? "", total: result.totalMinor,
+    intake, requestDetails: input.requestDetails ?? "", total: result.totalMinor,
     quoteRequired, rules: result.appliedRules.map((rule) => rule.ruleId),
   })).digest("hex").slice(0, 40);
   return {
@@ -343,12 +375,12 @@ function requestIp(request: Request): string | null {
   return raw ? raw.slice(0, 80) : null;
 }
 
-async function ensureForm(tx: Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0], site: typeof sites.$inferSelect, formType: "contact" | "signup") {
+async function ensureForm(tx: Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0], site: typeof sites.$inferSelect, formType: "contact" | "signup", pack?: NonNullable<ReturnType<typeof resolveTenantIndustryPack>>["pack"]) {
   const [existing] = await tx.select().from(siteForms).where(and(eq(siteForms.tenantId, site.tenantId), eq(siteForms.siteId, site.id), eq(siteForms.formType, formType), eq(siteForms.active, true))).limit(1);
   if (existing) return existing;
   const [created] = await tx.insert(siteForms).values({
     tenantId: site.tenantId, siteId: site.id, formType, name: formType === "signup" ? "Service signup" : "Contact us",
-    schema: formType === "signup" ? { fields: ["address", "contact", "service", "pets", "yard", "termsAccepted"] } : { fields: ["name", "email", "phone", "message"] },
+    schema: formType === "signup" ? { fields: ["address", "contact", "service", "industryData", "termsAccepted"], industryPackKey: pack?.key, industryPackVersion: pack?.version } : { fields: ["name", "email", "phone", "message"] },
     behavior: { create: formType === "signup" ? "lead_or_customer" : "lead" }, active: true,
   }).returning();
   if (!created) throw new Error("Could not prepare the website form.");
@@ -401,14 +433,46 @@ async function hasExistingCustomerMatch(tx: Parameters<Parameters<ReturnType<typ
   return !!match;
 }
 
-function sanitizedSubmission(input: z.infer<typeof signupSchema>, petPack: boolean) {
+function sanitizedSubmission(input: z.infer<typeof signupSchema>, intake: ReturnType<typeof validatePackIntakeValues>, visible = { location: intake.location, assets: intake.assets }) {
   return {
     address: input.address, zip: input.zip, contact: input.contact, service: input.service,
-    ...(petPack && input.pets ? { pets: input.pets } : {}),
-    ...(petPack && input.yard ? { yard: { size: input.yard.size, accessProvided: Boolean(input.yard.gateCode || input.yard.accessNotes) } } : {}),
+    industryData: visible,
+    industryDataFingerprint: createHmac("sha256", authSigningSecret()).update(JSON.stringify(intake)).digest("hex"),
     requestDetails: input.requestDetails,
     preferredDay: input.preferredDay, quoteId: input.quoteId, paymentMethod: input.paymentMethod,
     notificationPreferences: input.notificationPreferences, termsAccepted: true, termsVersion: input.termsVersion,
+  };
+}
+
+function splitPackIntakeForStorage(resolved: ReturnType<typeof resolveTenantIndustryPack>, intake: ReturnType<typeof validatePackIntakeValues>) {
+  const visibleAssets: Record<string, Array<Record<string, unknown>>> = {};
+  const assetRecords: Record<string, Array<{ id: string; name: string; customFields: Record<string, unknown> }>> = {};
+  const hiddenAssets: Record<string, Record<string, unknown>> = {};
+  if (resolved) for (const [assetKey, rows] of Object.entries(intake.assets)) {
+    const definition = resolved.assets.find((asset) => asset.key === assetKey);
+    if (!definition) continue;
+    const values: Record<string, unknown>[] = [];
+    const records: Array<{ id: string; name: string; customFields: Record<string, unknown> }> = [];
+    for (const [index, row] of rows.entries()) {
+      const id = randomUUID();
+      const visible: Record<string, unknown> = {};
+      const hidden: Record<string, unknown> = { ...(intake.sensitive.assets[assetKey]?.[index] ?? {}) };
+      for (const [fieldKey, value] of Object.entries(row)) {
+        const field = definition.fields.find((item) => item.key === fieldKey);
+        if (field?.sensitive || field?.customerVisible === false) hidden[fieldKey] = value;
+        else visible[fieldKey] = value;
+      }
+      if (Object.keys(hidden).length) hiddenAssets[id] = hidden;
+      const name = typeof visible.name === "string" && visible.name.trim() ? visible.name : `${definition.label} ${index + 1}`;
+      values.push(visible);
+      records.push({ id, name, customFields: visible });
+    }
+    if (values.length) { visibleAssets[assetKey] = values; assetRecords[assetKey] = records; }
+  }
+  return {
+    visible: { location: intake.location, assets: visibleAssets },
+    assetRecords,
+    encrypted: { location: intake.sensitive.location, assets: hiddenAssets },
   };
 }
 
@@ -453,10 +517,8 @@ async function saveContact(request: Request, site: typeof sites.$inferSelect, in
 
 async function createSignup(request: Request, row: PublicSiteRow, input: z.infer<typeof signupSchema>): Promise<Response> {
   const db = getDb();
-  const petPack = row.tenant.industryPackKey === "pet-waste-removal";
-  const pets = petPack ? input.pets ?? [] : [];
-  const yard = petPack ? input.yard ?? { size: "medium" as const, gateCode: "", accessNotes: "" } : { size: "medium" as const, gateCode: "", accessNotes: "" };
-  if (petPack && pets.length === 0) throw new DomainError("VALIDATION_ERROR", "Add at least one pet to continue.", 422);
+  const { resolved, intake } = parsePackIntake(row, input.industryData);
+  const pack = resolved?.pack;
   const serviceFilter = z.uuid().safeParse(input.service.id).success
     ? eq(services.id, input.service.id)
     : eq(services.key, input.service.key ?? input.service.id);
@@ -468,36 +530,41 @@ async function createSignup(request: Request, row: PublicSiteRow, input: z.infer
     || (input.service.key !== undefined && input.service.key !== requestedService.key)) {
     throw new DomainError("VALIDATION_ERROR", "Choose an available service.", 422);
   }
+  const oneTime = input.service.frequency === "one_time" || requestedService.serviceType === "one_time";
+  const selectedPreset = resolved?.recurrencePresets.find((preset) => preset.key === input.service.frequency);
+  if (!oneTime && resolved && !selectedPreset) throw new DomainError("VALIDATION_ERROR", "Choose an available service schedule.", 422);
+  if (requestedService.serviceType === "one_time" && input.service.frequency !== "one_time") throw new DomainError("VALIDATION_ERROR", "This service is scheduled as a one-time visit.", 422);
+  const recurrence = selectedPreset && resolved ? recurrencePresetSchedule(resolved, selectedPreset.key) ?? null : null;
   const termsVersion = publicTermsVersion(row.site);
   const quoteInput = {
     slug: input.slug, address: input.address, zip: input.zip,
     serviceId: input.service.id, serviceKey: input.service.key, frequency: input.service.frequency,
-    ...(petPack ? { pets, petCount: pets.length } : { petCount: 1 }),
-    yardSize: petPack ? yard.size : undefined, preferredDay: input.preferredDay, requestDetails: input.requestDetails,
+    industryData: input.industryData, preferredDay: input.preferredDay, requestDetails: input.requestDetails,
   };
   let quote: Awaited<ReturnType<typeof calculatePublicQuote>> | null = null;
-  try { quote = await calculatePublicQuote(row.site, quoteSchema.parse(quoteInput)); } catch { quote = null; }
+  try { quote = await calculatePublicQuote(row, quoteSchema.parse(quoteInput)); } catch { quote = null; }
   const confident = !!quote && quote.eligibility.eligible && !quote.quoteRequired && !!input.quoteId && input.quoteId === quote.quoteId;
-  const recurring = input.service.frequency !== "one_time" && quote?.service.serviceType !== "one_time";
+  const recurring = !oneTime && quote?.service.serviceType !== "one_time";
   const recurringEnabled = recurring && hasUsableFeature(await loadTenantCapabilities(db, row.site.tenantId), "recurring_service_management");
   const paymentMode = stringValue(settingsObject(row.tenant.settings).paymentMode) || stringValue(settingsObject(settingsObject(row.tenant.settings).onboarding).paymentMode) || "demo";
   // A request-provided demo method cannot stand in for a provider the business has not connected.
-  // The legacy automatic recurring-plan flow is intentionally Pet-pack-only. Other packs submit a reviewable request until their booking semantics are modeled.
-  const canAutoActivate = petPack && confident && recurringEnabled && paymentMode !== "connect";
-  const detailsToEncrypt = [yard.gateCode ? `Gate code: ${yard.gateCode}` : "", yard.accessNotes ? `Access notes: ${yard.accessNotes}` : ""].filter(Boolean).join("\n");
+  // Industry packs may request activation, but unsupported or custom schedules still require office review.
+  const canAutoActivate = pack?.website.signupBehavior === "activate_recurring" && !!recurrence && confident && recurringEnabled && paymentMode !== "connect";
+  const storedIntake = splitPackIntakeForStorage(resolved, intake);
+  const hasSensitiveData = Object.keys(storedIntake.encrypted.location).length > 0 || Object.keys(storedIntake.encrypted.assets).length > 0;
+  const detailsToEncrypt = hasSensitiveData ? JSON.stringify({ kind: "industry_intake", ...storedIntake.encrypted }) : "";
   const encryptedAccess = encryptServiceAccessInstructions(detailsToEncrypt);
   const idempotencyKey = `signup:${input.idempotencyKey}`;
-  const organization = row.organization;
   const response = await db.transaction(async (tx) => {
-    const form = await ensureForm(tx, row.site, "signup");
+    const form = await ensureForm(tx, row.site, "signup", pack);
     const [createdSubmission] = await tx.insert(siteSubmissions).values({
       tenantId: row.site.tenantId, siteId: row.site.id, siteFormId: form.id, idempotencyKey,
-      payload: sanitizedSubmission(input, petPack), status: "processing",
+      payload: sanitizedSubmission(input, intake, storedIntake.visible), status: "processing",
     }).onConflictDoNothing({ target: [siteSubmissions.siteId, siteSubmissions.idempotencyKey] }).returning();
     if (!createdSubmission) {
       const [prior] = await tx.select().from(siteSubmissions).where(and(eq(siteSubmissions.siteId, row.site.id), eq(siteSubmissions.idempotencyKey, idempotencyKey))).limit(1);
       if (!prior) throw new Error("Could not load the prior signup request.");
-      if (!isDeepStrictEqual(prior.payload, sanitizedSubmission(input, petPack))) throw new DomainError("IDEMPOTENCY_CONFLICT", "This signup request key was already used for different information.", 409);
+      if (!isDeepStrictEqual(prior.payload, sanitizedSubmission(input, intake, storedIntake.visible))) throw new DomainError("IDEMPOTENCY_CONFLICT", "This signup request key was already used for different information.", 409);
       return { duplicate: prior };
     }
 
@@ -517,12 +584,14 @@ async function createSignup(request: Request, row: PublicSiteRow, input: z.infer
         tenantId: row.site.tenantId, customerId: customer.id, organizationLocationId: row.site.organizationLocationId,
         name: "Service address", addressLine1: input.address.trim(), addressLine2: null, city: "", region: "", postalCode: input.zip.trim(), countryCode: "US",
         serviceZoneId: quote.eligibility.zoneId ?? null, accessInstructionsEncrypted: encryptedAccess,
-        customFields: { ...(petPack ? { yardSize: yard.size } : {}), preferredDay: input.preferredDay || "" },
+        customFields: { ...storedIntake.visible.location, preferredDay: input.preferredDay || "", industryPackKey: pack?.key ?? null, industryPackVersion: pack?.version ?? null },
       }).returning();
       if (!location) throw new Error("Could not save the service address.");
-      if (petPack && quote.service.serviceType !== "one_time") {
-        await tx.insert(customerAssets).values(pets.map((pet) => ({ tenantId: row.site.tenantId, customerId: customer.id, serviceLocationId: location.id, assetTypeKey: "pet", name: pet.name, status: "active", customerVisible: true, customFields: { species: "dog", size: pet.size, activeAtLocation: true } })));
-      }
+      const assetValues = Object.entries(storedIntake.assetRecords).flatMap(([assetTypeKey, assets]) => assets.map((asset) => ({
+        id: asset.id, tenantId: row.site.tenantId, customerId: customer.id, serviceLocationId: location.id,
+        assetTypeKey, name: asset.name, status: "active", customerVisible: true, customFields: asset.customFields,
+      })));
+      if (assetValues.length) await tx.insert(customerAssets).values(assetValues);
       await tx.insert(notificationPreferences).values({ tenantId: row.site.tenantId, customerId: customer.id, eventKey: "general", emailEnabled: input.notificationPreferences.email, smsEnabled: input.notificationPreferences.sms }).onConflictDoNothing();
       for (const channel of ["email", "sms"] as const) await tx.insert(consentRecords).values({
         tenantId: row.site.tenantId, customerId: customer.id, channel, category: "transactional",
@@ -543,12 +612,7 @@ async function createSignup(request: Request, row: PublicSiteRow, input: z.infer
         await tx.insert(paymentMethodReferences).values({ tenantId: row.site.tenantId, customerId: customer.id, connectorInstallationId: paymentInstallationId, providerCustomerRef: `demo-customer:${customer.id}`, providerMethodRef: `demo-method:${createdSubmission.id}`, methodType: "demo", brand: "Demo", isDefault: true, status: "active" });
       }
 
-      const frequency = input.service.frequency;
-      const recurrence = frequency === "every_two_weeks" ? { type: "weekly", interval: 2 }
-        : frequency === "every_four_weeks" ? { type: "weekly", interval: 4 }
-          : frequency === "twice_weekly" ? { type: "weekly", interval: 1, daysOfWeek: [1, 4] }
-            : { type: "weekly", interval: 1 };
-      const [recurrenceRule] = await tx.insert(recurrenceRules).values({ tenantId: row.site.tenantId, frequencyType: recurrence.type, interval: recurrence.interval, daysOfWeek: "daysOfWeek" in recurrence ? recurrence.daysOfWeek : null, timezone: row.organization.timezone || row.tenant.defaultTimezone, configuration: { publicSignupFrequency: frequency } }).returning();
+      const [recurrenceRule] = await tx.insert(recurrenceRules).values({ tenantId: row.site.tenantId, frequencyType: recurrence!.frequencyType, interval: recurrence!.interval, daysOfWeek: recurrence!.daysOfWeek, timezone: row.organization.timezone || row.tenant.defaultTimezone, configuration: { publicSignupFrequency: input.service.frequency, rrule: selectedPreset?.rrule, industryPackKey: pack?.key, industryPackVersion: pack?.version } }).returning();
       if (!recurrenceRule) throw new Error("Could not prepare the service schedule.");
       const snapshot = snapshotPriceResult(quote.result, new Date().toISOString());
       const [plan] = await tx.insert(servicePlans).values({
@@ -556,7 +620,7 @@ async function createSignup(request: Request, row: PublicSiteRow, input: z.infer
         serviceId: quote.service.id, recurrenceRuleId: recurrenceRule.id, status: "active", effectiveFrom: new Date().toISOString().slice(0, 10),
         pricingSnapshot: snapshot as unknown as Record<string, unknown>, billingConfiguration: { type: paymentMode === "manual" ? "manual_invoice" : "per_job", demoPaymentMethod: input.paymentMethod === "demo" },
         preferredAssignment: input.preferredDay ? { preferredDay: input.preferredDay } : {},
-        customFields: { source: "website_signup", petCount: pets.length, yardSize: yard.size },
+        customFields: { source: "website_signup", industryPackKey: pack?.key ?? null, industryPackVersion: pack?.version ?? null, industryData: storedIntake.visible },
       }).returning();
       if (!plan) throw new Error("Could not create the service plan.");
       await tx.update(siteSubmissions).set({ customerId: customer.id, status: "processed", processedAt: new Date() }).where(eq(siteSubmissions.id, createdSubmission.id));
@@ -567,7 +631,7 @@ async function createSignup(request: Request, row: PublicSiteRow, input: z.infer
     }
 
     const { firstName, lastName } = splitName(input.contact.name);
-    const reviewReason = existingCustomerMatch ? "existing_customer_review" : !quote ? "price_unavailable" : !quote.eligibility.eligible ? quote.eligibility.reason : quote.result.quoteRequired ? "quote_required" : !input.quoteId ? "quote_not_confirmed" : input.service.frequency === "one_time" || quote.service.serviceType === "one_time" ? "one_time_service_needs_scheduling" : !recurringEnabled ? "recurring_capability_unavailable" : paymentMode === "connect" ? "payment_setup_required" : "review_required";
+    const reviewReason = existingCustomerMatch ? "existing_customer_review" : !quote ? "price_unavailable" : !quote.eligibility.eligible ? quote.eligibility.reason : quote.result.quoteRequired ? "quote_required" : !input.quoteId ? "quote_not_confirmed" : oneTime ? "one_time_service_needs_scheduling" : !recurringEnabled ? "recurring_capability_unavailable" : !recurrence ? "recurrence_needs_review" : paymentMode === "connect" ? "payment_setup_required" : "review_required";
     const [lead] = await tx.insert(leads).values({
       tenantId: row.site.tenantId, organizationId: row.site.organizationId, owningLocationId: row.site.organizationLocationId,
       status: "new", firstName, lastName, email: input.contact.email.trim().toLowerCase(), phone: input.contact.phone.trim(),
@@ -577,7 +641,9 @@ async function createSignup(request: Request, row: PublicSiteRow, input: z.infer
       sourceDetail: "Website signup", customFields: {
         websiteSignup: {
           serviceKey: input.service.key ?? input.service.id, frequency: input.service.frequency,
-          ...(petPack ? { pets, yardSize: yard.size } : { requestDetails: input.requestDetails ?? "" }),
+          industryPackKey: pack?.key ?? null, industryPackVersion: pack?.version ?? null,
+          industryData: storedIntake.visible, requestDetails: input.requestDetails ?? "",
+          ...(encryptedAccess ? { accessInstructionsEncrypted: encryptedAccess } : {}),
           preferredDay: input.preferredDay, quoteId: input.quoteId ?? null,
           quoteRequired: quote?.quoteRequired ?? true, reviewReason,
         },
@@ -625,7 +691,7 @@ export async function handlePublicSite(request: Request, path: string[]): Promis
     if (limited) return limited;
     const row = await findSite(input.slug, true);
     await requireTenantFeature(row.site.tenantId, "online_booking");
-    const quote = await calculatePublicQuote(row.site, input);
+    const quote = await calculatePublicQuote(row, input);
     return json({ item: quote.item });
   }
   if (action === "contact") {

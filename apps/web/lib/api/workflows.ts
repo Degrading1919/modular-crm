@@ -213,10 +213,11 @@ export async function transitionJob(actor: SessionActor, jobId: string, next: st
   note?: string;
   completedChecklist?: boolean;
   proofProvided?: boolean;
-  completionProof?: { fileId: string | null; checklist: Record<string, boolean>; membershipId: string };
+  completionProof?: { fileId: string | null; checklist: Record<string, boolean>; membershipId: string; checklistSnapshot?: Record<string, unknown> };
+  checklistSnapshot?: Record<string, unknown>;
   expectedPriorState?: string;
   fieldOperation?: FieldOperationInput;
-  prepareCompletionProof?: (tx: JobTransitionTransaction) => Promise<{ fileId: string | null; checklist: Record<string, boolean>; membershipId: string }>;
+  prepareCompletionProof?: (tx: JobTransitionTransaction) => Promise<{ fileId: string | null; checklist: Record<string, boolean>; membershipId: string; checklistSnapshot?: Record<string, unknown> }>;
   responseItem?: () => Promise<unknown>;
 } = {}): Promise<Response> {
   const transitionPermission: Record<string, Permission> = {
@@ -262,7 +263,7 @@ export async function transitionJob(actor: SessionActor, jobId: string, next: st
     const now = new Date();
     await tx.update(jobs).set({ status: next, actualStartedAt: next === "in_progress" && !job.actualStartedAt ? now : undefined, actualCompletedAt: next === "completed" ? now : undefined, skipReasonCode: next === "skipped" ? context.reason : undefined, customerSummary: next === "completed" ? context.note : undefined, updatedAt: now }).where(and(eq(jobs.id, jobId), eq(jobs.tenantId, actor.tenantId)));
     await tx.insert(jobStatusEvents).values({ tenantId: actor.tenantId, jobId, fromStatus: job.status, toStatus: next, reasonCode: context.reason, note: context.note, actorType: actor.kind, actorId: actor.userId });
-    if (next === "completed" && completionProof) await tx.insert(completionProofs).values({ tenantId: actor.tenantId, jobId, completedAt: now, completedByMembershipId: completionProof.membershipId, summary: context.note, snapshot: { checklist: completionProof.checklist, fileId: completionProof.fileId } });
+    if (next === "completed" && completionProof) await tx.insert(completionProofs).values({ tenantId: actor.tenantId, jobId, completedAt: now, completedByMembershipId: completionProof.membershipId, summary: context.note, snapshot: { checklist: completionProof.checklist, fileId: completionProof.fileId, ...(completionProof.checklistSnapshot ? { checklistDefinition: completionProof.checklistSnapshot } : {}) } });
     await recordEvent(actor, { type: `job.${next}`, entityType: "job", entityId: jobId, payload: { customerId: job.customerId, from: job.status, to: next }, auditAction: `job.${next}`, before: { status: job.status }, after: { status: next }, locationId: job.organizationLocationId }, tx);
     const invoice = next === "completed" && invoicingEnabled && job.billable
       ? await issueCompletionInvoice(tx, actor, job, now)

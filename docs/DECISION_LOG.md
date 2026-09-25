@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-09-25 — Industry Pack defaults configure supported shared runtime behavior
+
+- **Status:** Accepted
+- **Area:** Industry Packs
+- **Decision:** Shared runtime surfaces may consume validated Industry Pack location/asset fields, intake defaults, technician checklists and noncompletion reasons, supported recurrence presets, public signup behavior, website copy, and optional connector recommendations. Tenant-specific overrides are validated against the selected pack and remain separate from capability entitlement. Intake accepts only declared fields; sensitive values use encrypted service-access storage and are exposed only to assigned technicians. Field completion snapshots the checklist definition and pack version used at completion. Signup remains office-review by default; automatic recurring activation requires an explicit pack setting plus existing quote, recurrence, entitlement, and payment checks. Connector recommendations are surfaced contextually but never connect a provider or authorize/enable a paid capability. Unsupported metadata remains descriptive until shared behavior and lifecycle coverage exist.
+- **Rationale:** Businesses need meaningful industry-specific operations without separate applications, while tenant data, commercial authorization, and historical records remain controlled by shared platform rules. Structural registration alone is not evidence of production support.
+- **Authoritative docs:** `docs/INDUSTRY_PACKS.md`, `docs/research/INDUSTRY_PACK_IMPLEMENTATION_STATUS.md`
+
 ## 2026-09-24 — Validated Industry Packs drive searchable onboarding
 
 - **Status:** Accepted

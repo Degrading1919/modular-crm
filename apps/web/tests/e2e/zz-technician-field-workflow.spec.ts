@@ -118,14 +118,15 @@ test("owner publishes an ordered route and technician completes the field workda
 
     await openJobs.first().click();
     await expect(field.getByText("Before you begin")).toBeVisible();
-    await expect(field.getByText("Access", { exact: true })).toBeVisible();
+    await expect(field.getByText("Expected time", { exact: true })).toBeVisible();
     await expect(field.getByText(jobs.find((job) => job.id === orderedJobIds[0])!.instruction)).toBeVisible();
     await field.getByRole("button", { name: "Start job" }).click();
     await expect(field.getByText(/^In progress$/i)).toBeVisible();
     const completionNote = `Completed field checklist ${unique}`;
     await field.getByLabel("What should the office know?").fill(completionNote);
-    await field.getByLabel(/I confirmed the correct property/).check();
-    await field.getByLabel(/I left gates and access points secure/).check();
+    await field.getByLabel(/Confirm the service address/).check();
+    await field.getByLabel(/Review access and safety notes/).check();
+    await field.getByLabel(/Complete the cleanup/).check();
     await field.getByRole("button", { name: /Complete job/ }).click();
     await expect(field.getByText(/^Completed$/i)).toBeVisible();
 

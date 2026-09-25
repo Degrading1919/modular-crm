@@ -68,6 +68,23 @@ it("creates an office service plan with an engine-calculated immutable price and
   expect(rule).toMatchObject({ frequencyType: "weekly", interval: 2 });
 });
 
+it("turns a Pack recurrence preset into the shared recurrence schedule and records its source", async () => {
+  await db.insert(priceRules).values({
+    tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, name: "Twice weekly cleanup", priority: 21,
+    conditions: { serviceKey: "yard-cleanup", frequency: "twice_weekly" }, effects: { type: "set_base_amount", amountMinor: 4500 }, source: "tenant",
+  });
+  const response = await handleRecords(new Request("http://localhost/api/v1/service-plans", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ customerId: seedIds.nguyen, serviceId: seedIds.weeklyService, frequency: "twice-weekly", startDate: localDate() }),
+  }), ["service-plans"], owner);
+  expect(response?.status).toBe(201);
+  const { item } = await response!.json() as { item: Record<string, unknown> };
+  expect(item).toMatchObject({ status: "active", frequency: "twice_weekly", customFields: { industryPackKey: "pet-waste-removal", industryPackVersion: "1.1.0" } });
+  const [plan] = await db.select().from(servicePlans).where(eq(servicePlans.id, String(item.id))).limit(1);
+  const [rule] = await db.select().from(recurrenceRules).where(eq(recurrenceRules.id, plan!.recurrenceRuleId)).limit(1);
+  expect(rule).toMatchObject({ frequencyType: "weekly", interval: 1, daysOfWeek: [1, 4], configuration: { industryPresetKey: "twice-weekly", industryPresetRule: "FREQ=WEEKLY;BYDAY=MO,TH" } });
+});
+
 it("applies a future price version, preserves existing history, and honors the explicit future-job policy", async () => {
   const effectiveDate = addDays(localDate(), 5);
   const [scheduled] = await db.insert(jobs).values({

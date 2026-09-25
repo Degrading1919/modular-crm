@@ -3,8 +3,12 @@ import {
   PET_WASTE_REMOVAL_PACK,
   evaluateProductCapabilityRecommendations,
   getIndustryPack,
+  getIndustryPackMaturity,
   listIndustryPacks,
   materializeIndustryPack,
+  resolveIndustryPack,
+  validateIndustryPackCustomization,
+  validatePackIntakeValues,
   validateIndustryPack,
   type IndustryPack,
   type ProductCapabilityRecommendation,
@@ -35,6 +39,41 @@ it("detaches installed defaults from package data", () => {
   const installed = materializeIndustryPack("pet-waste-removal");
   (installed as unknown as { services: { name: string }[] }).services[0]!.name = "My Service";
   expect(PET_WASTE_REMOVAL_PACK.services[0]!.name).toBe("Recurring Cleanup");
+});
+
+it("resolves editable tenant defaults without mutating the registered pack", () => {
+  const pack = getIndustryPack("party-rentals")!;
+  const customization = validateIndustryPackCustomization(pack, {
+    locationFields: { event_date: { required: true, label: "Event day" } },
+    checklist: { "availability-confirm": { required: true }, "delivery-handoff": { enabled: false } },
+  });
+  const resolved = resolveIndustryPack(pack, customization);
+  expect(resolved.locationFields.find((field) => field.key === "event_date")).toMatchObject({ label: "Event day", required: true });
+  expect(resolved.jobChecklist.map((item) => item.key)).not.toContain("delivery-handoff");
+  expect(resolved.jobChecklist.find((item) => item.key === "availability-confirm")?.required).toBe(true);
+  expect(pack.locationFields.find((field) => field.key === "event_date")?.required).toBeUndefined();
+  expect(() => validateIndustryPackCustomization(pack, { checklist: { invented: { enabled: true } } })).toThrow(/Unknown job checklist key/);
+});
+
+it("validates pack-owned intake fields and separates sensitive values for encryption", () => {
+  const pack = getIndustryPack("septic-pumping")!;
+  const parsed = validatePackIntakeValues(pack, {
+    location: { truck_access: "Driveway is clear", lid_location_and_access: "Rear of the lot", service_zone: "north" },
+    assets: { "septic-system": [{ system_type: "gravity", tank_capacity: 1250, last_pumped: "2023-06-02", access_notes: "Lid under the patio" }] },
+  });
+  expect(parsed.location).toEqual({ truck_access: "Driveway is clear", service_zone: "north" });
+  expect(parsed.sensitive.location).toEqual({ lid_location_and_access: "Rear of the lot" });
+  expect(parsed.assets["septic-system"]?.[0]).toMatchObject({ system_type: "gravity", tank_capacity: 1250 });
+  expect(parsed.sensitive.assets["septic-system"]?.[0]).toEqual({ access_notes: "Lid under the patio" });
+  expect(() => validatePackIntakeValues(pack, { location: { made_up_field: "no" } })).toThrow(/Unknown location field/);
+  expect(() => validatePackIntakeValues(pack, { assets: { "septic-system": [{ tank_capacity: "large" }] } })).toThrow(/Known tank capacity must be a valid number/);
+});
+
+it("distinguishes registered configuration from representative workflow validation", () => {
+  expect(getIndustryPackMaturity("cleaning")).toBe("runtime_integrated");
+  expect(getIndustryPackMaturity("pet-waste-removal")).toBe("validated");
+  expect(getIndustryPackMaturity("some-research-only-industry")).toBe("research_only");
+  expect(getIndustryPackMaturity("party-rentals")).toBe("runtime_integrated");
 });
 
 it("keeps product recommendations distinct from connector suggestions", () => {

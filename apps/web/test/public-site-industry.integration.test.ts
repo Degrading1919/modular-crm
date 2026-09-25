@@ -51,7 +51,7 @@ function signupBody(idempotencyKey: string, overrides: Record<string, unknown> =
   };
 }
 
-it("keeps Pet Waste public intake and rejects Pet signups without pet details", async () => {
+it("renders and validates Pet Waste intake through the shared Industry Pack signup contract", async () => {
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, seedIds.happyTenant)).limit(1);
   await db.update(tenants).set({ industryPackKey: "pet-waste-removal", industryPackVersion: "1.0.0" }).where(eq(tenants.id, seedIds.happyTenant));
   const withoutPets = await send(["public", "signup"], "POST", signupBody("pet-missing-details"));
@@ -59,17 +59,24 @@ it("keeps Pet Waste public intake and rejects Pet signups without pet details", 
   await expect(withoutPets.json()).resolves.toMatchObject({ error: { code: "VALIDATION_ERROR" } });
 
   const withPet = await send(["public", "signup"], "POST", signupBody("pet-valid-details", {
-    service: { id: seedIds.weeklyService, key: "yard-cleanup", frequency: "one_time" },
-    pets: [{ name: "Scout", size: "medium" }], yard: { size: "medium", accessNotes: "Use the side gate." },
+    service: { id: seedIds.weeklyService, key: "yard-cleanup", frequency: "weekly" },
+    industryData: {
+      location: { yard_size: "medium", gate_code: "7231", access_notes: "Use the side gate." },
+      assets: { pet: [{ name: "Scout", species: "dog", size: "medium", active_at_location: true }] },
+    },
   }));
   expect([201, 200]).toContain(withPet.status);
   expect(tenant?.industryPackKey).toBe("pet-waste-removal");
   const [submission] = await db.select().from(siteSubmissions).where(and(
     eq(siteSubmissions.tenantId, seedIds.happyTenant), eq(siteSubmissions.idempotencyKey, "signup:pet-valid-details"),
   )).limit(1);
-  expect(submission?.payload).toMatchObject({ pets: [{ name: "Scout", size: "medium" }], yard: { size: "medium", accessProvided: true } });
+  expect(submission?.payload).toMatchObject({ industryData: { location: { yard_size: "medium" }, assets: { pet: [{ name: "Scout", species: "dog", size: "medium", active_at_location: true }] } } });
+  expect(JSON.stringify(submission?.payload)).not.toContain("7231");
+  expect(JSON.stringify(submission?.payload)).not.toContain("Use the side gate");
   const [lead] = await db.select().from(leads).where(and(eq(leads.tenantId, seedIds.happyTenant), eq(leads.email, "host-pet-valid-details@example.test"))).limit(1);
-  expect(lead?.customFields).toMatchObject({ websiteSignup: { pets: [{ name: "Scout", size: "medium" }], yardSize: "medium" } });
+  expect(lead?.customFields).toMatchObject({ websiteSignup: { industryData: { location: { yard_size: "medium" }, assets: { pet: [{ name: "Scout", species: "dog", size: "medium", active_at_location: true }] } }, accessInstructionsEncrypted: expect.stringMatching(/^v1:/) } });
+  expect(JSON.stringify(lead?.customFields)).not.toContain("7231");
+  expect(JSON.stringify(lead?.customFields)).not.toContain("Use the side gate");
 });
 
 it("accepts a non-Pet pack request without Pet fields and persists the tenant-scoped details", async () => {
@@ -89,10 +96,10 @@ it("accepts a non-Pet pack request without Pet fields and persists the tenant-sc
     serviceLocationTerm: "Event Site",
     services: expect.arrayContaining([expect.objectContaining({ key: "item-rental", name: "Item Rental" })]),
     tagline: "Rent event equipment for the day you need it",
-    petIntake: false,
+    industryIntake: expect.objectContaining({ locationFields: expect.arrayContaining([expect.objectContaining({ key: "event_date" })]) }),
   } });
 
-  const body = signupBody("party-rental-request");
+  const body = signupBody("party-rental-request", { industryData: { location: { event_date: "2026-10-24", delivery_window: "Saturday morning", rental_categories: "chairs and tables", setup_scope: "delivery", event_duration: "one day" } } });
   const response = await send(["public", "signup"], "POST", body);
   expect(response.status).toBe(201);
   await expect(response.json()).resolves.toMatchObject({ item: { kind: "lead", status: "review" } });
@@ -103,12 +110,14 @@ it("accepts a non-Pet pack request without Pet fields and persists the tenant-sc
   expect(submission?.payload).toMatchObject({
     service: { key: "item-rental", frequency: "one_time" },
     requestDetails: "Party Rentals request: 40 chairs, 6 tables, delivery Saturday morning.\nService-location details: Rear garden, level access, delivery after 9am.",
+    industryData: { location: { event_date: "2026-10-24", delivery_window: "Saturday morning", rental_categories: "chairs and tables", setup_scope: "delivery", event_duration: "one day" }, assets: {} },
   });
   expect(submission?.payload).not.toHaveProperty("pets");
   expect(submission?.payload).not.toHaveProperty("yard");
   const [lead] = await db.select().from(leads).where(and(eq(leads.tenantId, seedIds.happyTenant), eq(leads.email, "host-party-rental-request@example.test"))).limit(1);
   expect(lead?.customFields).toMatchObject({ websiteSignup: {
     serviceKey: "item-rental", requestDetails: "Party Rentals request: 40 chairs, 6 tables, delivery Saturday morning.\nService-location details: Rear garden, level access, delivery after 9am.",
+    industryData: { location: { event_date: "2026-10-24", delivery_window: "Saturday morning", rental_categories: "chairs and tables", setup_scope: "delivery", event_duration: "one day" }, assets: {} },
   } });
   expect(lead?.customFields).not.toHaveProperty("websiteSignup.yardSize");
 });

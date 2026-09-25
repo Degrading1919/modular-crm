@@ -9,8 +9,8 @@ test("public signup accepts demo payment and creates one customer service plan",
   const phone = `555${suffix.slice(-7).padStart(7, "0")}`;
 
   await page.goto("/site/happy-yards/signup");
-  await expect(page.getByRole("heading", { name: "Where can we help?" })).toBeVisible();
-  await page.getByLabel("Street address").fill(`${Math.floor(Math.random() * 90_000) + 10_000} Maple Street, Augusta, GA`);
+  await expect(page.getByRole("heading", { name: "Where do you need service?" })).toBeVisible();
+  await page.getByLabel("Service Address street address").fill(`${Math.floor(Math.random() * 90_000) + 10_000} Maple Street, Augusta, GA`);
   await page.getByLabel("ZIP code").fill("30909");
   await page.getByRole("button", { name: /Check availability/i }).click();
 
@@ -20,10 +20,10 @@ test("public signup accepts demo payment and creates one customer service plan",
   await page.getByRole("button", { name: /Continue/i }).click();
 
   await page.getByLabel("Service", { exact: true }).selectOption({ label: "Yard cleanup" });
-  await page.getByLabel("How often?").selectOption("weekly");
-  await page.getByLabel("Pet 1 name").fill(`Scout ${suffix}`);
+  await page.getByLabel("How often or when?").selectOption("weekly");
+  await page.getByLabel("Name").fill(`Scout ${suffix}`);
   await page.getByRole("button", { name: /Continue/i }).click();
-  await page.getByLabel("Access or safety notes").fill("Please use the side gate.");
+  await page.getByLabel("Access instructions").fill("Please use the side gate.");
   await page.getByRole("button", { name: /See my price/i }).click();
 
   const paymentChoice = page.getByRole("checkbox", { name: /Use a demo payment method for local testing/i });

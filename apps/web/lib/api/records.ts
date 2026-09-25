@@ -15,6 +15,7 @@ import { json, readBody } from "./http";
 import { first, normalized, rows, uuidArray } from "./sql";
 import { calculateServicePlanPrice, servicePlanFrequencyKey, type PlanScheduleVersion } from "./plan-lifecycle";
 import { reviseEstimate } from "./estimate-revisions";
+import { recurrencePresetSchedule, resolveTenantIndustryPack } from "./industry-pack-runtime";
 
 type RecordResource = "leads" | "customers" | "jobs" | "estimates" | "invoices" | "service-plans" | "tickets" | "services";
 const resources = new Set<RecordResource>(["leads", "customers", "jobs", "estimates", "invoices", "service-plans", "tickets", "services"]);
@@ -328,35 +329,59 @@ async function createResource(resource: RecordResource, request: Request, actor:
     const [location] = await db.select().from(serviceLocations).where(and(eq(serviceLocations.tenantId, actor.tenantId), eq(serviceLocations.customerId, customer.id))).limit(1);
     if (!location) throw new DomainError("VALIDATION_ERROR", "Add a service address first.", 422);
     assertLocationAccess(actor, location.organizationLocationId);
-    const [tenant] = await db.select({ timezone: tenants.defaultTimezone }).from(tenants).where(eq(tenants.id, actor.tenantId));
+    const [tenant] = await db.select({ timezone: tenants.defaultTimezone, settings: tenants.settings, industryPackKey: tenants.industryPackKey, industryPackVersion: tenants.industryPackVersion }).from(tenants).where(eq(tenants.id, actor.tenantId));
     const timezone = tenant?.timezone ?? "America/New_York";
     const effectiveFrom = body.startDate ?? new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date());
-    const recurrence = normalizeRecurrenceFrequency(body.frequency, {
-      interval: body.interval, daysOfWeek: body.daysOfWeek, dayOfMonth: body.dayOfMonth,
+    const resolvedPack = resolveTenantIndustryPack(tenant?.industryPackKey, tenant?.settings);
+    const selectedPreset = resolvedPack?.recurrencePresets.find((preset) => preset.key === body.frequency);
+    if (resolvedPack && !selectedPreset) throw new DomainError("VALIDATION_ERROR", "Choose a service schedule that is enabled for this business.", 422);
+    const presetRule = selectedPreset && resolvedPack ? recurrencePresetSchedule(resolvedPack, selectedPreset.key) : undefined;
+    if (selectedPreset && !presetRule) throw new DomainError("VALIDATION_ERROR", "This schedule needs to be arranged with the office.", 422);
+    const recurrence = normalizeRecurrenceFrequency(presetRule?.frequencyType ?? body.frequency, {
+      interval: presetRule?.interval ?? body.interval, daysOfWeek: presetRule?.daysOfWeek ?? body.daysOfWeek, dayOfMonth: body.dayOfMonth,
     });
     const scheduleVersion: PlanScheduleVersion = {
       effectiveFrom, anchorDate: effectiveFrom, ...recurrence,
     };
     const frequency = servicePlanFrequencyKey(scheduleVersion);
-    const assets = await db.select({ assetTypeKey: customerAssets.assetTypeKey }).from(customerAssets).where(and(
+    const assets = await db.select({ assetTypeKey: customerAssets.assetTypeKey, customFields: customerAssets.customFields }).from(customerAssets).where(and(
       eq(customerAssets.tenantId, actor.tenantId), eq(customerAssets.customerId, customer.id), eq(customerAssets.serviceLocationId, location.id),
       eq(customerAssets.status, "active"), isNull(customerAssets.archivedAt),
     ));
-    const petCount = assets.filter((asset) => asset.assetTypeKey === "pet").length;
     const customerFields = customer.customFields && typeof customer.customFields === "object" ? customer.customFields as Record<string, unknown> : {};
     const locationFields = location.customFields && typeof location.customFields === "object" ? location.customFields as Record<string, unknown> : {};
+    const priceFields: Record<string, unknown> = { ...customerFields, ...locationFields };
+    for (const [key, value] of Object.entries(locationFields)) priceFields[key.replace(/[-_]([a-z0-9])/g, (_, char: string) => char.toUpperCase())] = value;
+    const counts = new Map<string, number>();
+    for (const asset of assets) counts.set(asset.assetTypeKey, (counts.get(asset.assetTypeKey) ?? 0) + 1);
+    let totalAssetCount = 0;
+    for (const [assetKey, count] of counts) {
+      totalAssetCount += count;
+      priceFields[`${assetKey.replace(/[-_]([a-z0-9])/g, (_, char: string) => char.toUpperCase())}Count`] = count;
+      const definition = resolvedPack?.assets.find((item) => item.key === assetKey);
+      if (definition) priceFields[definition.pluralLabel.replace(/[^a-zA-Z0-9]+([a-zA-Z0-9])/g, (_, char: string) => char.toUpperCase()).replace(/^[A-Z]/, (char) => char.toLowerCase())] = count;
+    }
+    priceFields.assetCount = totalAssetCount;
+    for (const asset of assets) {
+      const fields = asset.customFields && typeof asset.customFields === "object" ? asset.customFields as Record<string, unknown> : {};
+      for (const [key, value] of Object.entries(fields)) {
+        const camelKey = key.replace(/[-_]([a-z0-9])/g, (_, char: string) => char.toUpperCase());
+        priceFields[`${asset.assetTypeKey}.${camelKey}`] = value;
+        if (!(camelKey in priceFields)) priceFields[camelKey] = value;
+      }
+    }
     const created = await db.transaction(async (tx) => {
       const priceSnapshot = await calculateServicePlanPrice(tx, {
         tenantId: actor.tenantId, organizationId, organizationLocationId: location.organizationLocationId,
         serviceId: service.id, customerType: customer.customerType, serviceZoneId: location.serviceZoneId,
-        frequency, quantity: Math.max(1, petCount), fields: { ...customerFields, ...locationFields, petCount: Math.max(1, petCount), pets: Math.max(1, petCount) },
+        frequency, quantity: Math.max(1, totalAssetCount), fields: priceFields,
         at: `${effectiveFrom}T12:00:00.000Z`,
       });
       const planPriceSnapshot = { ...priceSnapshot, priceVersions: [{ effectiveFrom, snapshot: priceSnapshot }] };
       const [rule] = await tx.insert(recurrenceRules).values({
         tenantId: actor.tenantId, frequencyType: recurrence.frequencyType, interval: recurrence.interval,
         daysOfWeek: recurrence.daysOfWeek, dayOfMonth: recurrence.dayOfMonth, timezone,
-        configuration: { scheduleVersions: [scheduleVersion] },
+        configuration: { scheduleVersions: [scheduleVersion], ...(selectedPreset ? { industryPackKey: resolvedPack?.pack.key, industryPackVersion: resolvedPack?.pack.version, industryPresetKey: selectedPreset.key, industryPresetRule: selectedPreset.rrule } : {}) },
       }).returning();
       if (!rule) throw new Error("Could not create recurrence");
       const [plan] = await tx.insert(servicePlans).values({
@@ -364,6 +389,7 @@ async function createResource(resource: RecordResource, request: Request, actor:
         organizationLocationId: customer.owningLocationId ?? location.organizationLocationId ?? locationId,
         serviceId: service.id, recurrenceRuleId: rule.id, status: "active", effectiveFrom,
         pricingSnapshot: planPriceSnapshot, billingConfiguration: { type: "per_job" },
+        customFields: { industryPackKey: resolvedPack?.pack.key ?? null, industryPackVersion: resolvedPack?.pack.version ?? tenant?.industryPackVersion ?? null },
       }).returning();
       if (!plan) throw new Error("Could not create plan");
       await recordEvent(actor, {

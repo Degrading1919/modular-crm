@@ -215,6 +215,7 @@ export const PET_WASTE_REMOVAL_PACK: IndustryPack = {
     template: "route-service",
     sections: ["hero", "how_it_works", "services", "pricing", "service_area", "why_us", "faq", "reviews", "signup", "customer_login", "contact"],
     signupSteps: ["address", "contact", "service", "pets", "yard", "quote", "extras", "preferences", "payment", "finish"],
+    signupBehavior: "activate_recurring",
     heroHeadline: "A cleaner yard is just a few clicks away",
     heroDescription: "Set up reliable cleanup service for your home or property.",
   },

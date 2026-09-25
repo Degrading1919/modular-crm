@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
-  breaks, customerAssets, files, fileLinks, formResponses, jobAssignments, jobs, memberships, mileageRecords,
+  breaks, files, fileLinks, jobs, memberships, mileageRecords,
   notes, organizationLocations, organizations, routeOptimizationRuns, routePlans, routeStops, serviceLocations, shifts, tenants, ticketStatusDefinitions,
   ticketTypeDefinitions, tickets, timeEntries,
 } from "@modular-crm/db";
@@ -17,6 +17,15 @@ import { assertPayrollSourceEditable } from "./payroll";
 import { decryptServiceAccessInstructions } from "./service-access";
 import { getAssignedJob, transitionJob } from "./workflows";
 import { claimFieldOperation, completeFieldOperation, fieldEffectiveTime, fieldTimeAnomaly } from "./field-operations";
+import { resolveTenantIndustryPack } from "./industry-pack-runtime";
+
+const DEFAULT_JOB_CHECKLIST = [{ key: "confirm_work", label: "Confirm the work is complete", required: true }];
+const DEFAULT_NONCOMPLETION_REASONS = [
+  { key: "no_access", label: "No access", billableByDefault: false },
+  { key: "customer_rescheduled", label: "Customer rescheduled", billableByDefault: false },
+  { key: "unsafe_conditions", label: "Unsafe conditions", billableByDefault: false },
+  { key: "other", label: "Other", billableByDefault: false },
+];
 
 function validTimeZone(value: unknown): string | null {
   if (typeof value !== "string" || !value) return null;
@@ -243,9 +252,36 @@ async function fieldJob(actor: SessionActor, id: string) {
     join services s on s.id=j.service_id and s.tenant_id=j.tenant_id
     join service_locations sl on sl.id=j.service_location_id and sl.tenant_id=j.tenant_id
     where j.id=${id} and j.tenant_id=${actor.tenantId} limit 1`);
-  const pets = await rows(sql`select id,name,custom_fields from customer_assets where tenant_id=${actor.tenantId} and customer_id=${job.customerId} and archived_at is null`);
+  const assets = await rows(sql`select id,name,asset_type_key,custom_fields from customer_assets where tenant_id=${actor.tenantId} and customer_id=${job.customerId} and service_location_id=${job.serviceLocationId} and archived_at is null order by created_at,id`);
+  const [tenant] = await getDb().select({ settings: tenants.settings, industryPackKey: tenants.industryPackKey }).from(tenants).where(eq(tenants.id, actor.tenantId)).limit(1);
+  const pack = resolveTenantIndustryPack(tenant?.industryPackKey, tenant?.settings);
   const { access_instructions_encrypted: encryptedAccess, ...safeDetails } = details ?? {};
-  return normalized({ ...safeDetails, access_notes: decryptServiceAccessInstructions(encryptedAccess), durationMinutes: job.estimatedDurationMinutes, notes: job.internalSummary, pets: pets.map((pet) => ({ ...pet, ...(pet.custom_fields as object || {}) })), ...(details?.location_fields as object || {}) });
+  const decrypted = decryptServiceAccessInstructions(encryptedAccess);
+  let sensitiveIndustryData: Record<string, any> = {};
+  let accessNotes = decrypted;
+  if (decrypted) {
+    try {
+      const parsed = JSON.parse(decrypted) as Record<string, any>;
+      if (parsed.kind === "industry_intake") { sensitiveIndustryData = { location: parsed.location ?? {}, assets: parsed.assets ?? {} }; accessNotes = null; }
+    } catch { /* Older access instructions are plain text after decryption. */ }
+  }
+  const assetDefinitions = new Map((pack?.assets ?? []).map((asset) => [asset.key, asset]));
+  const fieldAssets = assets.map((asset) => {
+    const fields = asset.custom_fields && typeof asset.custom_fields === "object" ? asset.custom_fields as Record<string, unknown> : {};
+    const protectedFields = sensitiveIndustryData.assets?.[String(asset.id)] ?? {};
+    const definition = assetDefinitions.get(String(asset.asset_type_key));
+    const values = { ...fields, ...protectedFields };
+    const fieldValues = definition ? definition.fields.flatMap((field) => Object.prototype.hasOwnProperty.call(values, field.key) ? [{ key: field.key, label: field.label, value: values[field.key], sensitive: field.sensitive === true }] : [])
+      : Object.entries(values).map(([key, value]) => ({ key, label: key, value, sensitive: false }));
+    return { id: asset.id, name: asset.name, assetTypeKey: asset.asset_type_key, assetLabel: definition?.label ?? asset.asset_type_key, fields: fieldValues };
+  });
+  const locationValues = { ...(details?.location_fields as object || {}), ...(sensitiveIndustryData.location ?? {}) } as Record<string, unknown>;
+  return normalized({
+    ...safeDetails, access_notes: accessNotes, durationMinutes: job.estimatedDurationMinutes, notes: job.internalSummary,
+    industryPackKey: pack?.pack.key ?? null, industryPackVersion: pack?.pack.version ?? null,
+    industryLocationFields: (pack?.locationFields ?? []).map((field) => ({ ...field, value: locationValues[field.key] })),
+    industryAssets: fieldAssets, jobChecklist: pack?.jobChecklist ?? DEFAULT_JOB_CHECKLIST, noncompletionReasons: pack?.noncompletionReasons ?? DEFAULT_NONCOMPLETION_REASONS,
+  });
 }
 
 async function savePhoto(tx: FieldTransaction, actor: SessionActor, jobId: string, dataUrl: string | undefined, name = "service-photo.jpg", clientOperationId?: string): Promise<string | null> {
@@ -299,21 +335,32 @@ async function fieldMutation(request: Request, actor: SessionActor, id: string, 
   }
   if (action === "skip") {
     const body = await readBody(request, z.object({ reason: z.string().min(1), note: z.string().optional(), clientOperationId: z.uuid().optional(), deviceTimestamp: z.iso.datetime({ offset: true }).optional(), expectedPriorState: z.string().min(1).max(40).optional() }));
+    const [tenant] = await getDb().select({ settings: tenants.settings, industryPackKey: tenants.industryPackKey }).from(tenants).where(eq(tenants.id, actor.tenantId)).limit(1);
+    const pack = resolveTenantIndustryPack(tenant?.industryPackKey, tenant?.settings);
+    if (pack && !pack.noncompletionReasons.some((reason) => reason.key === body.reason)) throw new DomainError("VALIDATION_ERROR", "Choose a reason from this service’s skip list.", 422);
     return transitionJob(actor, id, "skipped", {
       ...body,
       fieldOperation: { action: "job.transition.skipped", target: id, clientOperationId: body.clientOperationId, payload: body, deviceTimestamp: body.deviceTimestamp ? new Date(body.deviceTimestamp) : null },
     });
   }
   if (action === "complete") {
-    const body = await readBody(request, z.object({ checklist: z.object({ propertyConfirmed: z.boolean(), gateSecured: z.boolean() }), note: z.string().optional(), photoDataUrl: z.string().optional(), photoName: z.string().optional(), clientOperationId: z.uuid().optional(), deviceTimestamp: z.iso.datetime({ offset: true }).optional(), expectedPriorState: z.string().min(1).max(40).optional() }));
-    if (!body.checklist.propertyConfirmed || !body.checklist.gateSecured) throw new DomainError("VALIDATION_ERROR", "Confirm the service checklist first.", 422);
+    const body = await readBody(request, z.object({ checklist: z.record(z.string().min(1).max(100), z.boolean()), note: z.string().optional(), photoDataUrl: z.string().optional(), photoName: z.string().optional(), clientOperationId: z.uuid().optional(), deviceTimestamp: z.iso.datetime({ offset: true }).optional(), expectedPriorState: z.string().min(1).max(40).optional() }));
+    const [tenant] = await getDb().select({ settings: tenants.settings, industryPackKey: tenants.industryPackKey }).from(tenants).where(eq(tenants.id, actor.tenantId)).limit(1);
+    const pack = resolveTenantIndustryPack(tenant?.industryPackKey, tenant?.settings);
+    const checklist = pack?.jobChecklist ?? DEFAULT_JOB_CHECKLIST;
+    const knownChecklistKeys = new Set(checklist.map((item) => item.key));
+    if (Object.keys(body.checklist).some((key) => !knownChecklistKeys.has(key))) throw new DomainError("VALIDATION_ERROR", "This job’s checklist changed. Refresh before completing it.", 422);
+    const incomplete = checklist.filter((item) => item.required && body.checklist[item.key] !== true);
+    if (incomplete.length) throw new DomainError("VALIDATION_ERROR", `Complete the required step: ${incomplete.map((item) => item.label).join(", ")}.`, 422);
+    const checklistSnapshot = { packKey: pack?.pack.key ?? null, packVersion: pack?.pack.version ?? null, items: checklist.map((item) => ({ ...item, complete: body.checklist[item.key] === true })) };
     return transitionJob(actor, id, "completed", {
       ...body,
-      completedChecklist: body.checklist.propertyConfirmed && body.checklist.gateSecured,
+      completedChecklist: incomplete.length === 0,
+      checklistSnapshot,
       expectedPriorState: body.expectedPriorState,
       proofProvided: !!body.photoDataUrl,
       fieldOperation: { action: "job.transition.completed", target: id, clientOperationId: body.clientOperationId, payload: body, deviceTimestamp: body.deviceTimestamp ? new Date(body.deviceTimestamp) : null },
-      prepareCompletionProof: async (tx) => ({ fileId: await savePhoto(tx, actor, id, body.photoDataUrl, body.photoName, body.clientOperationId), checklist: body.checklist, membershipId: actor.membershipId! }),
+      prepareCompletionProof: async (tx) => ({ fileId: await savePhoto(tx, actor, id, body.photoDataUrl, body.photoName, body.clientOperationId), checklist: body.checklist, membershipId: actor.membershipId!, checklistSnapshot }),
       responseItem: () => fieldJob(actor, id),
     });
   }

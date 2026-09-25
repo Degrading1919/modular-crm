@@ -90,11 +90,11 @@ test("customer can see services and submit a change request", async ({ page }) =
 test("public visitor checks eligibility and submits service signup", async ({ page }) => {
   await page.goto("/site/happy-yards");
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-  const getStarted = page.getByRole("link", { name: "Get started" }).first();
+  const getStarted = page.getByRole("link", { name: /Request Service/i }).first();
   await expect(getStarted).toBeVisible();
   await getStarted.click();
   await expect(page).toHaveURL(/\/site\/happy-yards\/signup$/);
-  await page.getByLabel("Street address").fill("65 Maple Street, Augusta, GA");
+  await page.getByLabel("Service Address street address").fill("65 Maple Street, Augusta, GA");
   await page.getByLabel("ZIP code").fill("30909");
   await page.getByRole("button", { name: /Check availability/i }).click();
   await page.getByLabel("Full name").fill(`E2E Visitor ${Date.now()}`);
@@ -102,9 +102,9 @@ test("public visitor checks eligibility and submits service signup", async ({ pa
   await page.getByLabel("Phone").fill("555-0199");
   await page.getByRole("button", { name: /Continue/i }).click();
   await page.getByLabel("Service", { exact: true }).selectOption({ index: 1 });
-  await page.getByLabel("Pet 1 name").fill("Scout");
+  await page.getByLabel("Name").fill("Scout");
   await page.getByRole("button", { name: /Continue/i }).click();
-  await page.getByLabel("Access or safety notes").fill("Please use the side gate.");
+  await page.getByLabel("Access instructions").fill("Please use the side gate.");
   await page.getByRole("button", { name: /See my price/i }).click();
   await page.getByLabel(/I agree to be contacted/).check();
   await page.getByRole("button", { name: /Send service request/i }).click();

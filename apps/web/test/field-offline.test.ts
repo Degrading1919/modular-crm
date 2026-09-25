@@ -5,7 +5,7 @@ import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import { and, eq } from "drizzle-orm";
 import {
-  breaks, fieldOperationReceipts, fileLinks, files, jobStatusEvents, jobs, notes, schema, seedDevelopment, seedIds, shifts, timeEntries,
+  completionProofs, fieldOperationReceipts, fileLinks, files, jobStatusEvents, jobs, notes, schema, seedDevelopment, seedIds, shifts, timeEntries,
   type Database,
 } from "@modular-crm/db";
 import { permissionsForRole } from "@modular-crm/domain";
@@ -157,5 +157,27 @@ describe("field offline mutation receipts", () => {
     expect(storagePutMock).toHaveBeenCalledTimes(1);
     await expect(postFieldJob(technician, seedIds.recleanJob, "note", { ...noteBody, text: "Changed detail" }))
       .rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT", status: 409 });
+  });
+
+  it("enforces the selected Industry Pack checklist on the server and snapshots it with completion proof", async () => {
+    await db.update(jobs).set({ status: "in_progress" }).where(and(eq(jobs.tenantId, seedIds.happyTenant), eq(jobs.id, seedIds.recleanJob)));
+    await expect(postFieldJob(technician, seedIds.recleanJob, "complete", {
+      checklist: { confirm_property: true }, expectedPriorState: "in_progress", clientOperationId: id(955),
+    })).rejects.toMatchObject({ code: "VALIDATION_ERROR", status: 422 });
+    expect(await db.select().from(completionProofs).where(and(eq(completionProofs.tenantId, seedIds.happyTenant), eq(completionProofs.jobId, seedIds.recleanJob)))).toHaveLength(0);
+
+    const response = await postFieldJob(technician, seedIds.recleanJob, "complete", {
+      checklist: { confirm_property: true, review_safety: true, perform_cleanup: true },
+      expectedPriorState: "in_progress", clientOperationId: id(956),
+    });
+    expect(response.status).toBe(200);
+    const [proof] = await db.select().from(completionProofs).where(and(eq(completionProofs.tenantId, seedIds.happyTenant), eq(completionProofs.jobId, seedIds.recleanJob))).limit(1);
+    const definition = (proof?.snapshot as Record<string, any>).checklistDefinition;
+    expect(definition).toMatchObject({ packKey: "pet-waste-removal", packVersion: "1.1.0" });
+    expect(definition.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "confirm_property", label: "Confirm the service address", complete: true }),
+      expect.objectContaining({ key: "review_safety", label: "Review access and safety notes", complete: true }),
+      expect.objectContaining({ key: "perform_cleanup", label: "Complete the cleanup", complete: true }),
+    ]));
   });
 });

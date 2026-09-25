@@ -83,8 +83,189 @@ export type IndustryPack = Readonly<{
   productCapabilityRecommendations: readonly ProductCapabilityRecommendation[];
   recommendedConnectorCapabilities: readonly ConnectorCapabilityKey[];
   inventoryDefaults: readonly { key: string; name: string; unit: string }[];
-  website: Readonly<{ template: string; sections: readonly string[]; signupSteps: readonly string[]; heroHeadline: string; heroDescription: string }>;
+  website: Readonly<{ template: string; sections: readonly string[]; signupSteps: readonly string[]; heroHeadline: string; heroDescription: string; signupBehavior?: "review" | "activate_recurring" }>;
 }>;
+
+export type IndustryPackMaturity = "research_only" | "configured" | "runtime_integrated" | "validated";
+export type PackFieldCustomization = Readonly<{ enabled?: boolean; required?: boolean; label?: string }>;
+export type IndustryPackCustomization = Readonly<{
+  locationFields?: Readonly<Record<string, PackFieldCustomization>>;
+  assetFields?: Readonly<Record<string, Readonly<Record<string, PackFieldCustomization>>>>;
+  checklist?: Readonly<Record<string, PackFieldCustomization>>;
+  disabledRecurrencePresetKeys?: readonly string[];
+}>;
+export type ResolvedIndustryPack = Readonly<{
+  pack: IndustryPack;
+  locationFields: readonly PackField[];
+  assets: readonly PackAsset[];
+  jobChecklist: IndustryPack["jobChecklist"];
+  noncompletionReasons: IndustryPack["noncompletionReasons"];
+  recurrencePresets: readonly PackRecurrence[];
+}>;
+
+const VALIDATED_PACK_KEYS = new Set([
+  "pet-waste-removal",
+]);
+
+/** Registry membership means configuration exists; validation is tracked separately from definition loading. */
+export function getIndustryPackMaturity(key: string): IndustryPackMaturity {
+  if (!PACKS.has(key)) return "research_only";
+  return VALIDATED_PACK_KEYS.has(key) ? "validated" : "runtime_integrated";
+}
+
+function applyFieldCustomization(fields: readonly PackField[], changes: IndustryPackCustomization["locationFields"]): PackField[] {
+  return fields.flatMap((field) => {
+    const change = changes?.[field.key];
+    if (change?.enabled === false) return [];
+    return [{ ...field, ...(change?.label ? { label: change.label } : {}), ...(change?.required !== undefined ? { required: change.required } : {}) }];
+  });
+}
+
+/** Resolves editable tenant choices over immutable pack defaults without changing installed/history snapshots. */
+export function resolveIndustryPack(pack: IndustryPack, customization: IndustryPackCustomization = {}): ResolvedIndustryPack {
+  const assets = pack.assets.map((asset) => ({
+    ...asset,
+    fields: applyFieldCustomization(asset.fields, customization.assetFields?.[asset.key]),
+  }));
+  const jobChecklist = pack.jobChecklist.flatMap((item) => {
+    const change = customization.checklist?.[item.key];
+    if (change?.enabled === false) return [];
+    return [{ ...item, ...(change?.label ? { label: change.label } : {}), ...(change?.required !== undefined ? { required: change.required } : {}) }];
+  });
+  const disabled = new Set(customization.disabledRecurrencePresetKeys ?? []);
+  return {
+    pack,
+    locationFields: applyFieldCustomization(pack.locationFields, customization.locationFields),
+    assets,
+    jobChecklist,
+    noncompletionReasons: pack.noncompletionReasons,
+    recurrencePresets: pack.recurrencePresets.filter((item) => !disabled.has(item.key)),
+  };
+}
+
+/** Validates declarative tenant edits against the selected pack; unknown field keys cannot become runtime behavior. */
+export function validateIndustryPackCustomization(pack: IndustryPack, input: unknown): IndustryPackCustomization {
+  requireRecord(input, "Industry Pack customization");
+  exactKeys(input, ["locationFields", "assetFields", "checklist", "disabledRecurrencePresetKeys"], "Industry Pack customization");
+  const result: {
+    locationFields: Record<string, { enabled?: boolean; required?: boolean; label?: string }>;
+    assetFields: Record<string, Record<string, { enabled?: boolean; required?: boolean; label?: string }>>;
+    checklist: Record<string, { enabled?: boolean; required?: boolean; label?: string }>;
+    disabledRecurrencePresetKeys: string[];
+  } = { locationFields: {}, assetFields: {}, checklist: {}, disabledRecurrencePresetKeys: [] };
+  const validateChanges = (raw: unknown, fields: readonly PackField[], path: string) => {
+    requireRecord(raw, path);
+    const known = new Map(fields.map((field) => [field.key, field]));
+    for (const [key, value] of Object.entries(raw)) {
+      if (!known.has(key)) throw new Error(`Unknown ${path} key: ${key}`);
+      requireRecord(value, `${path}.${key}`);
+      exactKeys(value, ["enabled", "required", "label"], `${path}.${key}`);
+      for (const booleanKey of ["enabled", "required"] as const) {
+        if (booleanKey in value && typeof value[booleanKey] !== "boolean") throw new Error(`${path}.${key}.${booleanKey} must be a boolean`);
+      }
+      if ("label" in value && (typeof value.label !== "string" || value.label.trim().length < 1 || value.label.length > 120)) throw new Error(`${path}.${key}.label must be 1 to 120 characters`);
+    }
+    return raw as Record<string, { enabled?: boolean; required?: boolean; label?: string }>;
+  };
+  if (input.locationFields !== undefined) result.locationFields = validateChanges(input.locationFields, pack.locationFields, "location field");
+  if (input.assetFields !== undefined) {
+    requireRecord(input.assetFields, "asset fields");
+    const assets = new Map(pack.assets.map((asset) => [asset.key, asset]));
+    for (const [assetKey, changes] of Object.entries(input.assetFields)) {
+      const asset = assets.get(assetKey);
+      if (!asset) throw new Error(`Unknown asset type: ${assetKey}`);
+      result.assetFields[assetKey] = validateChanges(changes, asset.fields, `asset field ${assetKey}`);
+    }
+  }
+  if (input.checklist !== undefined) {
+    requireRecord(input.checklist, "job checklist");
+    const keys = new Set(pack.jobChecklist.map((item) => item.key));
+    for (const [key, value] of Object.entries(input.checklist)) {
+      if (!keys.has(key)) throw new Error(`Unknown job checklist key: ${key}`);
+      requireRecord(value, `job checklist.${key}`);
+      exactKeys(value, ["enabled", "required", "label"], `job checklist.${key}`);
+      for (const booleanKey of ["enabled", "required"] as const) if (booleanKey in value && typeof value[booleanKey] !== "boolean") throw new Error(`job checklist.${key}.${booleanKey} must be a boolean`);
+      if ("label" in value && (typeof value.label !== "string" || value.label.trim().length < 1 || value.label.length > 120)) throw new Error(`job checklist.${key}.label must be 1 to 120 characters`);
+    }
+    result.checklist = input.checklist as typeof result.checklist;
+  }
+  if (input.disabledRecurrencePresetKeys !== undefined) {
+    validateStringList(input.disabledRecurrencePresetKeys, "Disabled recurrence preset keys", { nonEmpty: false, unique: true });
+    const known = new Set(pack.recurrencePresets.map((item) => item.key));
+    for (const key of input.disabledRecurrencePresetKeys) if (!known.has(key)) throw new Error(`Unknown recurrence preset key: ${key}`);
+    result.disabledRecurrencePresetKeys = [...input.disabledRecurrencePresetKeys];
+  }
+  return result;
+}
+
+export type PackIntakeValues = Readonly<{
+  location: Readonly<Record<string, unknown>>;
+  assets: Readonly<Record<string, readonly Readonly<Record<string, unknown>>[]>>;
+  sensitive: Readonly<{ location: Readonly<Record<string, unknown>>; assets: Readonly<Record<string, readonly Readonly<Record<string, unknown>>[]>> }>;
+}>;
+
+/** Parses only fields declared by the selected pack and separates sensitive values for encrypted storage. */
+export function validatePackIntakeValues(packOrResolved: IndustryPack | ResolvedIndustryPack, input: unknown): PackIntakeValues {
+  const resolved = "pack" in packOrResolved ? packOrResolved : resolveIndustryPack(packOrResolved);
+  const pack = resolved.pack;
+  requireRecord(input, "Industry intake");
+  exactKeys(input, ["location", "assets"], "Industry intake");
+  const parseFields = (fields: readonly PackField[], raw: unknown, path: string) => {
+    requireRecord(raw, path);
+    const known = new Map(fields.map((field) => [field.key, field]));
+    const values: Record<string, unknown> = {};
+    const sensitive: Record<string, unknown> = {};
+    for (const key of Object.keys(raw)) if (!known.has(key)) throw new Error(`Unknown ${path} field: ${key}`);
+    for (const field of fields) {
+      let value = raw[field.key];
+      if ((value === undefined || value === "") && field.defaultValue !== undefined) value = field.defaultValue;
+      if (value === undefined || value === "" || value === null) {
+        if (field.required) throw new Error(`${field.label} is required`);
+        continue;
+      }
+      if (field.type === "boolean") {
+        if (typeof value !== "boolean") throw new Error(`${field.label} must be true or false`);
+      } else if (field.type === "number") {
+        if (typeof value !== "number" || !Number.isFinite(value) || Math.abs(value) > 1_000_000_000_000) throw new Error(`${field.label} must be a valid number`);
+      } else {
+        if (typeof value !== "string" || value.length > (field.type === "media" ? 1000 : 2000)) throw new Error(`${field.label} must be text`);
+        if (field.type === "enum" && !field.options?.includes(value)) throw new Error(`Choose a valid ${field.label.toLowerCase()}`);
+        if (field.type === "date" && !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error(`${field.label} must be a date`);
+      }
+      (field.sensitive ? sensitive : values)[field.key] = value;
+    }
+    return { values, sensitive };
+  };
+  const rawLocation = input.location ?? {};
+  const location = parseFields(resolved.locationFields, rawLocation, "location");
+  requireRecord(input.assets ?? {}, "assets");
+  const knownAssets = new Map(resolved.assets.map((asset) => [asset.key, asset]));
+  const assetValues: Record<string, Record<string, unknown>[]> = {};
+  const sensitiveAssets: Record<string, Record<string, unknown>[]> = {};
+  for (const asset of resolved.assets) {
+    if (asset.fields.some((field) => field.required) && (!Array.isArray((input.assets as Record<string, unknown>)[asset.key]) || ((input.assets as Record<string, unknown>)[asset.key] as unknown[]).length === 0)) {
+      throw new Error(`Add at least one ${asset.label.toLowerCase()}`);
+    }
+  }
+  for (const [assetKey, rawRows] of Object.entries(input.assets ?? {})) {
+    const asset = knownAssets.get(assetKey);
+    if (!asset) throw new Error(`Unknown asset type: ${assetKey}`);
+    requireArray(rawRows, `assets.${assetKey}`);
+    if (rawRows.length > 20) throw new Error(`No more than 20 ${asset.pluralLabel.toLowerCase()} can be submitted`);
+    const values: Record<string, unknown>[] = [];
+    const sensitive: Record<string, unknown>[] = [];
+    for (const [index, row] of rawRows.entries()) {
+      const parsed = parseFields(asset.fields, row, `${asset.label} ${index + 1}`);
+      if (Object.keys(parsed.values).length || Object.keys(parsed.sensitive).length) {
+        values.push(parsed.values);
+        sensitive.push(parsed.sensitive);
+      }
+    }
+    if (values.length) assetValues[assetKey] = values;
+    if (sensitive.some((item) => Object.keys(item).length)) sensitiveAssets[assetKey] = sensitive;
+  }
+  return { location: location.values, assets: assetValues, sensitive: { location: location.sensitive, assets: sensitiveAssets } };
+}
 
 export { PET_WASTE_REMOVAL_PACK };
 const CONNECTOR_CAPABILITY_KEY_SET: ReadonlySet<string> = new Set(CONNECTOR_CAPABILITY_KEYS);
@@ -452,12 +633,13 @@ export function validateIndustryPack(pack: IndustryPack): void {
   for (const capability of pack.recommendedConnectorCapabilities) if (!CONNECTOR_CAPABILITY_KEY_SET.has(capability)) throw new Error(`Unknown connector capability recommendation: ${capability}`);
 
   requireRecord(pack.website, "Pack website");
-  exactKeys(pack.website, ["template", "sections", "signupSteps", "heroHeadline", "heroDescription"], "Pack website");
+  exactKeys(pack.website, ["template", "sections", "signupSteps", "heroHeadline", "heroDescription", "signupBehavior"], "Pack website");
   if (typeof pack.website.template !== "string" || !["fresh", "classic", "route-service"].includes(pack.website.template)) throw new Error("Unsupported pack website template");
   validateStringList(pack.website.sections, "Website sections", { unique: true });
   validateStringList(pack.website.signupSteps, "Website signup steps", { unique: true });
   requireNonEmptyString(pack.website.heroHeadline, "Website hero headline");
   requireNonEmptyString(pack.website.heroDescription, "Website hero description");
+  if (pack.website.signupBehavior !== undefined && !["review", "activate_recurring"].includes(pack.website.signupBehavior)) throw new Error("Unsupported pack signup behavior");
 }
 
 function evaluateCondition(condition: PackAnswerCondition, answers: PackOnboardingAnswers): ConditionResult {

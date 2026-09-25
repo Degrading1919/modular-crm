@@ -16,6 +16,7 @@ test("connector marketplace groups test connections and scopes connection state 
   const catalogResponse = await page.request.get("/api/v1/connections");
   expect(catalogResponse.ok()).toBeTruthy();
   const catalog = await catalogResponse.json();
+  expect(catalog.industryPack).toMatchObject({ key: "pet-waste-removal", displayName: "Pet Waste Removal" });
   expect(catalog.groups).toEqual(expect.arrayContaining([
     expect.objectContaining({ capability: "Accept payments" }),
     expect.objectContaining({ capability: "Sync accounting" }),
@@ -24,6 +25,7 @@ test("connector marketplace groups test connections and scopes connection state 
   const accountingConnector = catalog.items.find((item: { key: string }) => item.key === "mock-accounting");
   expect(accountingConnector).toMatchObject({
     capability: "Sync accounting",
+    recommendedForIndustry: true,
     mode: "mock",
     environment: "test",
     status: "not_connected",
@@ -32,7 +34,8 @@ test("connector marketplace groups test connections and scopes connection state 
   expect(serializedCatalog).not.toMatch(/"(?:settings|credentials?|accessToken|refreshToken|clientSecret|webhookSecret|providerAccountId)"\s*:/i);
 
   await page.goto("/app/connections");
-  const accountingGroup = page.getByRole("heading", { name: "Sync Accounting", exact: true });
+  await expect(page.getByText(/Optional connections for Pet Waste Removal/)).toBeVisible();
+  const accountingGroup = page.getByRole("heading", { name: /Sync Accounting.*Suggested for Pet Waste Removal/ });
   await expect(accountingGroup).toBeVisible();
   const accountingCard = page.locator(".module-card").filter({ has: page.getByRole("heading", { name: "Test accounting", exact: true }) });
   await expect(accountingCard.getByText(/Demo connection/)).toBeVisible();

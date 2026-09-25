@@ -15,6 +15,7 @@ import { requireStaff, type SessionActor } from "./actor";
 import { recordEvent } from "./events";
 import { json, readBody, requireMethod } from "./http";
 import { uuidArray } from "./sql";
+import { getIndustryPack, getIndustryPackMaturity, resolveIndustryPack, validateIndustryPackCustomization } from "./industry-pack-runtime";
 
 const automationActionTypes = new Set<AutomationActionType>([
   "send_email", "send_sms", "create_ticket", "add_note", "notify_staff",
@@ -250,6 +251,8 @@ async function listConnections(actor: SessionActor): Promise<Response> {
   requirePermission(actor, "connectors.read");
   requireStaff(actor);
   const registry = await hydrateTenantConnectors(actor.tenantId);
+  const industryPack = actor.packKey ? getIndustryPack(actor.packKey) : undefined;
+  const recommendedCapabilities: ReadonlySet<string> = new Set(industryPack?.recommendedConnectorCapabilities ?? []);
   const installations = await getDb().select().from(connectorInstallations).where(eq(connectorInstallations.tenantId, actor.tenantId));
   const newestByKey = new Map<string, typeof installations[number]>();
   for (const installation of installations) {
@@ -267,6 +270,7 @@ async function listConnections(actor: SessionActor): Promise<Response> {
         description: manifest.description,
         capability,
         capabilityKey,
+        recommendedForIndustry: recommendedCapabilities.has(capabilityKey),
         status: connectorStatus,
         health: stored?.status === "connected" ? runtime.health : stored?.status === "expired" || stored?.status === "needs_attention" ? "degraded" : "unavailable",
         mode: manifest.availability === "mock_complete" ? "mock" : manifest.authType === "oauth2" && manifest.availability === "credentials_ready" ? "oauth_setup" : manifest.availability === "credentials_ready" ? "live_setup" : "local",
@@ -284,7 +288,11 @@ async function listConnections(actor: SessionActor): Promise<Response> {
     });
     return { capabilityKey, capability, items };
   }).filter((group) => group.items.length > 0);
-  return json({ groups, items: groups.flatMap((group) => group.items) });
+  return json({
+    groups,
+    items: groups.flatMap((group) => group.items),
+    ...(industryPack ? { industryPack: { key: industryPack.key, displayName: industryPack.displayName, recommendedConnectorCapabilities: industryPack.recommendedConnectorCapabilities } } : {}),
+  });
 }
 
 async function changeConnection(request: Request, path: string[], actor: SessionActor): Promise<Response> {
@@ -718,6 +726,46 @@ async function getSettings(actor: SessionActor): Promise<Response> {
   } });
 }
 
+async function getIndustryConfiguration(actor: SessionActor): Promise<Response> {
+  requirePermission(actor, "tenant.read");
+  requireStaff(actor);
+  const [tenant] = await getDb().select().from(tenants).where(eq(tenants.id, actor.tenantId)).limit(1);
+  if (!tenant) throw new DomainError("NOT_FOUND", "Business settings not found.", 404);
+  const pack = tenant.industryPackKey ? getIndustryPack(tenant.industryPackKey) : undefined;
+  if (!pack) return json({ item: { pack: null, customization: {}, permissions: { canUpdate: actor.permissions.has("tenant.update") } } });
+  const settings = objectValue(tenant.settings);
+  const customizations = objectValue(settings.industryPackCustomizations);
+  let customization;
+  try { customization = validateIndustryPackCustomization(pack, customizations[pack.key] ?? {}); }
+  catch { customization = {}; }
+  return json({ item: { pack: resolveIndustryPack(pack, customization), customization, maturity: getIndustryPackMaturity(pack.key), permissions: { canUpdate: actor.permissions.has("tenant.update") } } });
+}
+
+async function patchIndustryConfiguration(request: Request, actor: SessionActor): Promise<Response> {
+  requirePermission(actor, "tenant.update");
+  requireStaff(actor);
+  const body = await readBody(request, z.object({ customization: z.unknown() }));
+  const db = getDb();
+  const result = await db.transaction(async (tx) => {
+    const [tenant] = await tx.select().from(tenants).where(eq(tenants.id, actor.tenantId)).limit(1);
+    if (!tenant) throw new DomainError("NOT_FOUND", "Business settings not found.", 404);
+    const pack = tenant.industryPackKey ? getIndustryPack(tenant.industryPackKey) : undefined;
+    if (!pack) throw new DomainError("CONFLICT", "Choose a supported business before configuring its work steps.", 409);
+    let customization;
+    try { customization = validateIndustryPackCustomization(pack, body.customization); }
+    catch (error) { throw new DomainError("VALIDATION_ERROR", error instanceof Error ? error.message : "Review the business workflow settings.", 422); }
+    const settings = objectValue(tenant.settings);
+    const prior = objectValue(settings.industryPackCustomizations);
+    const nextCustomizations = { ...prior, [pack.key]: customization };
+    const before = prior[pack.key] && typeof prior[pack.key] === "object" ? prior[pack.key] as Record<string, unknown> : {};
+    await tx.update(tenants).set({ settings: { ...settings, industryPackCustomizations: nextCustomizations }, updatedAt: new Date() }).where(eq(tenants.id, actor.tenantId));
+    await recordEvent(actor, { type: "tenant.industry_configuration_changed", entityType: "tenant", entityId: tenant.id,
+      auditAction: "tenant.industry_configuration_update", before, after: { packKey: pack.key, customization } }, tx);
+    return { pack: resolveIndustryPack(pack, customization), customization, maturity: getIndustryPackMaturity(pack.key), permissions: { canUpdate: actor.permissions.has("tenant.update") } };
+  });
+  return json({ item: result });
+}
+
 async function patchSettings(request: Request, actor: SessionActor): Promise<Response> {
   requirePermission(actor, "tenant.update");
   requireStaff(actor);
@@ -767,6 +815,12 @@ async function patchSettings(request: Request, actor: SessionActor): Promise<Res
 }
 
 export async function handleCapabilitySettings(request: Request, path: string[], actor: SessionActor): Promise<Response | null> {
+  if (path[0] === "industry-configuration") {
+    if (path.length !== 1) throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
+    if (request.method === "GET") return getIndustryConfiguration(actor);
+    if (request.method === "PATCH") return patchIndustryConfiguration(request, actor);
+    throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
+  }
   if (path[0] === "connections") {
     if (path.length === 1 && request.method === "GET") return listConnections(actor);
     return changeConnection(request, path, actor);
