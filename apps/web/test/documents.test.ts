@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { PGlite } from "../../../packages/db/node_modules/@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
+import { eq } from "drizzle-orm";
 import { completionProofs, fileLinks, files, schema, seedDevelopment, seedIds, type Database } from "@modular-crm/db";
 import { permissionsForRole } from "@modular-crm/domain";
 import type { SessionActor } from "../lib/api/actor.ts";
@@ -68,9 +69,12 @@ describe("authorized customer documents", () => {
     const receipt = await getDocument(customer, "receipt", seedIds.happyPayment);
     expect(receipt.kind).toBe("receipt");
     expect(receipt.totals[0]).toMatchObject({ label: "Amount paid", amountMinor: 2500n });
-    const statement = await getDocument(customer, "statement", seedIds.carter);
+    const currentStatement = await getDocument(customer, "statement", seedIds.carter);
+    expect(currentStatement.period).toEqual(statementPeriod());
+    // The seed issues HY-1001 a week before today, which can fall in the previous month.
+    const [seededInvoice] = await db.select({ issuedAt: schema.invoices.issuedAt }).from(schema.invoices).where(eq(schema.invoices.id, seedIds.happyInvoice));
+    const statement = await getDocument(customer, "statement", seedIds.carter, { period: seededInvoice!.issuedAt!.toISOString().slice(0, 7) });
     expect(statement.lines.some((line) => line.description === "Invoice HY-1001")).toBe(true);
-    expect(statement.period?.start).toMatch(/^\d{4}-\d{2}-01$/);
     await expect(getDocument({ ...customer, locationIds: new Set(), customerLocationIds: new Map([[seedIds.carter, new Set()]]) }, "invoice", seedIds.happyInvoice)).rejects.toMatchObject({ status: 404 });
   });
 
