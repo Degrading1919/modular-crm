@@ -38,6 +38,16 @@ function assertLocationAccess(actor: SessionActor, locationId: string | null): v
 }
 
 async function assertTicketAccess(actor: SessionActor, id: string): Promise<void> {
+  requireStaff(actor);
+  if (actor.role === "technician") {
+    // Technicians may change only tickets they own or that belong to a job assigned to them, matching their field ticket list.
+    first(await rows(sql`select t.id from tickets t
+      where t.id=${id} and t.tenant_id=${actor.tenantId}
+        and (t.assigned_membership_id=${actor.membershipId} or (t.created_by_actor_type='staff' and t.created_by_actor_id=${actor.userId})
+          or exists (select 1 from job_assignments ja where ja.tenant_id=t.tenant_id and ja.job_id=t.job_id
+            and ja.membership_id=${actor.membershipId} and ja.removed_at is null)) limit 1`));
+    return;
+  }
   first(await rows(sql`select t.id from tickets t
     left join customers c on c.id=t.customer_id and c.tenant_id=t.tenant_id
     left join service_locations sl on sl.id=t.service_location_id and sl.tenant_id=t.tenant_id
