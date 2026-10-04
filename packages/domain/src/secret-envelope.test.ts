@@ -13,7 +13,10 @@ describe("secret envelopes", () => {
 
   it("rejects tampering, wrong keys, and non-32-byte key configuration", () => {
     const envelope = sealSecret("endpoint-secret", key);
-    expect(() => openSecret(`${envelope.slice(0, -1)}A`, key)).toThrow();
+    // Always change the final ciphertext character; replacing it with a fixed letter is a no-op 1 time in 64.
+    const tampered = `${envelope.slice(0, -1)}${envelope.endsWith("A") ? "B" : "A"}`;
+    expect(tampered).not.toBe(envelope);
+    expect(() => openSecret(tampered, key)).toThrow();
     expect(() => openSecret(envelope, "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")).toThrow();
     expect(() => sealSecret("endpoint-secret", "too-short")).toThrow(/32-byte key/);
   });
