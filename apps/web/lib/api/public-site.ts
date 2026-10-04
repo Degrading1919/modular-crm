@@ -15,6 +15,7 @@ import { getDb } from "../db";
 import { json } from "./http";
 import { requireTenantFeature } from "./capability-enforcement";
 import { encryptServiceAccessInstructions } from "./service-access";
+import { businessDate } from "../dates";
 
 const PUBLIC_BODY_LIMIT = 64 * 1024;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
@@ -514,7 +515,7 @@ async function createSignup(request: Request, row: PublicSiteRow, input: z.infer
       const snapshot = snapshotPriceResult(quote.result, new Date().toISOString());
       const [plan] = await tx.insert(servicePlans).values({
         tenantId: row.site.tenantId, customerId: customer.id, serviceLocationId: location.id, organizationLocationId: row.site.organizationLocationId,
-        serviceId: quote.service.id, recurrenceRuleId: recurrenceRule.id, status: "active", effectiveFrom: new Date().toISOString().slice(0, 10),
+        serviceId: quote.service.id, recurrenceRuleId: recurrenceRule.id, status: "active", effectiveFrom: businessDate(new Date(), row.organization.timezone || row.tenant.defaultTimezone || "UTC"),
         pricingSnapshot: snapshot as unknown as Record<string, unknown>, billingConfiguration: { type: paymentMode === "manual" ? "manual_invoice" : "per_job", demoPaymentMethod: input.paymentMethod === "demo" },
         preferredAssignment: input.preferredDay ? { preferredDay: input.preferredDay } : {},
         customFields: { source: "website_signup", petCount: input.pets.length, yardSize: input.yard.size },

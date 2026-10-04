@@ -75,6 +75,10 @@ It includes:
 
 A unified inbound customer conversation inbox is not required for V1. Customer communication in V1 may rely on outbound email/SMS plus portal requests, forms, and support/ticket interactions.
 
+## Calendar-date semantics
+
+Business calendar dates (for example, a service day or route date stored as `YYYY-MM-DD`) are dates, not UTC instants. They must retain their named calendar day across office, schedule, route, field, portal, and reporting surfaces. Timestamps remain instants rendered in the relevant tenant or location timezone; scheduling and other business “today” behavior derives its date from that configured timezone rather than a browser or UTC default.
+
 ## V1 account surfaces
 
 ### Owner / Admin

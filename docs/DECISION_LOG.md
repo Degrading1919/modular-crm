@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-04 — Calendar dates remain timezone-independent
+
+- **Status:** Accepted
+- **Area:** Implementation
+- **Decision:** Treat `YYYY-MM-DD` business values as calendar dates and render them without UTC-to-local conversion. Keep timestamps as instants formatted in the applicable tenant/location timezone, and derive business “today” from that configured timezone.
+- **Rationale:** A service day must not move to the prior or following day for an office user, technician, customer, or report viewer in another timezone.
+- **Authoritative doc:** `docs/PRODUCT_SCOPE.md`
+
 ## 2026-09-24 — Research candidate industries exhaustively before consolidation
 
 - **Status:** Accepted
