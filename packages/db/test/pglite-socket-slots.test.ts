@@ -8,13 +8,14 @@ import { releaseDisconnectedSlots } from "../src/pglite-socket-slots.ts";
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const step of cleanup.splice(0).reverse()) await step(); });
 
-async function startServer(port: number) {
+async function startServer() {
   const db = await PGlite.create();
-  const server = new PGLiteSocketServer({ db, host: "127.0.0.1", port, maxConnections: 3 });
+  const server = new PGLiteSocketServer({ db, host: "127.0.0.1", port: 0, maxConnections: 3 });
   await server.start();
   releaseDisconnectedSlots(server);
   cleanup.push(async () => { await server.stop(); await db.close(); });
-  return { server, url: `postgresql://postgres:postgres@127.0.0.1:${port}/postgres` };
+  // Port 0 lets the OS pick a free port; the server reports the bound address after start().
+  return { server, url: `postgresql://postgres:postgres@${server.getServerConn()}/postgres` };
 }
 
 /** Simulates a client process that is killed mid-session: its socket ends with a reset, not a clean close. */
@@ -41,7 +42,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 200));
 
 describe("local PGlite connection slots", () => {
   it("accepts new clients after earlier clients disconnected abruptly", async () => {
-    const { server, url } = await startServer(55432);
+    const { server, url } = await startServer();
     for (let i = 0; i < 5; i++) await connectThenReset(url);
     await settle();
     await expect(queryOnce(url)).resolves.toBe(1);
