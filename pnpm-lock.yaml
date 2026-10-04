@@ -165,6 +165,9 @@ importers:
 
   packages/db:
     dependencies:
+      '@modular-crm/domain':
+        specifier: workspace:*
+        version: link:../domain
       drizzle-orm:
         specifier: ^0.45.3
         version: 0.45.3(@electric-sql/pglite@0.5.8)(@types/pg@8.23.1)(kysely@0.29.6)(pg@8.23.0)

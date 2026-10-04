@@ -1,5 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { Database } from "./client.ts";
+import { permissionsForRole, type Permission } from "@modular-crm/domain";
 import {
   grantTenantCapabilityModules,
   INITIAL_CAPABILITY_MODULE_KEYS,
@@ -142,16 +143,20 @@ export async function seedDevelopment(db: Database, actorIds: Partial<Record<See
     ]).onConflictDoNothing();
     const allPermissionKeys = Object.entries(permissionCatalog).flatMap(([category, actions]) => actions.map((action) => ({ key: `${category}.${action}`, category, description: `${category} ${action.replaceAll("_", " ")}` })));
     await tx.insert(permissions).values(allPermissionKeys).onConflictDoNothing();
-    const officeCategories = new Set(["leads", "customers", "estimates", "schedule", "jobs", "routes", "invoices", "payments", "communications", "tickets", "time", "mileage", "inventory", "reports"]);
-    const officeDeniedKeys = new Set(["invoices.void", "payments.refund", "reports.franchise_read", "reports.payroll_read"]);
+    const officePermissions = permissionsForRole("office");
     const technicianKeys = new Set(["customers.read", "schedule.read", "jobs.read", "jobs.start", "jobs.complete", "jobs.skip", "jobs.forms_submit", "jobs.files_add", "routes.read", "tickets.read", "tickets.create", "time.own_read", "time.own_create", "time.own_correct_request", "mileage.own_manage", "inventory.read", "inventory.consume"]);
-    await tx.insert(rolePermissions).values(allPermissionKeys.flatMap(({ key, category }) => [
+    await tx.insert(rolePermissions).values(allPermissionKeys.flatMap(({ key }) => [
       { roleTemplateId: seedIds.happyOwnerRole, permissionKey: key, allowed: true },
       { roleTemplateId: seedIds.cleanOwnerRole, permissionKey: key, allowed: true },
-      { roleTemplateId: seedIds.happyOfficeRole, permissionKey: key, allowed: officeCategories.has(category) && !officeDeniedKeys.has(key) },
       { roleTemplateId: seedIds.happyTechRole, permissionKey: key, allowed: technicianKeys.has(key) },
       { roleTemplateId: seedIds.cleanTechRole, permissionKey: key, allowed: technicianKeys.has(key) },
     ])).onConflictDoNothing();
+    // Repair previously seeded whitelist drift as well as fresh installations.
+    // Other seeded roles and their intentional fixture overrides stay intact.
+    for (const { key } of allPermissionKeys) {
+      await tx.insert(rolePermissions).values({ roleTemplateId: seedIds.happyOfficeRole, permissionKey: key, allowed: officePermissions.has(key as Permission) })
+        .onConflictDoUpdate({ target: [rolePermissions.roleTemplateId, rolePermissions.permissionKey], set: { allowed: officePermissions.has(key as Permission) } });
+    }
     await tx.update(rolePermissions).set({ allowed: false }).where(and(
       eq(rolePermissions.roleTemplateId, seedIds.happyOfficeRole),
       inArray(rolePermissions.permissionKey, ["compensation.read", "compensation.manage", "payroll.read", "payroll.calculate", "payroll.review", "payroll.approve", "payroll.export", "reports.payroll_read"]),

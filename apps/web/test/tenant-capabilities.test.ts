@@ -64,6 +64,23 @@ beforeAll(async () => {
 afterAll(async () => { await pglite?.close(); });
 
 describe("tenant capability setup", () => {
+  it("allows operational staff without tenant.read to read only effective tool state", async () => {
+    const staff = { ...owner(), role: "office" as const, permissions: new Set(["jobs.read"] as const) };
+    const response = await handleTenantCapabilities(new Request("http://localhost/api/v1/capabilities"), ["capabilities"], staff);
+    expect(response?.status).toBe(200);
+    const payload = await response!.json();
+    expect(payload.item.features.service_scheduling.usable).toBe(true);
+    expect(payload.item.modules).toEqual([]);
+    expect(payload.item.answers).toBeUndefined();
+    for (const [path, request] of [
+      [["capabilities", "recommendations"], new Request("http://localhost", { method: "POST" })],
+      [["capabilities", "setup"], setupRequest([])],
+      [["capabilities", "route-planning"], new Request("http://localhost", { method: "PATCH" })],
+    ] as const) await expect(handleTenantCapabilities(request, [...path], staff)).rejects.toMatchObject({ code: "FORBIDDEN", status: 403 });
+    expect(staff.permissions.has("jobs.read")).toBe(true);
+    expect([...staff.permissions]).toEqual(["jobs.read"]);
+  });
+
   it("replaces signup recommendations, preserves records, and closes module dependencies", async () => {
     const beforeState = await loadTenantCapabilities(db, tenantId);
     expect(beforeState.modules).toMatchObject({
