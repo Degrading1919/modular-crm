@@ -412,6 +412,16 @@ async function createResource(resource: RecordResource, request: Request, actor:
   throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
 }
 
+const optionalEmail = z.email().or(z.literal("")).nullable().optional().transform((value) => value === "" ? null : value);
+// Edits must meet the same rules as creation; values are written straight to their columns.
+const patchSchemas: Partial<Record<RecordResource, z.ZodType<Record<string, unknown>>>> = {
+  leads: z.object({ email: optionalEmail, phone: z.string().nullable().optional(), source: z.string().nullable().optional() }),
+  customers: z.object({ name: z.string().trim().min(2).optional(), email: optionalEmail, phone: z.string().nullable().optional() }),
+  jobs: z.object({ scheduledDate: z.iso.date().nullable().optional(), notes: z.string().nullable().optional(), customerSummary: z.string().nullable().optional() }),
+  services: z.object({ name: z.string().trim().min(2).optional(), description: z.string().nullable().optional(), active: z.boolean().optional(), durationMinutes: z.number().int().positive().optional() }),
+  tickets: z.object({ subject: z.string().trim().min(2).optional(), description: z.string().min(1).optional(), priority: z.string().trim().min(1).max(40).optional() }),
+};
+
 async function patchResource(resource: RecordResource, id: string, request: Request, actor: SessionActor): Promise<Response> {
   requireStaff(actor);
   const mapping: Partial<Record<RecordResource, { table: string; permission: Permission; locationColumn?: string; fields: Record<string, string> }>> = {
@@ -422,9 +432,10 @@ async function patchResource(resource: RecordResource, id: string, request: Requ
     tickets: { table: "tickets", permission: "tickets.update", fields: { subject: "title", description: "description", priority: "priority" } },
   };
   const config = mapping[resource];
-  if (!config) throw new DomainError("VALIDATION_ERROR", "Use the document's revision or action flow for this change.", 422);
-  const body = await request.json() as Record<string, unknown>;
-  const entries = Object.entries(body).filter(([key]) => key in config.fields);
+  const schema = patchSchemas[resource];
+  if (!config || !schema) throw new DomainError("VALIDATION_ERROR", "Use the document's revision or action flow for this change.", 422);
+  const body = await readBody(request, schema);
+  const entries = Object.entries(body).filter(([key, value]) => key in config.fields && value !== undefined);
   if (entries.length === 0) throw new DomainError("VALIDATION_ERROR", "No supported changes were supplied.", 422);
   requirePermission(actor, config.permission);
   if (resource === "tickets") await assertTicketAccess(actor, id);
@@ -457,6 +468,8 @@ export async function handleRecords(request: Request, path: string[], actor: Ses
   if (!resources.has(resource)) return null;
   if (path.length > 2) return null;
   const id = path[1];
+  // A malformed ID cannot name a record; answer as the public API does instead of failing in the database.
+  if (id !== undefined && !z.uuid().safeParse(id).success) throw new DomainError("NOT_FOUND", "Record not found.", 404);
   if (request.method === "GET") return readResource(resource, actor, id);
   if (request.method === "POST" && !id) return createResource(resource, request, actor);
   if (request.method === "PATCH" && id) {
