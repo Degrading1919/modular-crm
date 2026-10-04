@@ -380,12 +380,14 @@ async function hasExistingCustomerMatch(tx: Parameters<Parameters<ReturnType<typ
 }
 
 function sanitizedSubmission(input: z.infer<typeof signupSchema>) {
-  return {
+  // Return the JSON form that is stored, so a retry compares equal to it: optional fields left
+  // undefined here are absent from the saved payload.
+  return JSON.parse(JSON.stringify({
     address: input.address, zip: input.zip, contact: input.contact, service: input.service, pets: input.pets,
     yard: { size: input.yard.size, accessProvided: Boolean(input.yard.gateCode || input.yard.accessNotes) },
     preferredDay: input.preferredDay, quoteId: input.quoteId, paymentMethod: input.paymentMethod,
     notificationPreferences: input.notificationPreferences, termsAccepted: true, termsVersion: input.termsVersion,
-  };
+  })) as Record<string, unknown>;
 }
 
 function duplicateSignupResult(submission: typeof siteSubmissions.$inferSelect) {

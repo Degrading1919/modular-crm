@@ -16,6 +16,7 @@ import { normalized, rows, uuidArray } from "./sql";
 import { assertPayrollSourceEditable } from "./payroll";
 import { decryptServiceAccessInstructions } from "./service-access";
 import { getAssignedJob, transitionJob } from "./workflows";
+import { fieldTicketScope } from "./ticket-scope";
 import { claimFieldOperation, completeFieldOperation, fieldEffectiveTime, fieldTimeAnomaly } from "./field-operations";
 
 function validTimeZone(value: unknown): string | null {
@@ -435,7 +436,7 @@ export async function handleRoutesField(request: Request, path: string[], actor:
     if (request.method === "POST" && path[3]) return fieldMutation(request, actor, path[2], path[3]);
   }
   if (path[1] === "tickets") {
-    if (request.method === "GET") return json({ items: normalized(await rows(sql`select t.id,t.title as subject,t.description,ts.key as status,t.created_at from tickets t join ticket_status_definitions ts on ts.id=t.status_definition_id and ts.tenant_id=t.tenant_id where t.tenant_id=${actor.tenantId} and (t.assigned_membership_id=${actor.membershipId} or t.created_by_actor_id=${actor.userId}) order by t.created_at desc limit 100`)) });
+    if (request.method === "GET") return json({ items: normalized(await rows(sql`select t.id,t.title as subject,t.description,ts.key as status,t.created_at from tickets t join ticket_status_definitions ts on ts.id=t.status_definition_id and ts.tenant_id=t.tenant_id where t.tenant_id=${actor.tenantId} and ${fieldTicketScope(actor)} order by t.created_at desc limit 100`)) });
     if (request.method === "POST") {
       const body = await readBody(request, z.object({ subject: z.string().min(2), description: z.string().min(1), type: z.string().default("field_issue"), clientOperationId: z.uuid().optional(), deviceTimestamp: z.iso.datetime({ offset: true }).optional() }));
       const db = getDb();

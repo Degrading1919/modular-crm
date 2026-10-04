@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
+import { releaseDisconnectedSlots } from "./pglite-socket-slots.ts";
 
 const defaultDataDirectory = fileURLToPath(new URL("../../../.local-data/pglite/", import.meta.url));
 const dataDirectory = process.env.PGLITE_DATA_DIR === ":memory:"
@@ -24,6 +25,7 @@ const server = new PGLiteSocketServer({
 
 try {
   await server.start();
+  releaseDisconnectedSlots(server);
   console.info(`Local PGlite is ready at postgresql://postgres:postgres@127.0.0.1:${port}/postgres`);
   console.info(`Data directory: ${dataDirectory}`);
 } catch (error) {
