@@ -66,7 +66,7 @@ describe("technician ticket update scope", () => {
     const jobRelated = await createTicket({ customerId: seedIds.carter, jobId: seedIds.completedJob, assignedMembershipId: seedIds.morganMembership });
     for (const ticket of [assigned, created, jobRelated]) {
       const response = await patchTicket(terry, ticket.id, { description: "Updated from the field" });
-      expect(response.status).toBe(200);
+      expect(response?.status).toBe(200);
     }
   });
 });
