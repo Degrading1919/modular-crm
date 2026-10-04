@@ -4,6 +4,20 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-04 — Calendar dates remain timezone-independent
+
+- **Status:** Accepted
+- **Area:** Implementation
+- **Decision:** Treat `YYYY-MM-DD` business values as calendar dates and render them without UTC-to-local conversion. Keep timestamps as instants formatted in the applicable tenant/location timezone, and derive business “today” from that configured timezone.
+- **Rationale:** A service day must not move to the prior or following day for an office user, technician, customer, or report viewer in another timezone.
+- **Authoritative doc:** `docs/PRODUCT_SCOPE.md`
+
+### PR #4 verification follow-up
+
+- The route-heading assertion in `critical-flows.spec.ts` must derive its expected label from the API's calendar date using an explicit UTC formatter, independently of the product formatter. The corrected assertion fails against base `main` revision `4a9ec4f1fa7e9c2e7cbd615bcc54adbc13542ad6` (October 6 expected, October 5 displayed) and passes with PR #4.
+- The intermittent technician failure also reproduces on that base revision with fresh databases and no preceding Playwright tests. A deterministic two-client check establishes an existing PGlite TCP statement/portal isolation defect; keep PR #4 scoped to the date assertion rather than weakening authentication or hiding the emulator problem. See [the local database verification caveat](ARCHITECTURE.md#local-database-verification-caveat) for the evidence and minimal reproduction.
+- Final verification: affected browser specs 7 passed, pre-existing browser suite 29 passed, combined browser suite 30 passed, serial `pnpm test` 335 passed across 76 files and 10 packages, and repository typecheck passed; all final commands exited 0. No teardown hang, authentication change, assertion retry, skip, or Playwright configuration change was required.
+
 ## 2026-09-24 — Research candidate industries exhaustively before consolidation
 
 - **Status:** Accepted

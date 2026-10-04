@@ -18,6 +18,7 @@ import { decryptServiceAccessInstructions } from "./service-access";
 import { getAssignedJob, transitionJob } from "./workflows";
 import { fieldTicketScope } from "./ticket-scope";
 import { claimFieldOperation, completeFieldOperation, fieldEffectiveTime, fieldTimeAnomaly } from "./field-operations";
+import { businessDate } from "../dates";
 
 function validTimeZone(value: unknown): string | null {
   if (typeof value !== "string" || !value) return null;
@@ -58,15 +59,9 @@ async function fieldTimeZoneInTransaction(tx: FieldTransaction, actor: SessionAc
   return validTimeZone(row?.locationTimezone) ?? validTimeZone(row?.organizationTimezone) ?? validTimeZone(row?.defaultTimezone) ?? "UTC";
 }
 
-function dateInTimeZone(value: Date, timeZone: string): string {
-  const parts = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(value);
-  const part = (type: string) => Number(parts.find((item) => item.type === type)?.value);
-  return String(part("year")).padStart(4, "0") + "-" + String(part("month")).padStart(2, "0") + "-" + String(part("day")).padStart(2, "0");
-}
-
 async function today(actor: SessionActor, locationId?: string | null): Promise<string> {
   const timezone = await fieldTimeZone(actor, locationId ?? actor.defaultLocationId);
-  return dateInTimeZone(new Date(), timezone);
+  return businessDate(new Date(), timezone);
 }
 const locationAllowed = (actor: SessionActor, locationId: string | null) => actor.kind === "staff" && (actor.allLocations || (!!locationId && actor.locationIds.has(locationId)));
 
@@ -223,8 +218,8 @@ async function fieldToday(actor: SessionActor) {
   const routeData = await fieldRouteData(actor, "today");
   const [shift] = await getDb().select().from(shifts).where(and(eq(shifts.tenantId, actor.tenantId), eq(shifts.membershipId, actor.membershipId))).orderBy(sql`${shifts.clockInAt} desc`).limit(1);
   const timezone = await fieldTimeZone(actor, shift?.organizationLocationId ?? actor.defaultLocationId);
-  const businessDate = dateInTimeZone(new Date(), timezone);
-  const recentShift = shift && dateInTimeZone(shift.clockInAt, timezone) === businessDate ? shift : null;
+  const currentBusinessDate = businessDate(new Date(), timezone);
+  const recentShift = shift && businessDate(shift.clockInAt, timezone) === currentBusinessDate ? shift : null;
   const activeBreak = recentShift ? await getDb().select().from(breaks).where(and(eq(breaks.tenantId, actor.tenantId), eq(breaks.shiftId, recentShift.id), isNull(breaks.endedAt))).limit(1) : [];
   const shiftStatus = recentShift ? recentShift.status === "clocked_in" && activeBreak.length ? "on_break" : recentShift.status : "clocked_out";
   return { ...routeData, shift: recentShift ? normalized({ ...recentShift, status: shiftStatus, startedAt: recentShift.clockInAt }) : { status: "clocked_out" } };
@@ -399,8 +394,8 @@ async function fieldTime(request: Request, actor: SessionActor): Promise<Respons
     } else if (body.action === "mileage") {
       if (!body.miles) throw new DomainError("VALIDATION_ERROR", "Enter miles driven.", 422);
       const timezone = await fieldTimeZoneInTransaction(tx, actor, open.organizationLocationId);
-      const occurredOn = dateInTimeZone(effectiveAt, timezone);
-      const receivedOn = dateInTimeZone(receivedAt, timezone);
+      const occurredOn = businessDate(effectiveAt, timezone);
+      const receivedOn = businessDate(receivedAt, timezone);
       for (const date of new Set([occurredOn, receivedOn])) await assertPayrollSourceEditable(tx, actor, { occurredOn: date });
       const [mileage] = await tx.insert(mileageRecords).values({ tenantId: actor.tenantId, membershipId: actor.membershipId, shiftId: open.id, source: "manual", distanceMeters: Math.round(body.miles * 1609.344), occurredOn }).returning();
       if (!mileage) throw new Error("Could not record mileage.");

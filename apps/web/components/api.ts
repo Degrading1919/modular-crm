@@ -56,10 +56,10 @@ export function money(cents: number | null | undefined, currency = "USD") {
 
 export function date(value: string | null | undefined, options?: Intl.DateTimeFormatOptions) {
   if (!value) return "Not scheduled";
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? value : new Intl.DateTimeFormat("en-US", options ?? { month: "short", day: "numeric", year: "numeric" }).format(parsed);
+  return formatDateValue(value, options ?? { month: "short", day: "numeric", year: "numeric" });
 }
 
 export function friendly(value: string | null | undefined) {
   return (value || "—").replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
+import { formatDateValue } from "../lib/dates";

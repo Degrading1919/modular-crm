@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   auditEvents, customerChangeRequests, customers, domainEvents, memberships, organizationLocations,
-  portalAccess, portalLocationAccess, serviceLocations, servicePlans, user, verification,
+  portalAccess, portalLocationAccess, serviceLocations, servicePlans, tenants, user, verification,
 } from "@modular-crm/db";
 import { DomainError, requirePermission } from "@modular-crm/domain";
 import { auth } from "../auth";
@@ -13,6 +13,7 @@ import { json, readBody } from "./http";
 import { normalized, uuidArray } from "./sql";
 import { sendDevelopmentEmail } from "../mail";
 import { z } from "zod";
+import { businessDate } from "../dates";
 
 const grantSchema = z.object({ email: z.email(), name: z.string().min(2).max(120).optional(), serviceLocationIds: z.array(z.uuid()).min(1) });
 const resolutionSchema = z.object({ reason: z.string().max(1000).optional(), effectiveDate: z.iso.date().optional() });
@@ -279,6 +280,7 @@ async function resolveRequest(request: Request, actor: SessionActor, requestId: 
     eventLocationId = customer?.branchId ?? null;
   }
   const now = new Date();
+  const [tenant] = await db.select({ timezone: tenants.defaultTimezone }).from(tenants).where(eq(tenants.id, actor.tenantId)).limit(1);
   if (action === "review") {
     if (!(["submitted", "pending"] as string[]).includes(row.status)) throw new DomainError("CONFLICT", "Only submitted requests can move into review.", 409);
     const [updated] = await db.transaction(async (tx) => {
@@ -304,7 +306,7 @@ async function resolveRequest(request: Request, actor: SessionActor, requestId: 
     const [linkedPlan] = await db.select().from(servicePlans).where(and(eq(servicePlans.id, planId), eq(servicePlans.tenantId, actor.tenantId), eq(servicePlans.customerId, row.customerId))).limit(1);
     if (!linkedPlan || !row.serviceLocationId || linkedPlan.serviceLocationId !== row.serviceLocationId) throw new DomainError("NOT_FOUND", "The linked service plan no longer matches this customer and address.", 404);
     plan = linkedPlan;
-    const effectiveDate = body.effectiveDate ?? (typeof changes.effectiveDate === "string" ? changes.effectiveDate : now.toISOString().slice(0, 10));
+    const effectiveDate = body.effectiveDate ?? (typeof changes.effectiveDate === "string" ? changes.effectiveDate : businessDate(now, tenant?.timezone ?? "UTC"));
     planBefore = { id: plan.id, status: plan.status, pauseFrom: plan.pauseFrom, pauseUntil: plan.pauseUntil, effectiveTo: plan.effectiveTo, canceledAt: plan.canceledAt, cancellationReason: plan.cancellationReason };
     if (row.requestType === "pause") {
       requirePermission(actor, "service_plans.pause");

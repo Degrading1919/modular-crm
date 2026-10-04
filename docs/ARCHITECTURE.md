@@ -101,6 +101,12 @@ A future implementation task should provide a short local workflow such as:
 `docker compose up` or equivalent local service startup
 `npm run dev`
 
+### Local database verification caveat
+
+PR #4 verification on 2026-10-04 reproduced an existing PGlite TCP transport isolation defect on both the PR branch and base `main` revision `4a9ec4f1fa7e9c2e7cbd615bcc54adbc13542ad6`, using separately migrated and seeded in-memory databases. The technician browser workflow can fail after a successful clock-in because concurrent database clients share unnamed PostgreSQL statement/portal state in `pglite-socket` 0.2.11. Server logs capture session-lookup errors including `bind message supplies 1 parameters, but prepared statement "" requires 3` and `portal "" does not exist`; concurrent identity reads can return 401 and 200 with the same cookie.
+
+A deterministic two-client protocol check reproduces the collision on both revisions without seed data or preceding browser tests: client A parses an unnamed statement, client B replaces it, and client A's bind fails with `08P01`. An independently executed query can likewise remove client A's unnamed portal (`34000`). No date-test clock or capability mutation is necessary. This is an emulator limitation, not evidence of a date-semantic or production authentication regression. Keep authentication and browser assertions intact; do not hide it with retries, sleeps, or reordered tests.
+
 ## Provider boundaries
 
 Business logic should depend on capabilities rather than providers.

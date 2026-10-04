@@ -16,6 +16,7 @@ import { recordEvent } from "./events";
 import { json, readBody } from "./http";
 import { normalized } from "./sql";
 import { claimFieldOperation, completeFieldOperation, type FieldOperationInput } from "./field-operations";
+import { businessDate } from "../dates";
 
 export async function getAssignedJob(actor: SessionActor, jobId: string, permission: Permission = "jobs.read") {
   const db = getDb();
@@ -96,7 +97,7 @@ async function createEstimateDownstreamInTransaction(
     const [tenant] = await tx.select({ timezone: tenants.defaultTimezone }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
     const [rule] = await tx.insert(recurrenceRules).values({ tenantId, frequencyType: "weekly", timezone: location.timezone ?? tenant?.timezone ?? "UTC" }).returning();
     if (!rule) throw new Error("Could not create the service schedule.");
-    await tx.insert(servicePlans).values({ tenantId, customerId, serviceLocationId: location.id, organizationLocationId: location.organizationLocationId, serviceId: service.id, recurrenceRuleId: rule.id, effectiveFrom: new Date().toISOString().slice(0, 10), status: "active", pricingSnapshot: { totalMinor: Number(revision.totalMinor), estimateRevisionId: revision.id }, billingConfiguration: { type: "per_job" } });
+    await tx.insert(servicePlans).values({ tenantId, customerId, serviceLocationId: location.id, organizationLocationId: location.organizationLocationId, serviceId: service.id, recurrenceRuleId: rule.id, effectiveFrom: businessDate(new Date(), location.timezone ?? tenant?.timezone ?? "UTC"), status: "active", pricingSnapshot: { totalMinor: Number(revision.totalMinor), estimateRevisionId: revision.id }, billingConfiguration: { type: "per_job" } });
   } else {
     await tx.insert(jobs).values({ tenantId, organizationId: customer.organizationId, organizationLocationId: location.organizationLocationId, customerId, serviceLocationId: location.id, serviceId: service.id, status: "unscheduled", priceSnapshot: { totalMinor: Number(revision.totalMinor), estimateRevisionId: revision.id } });
   }
@@ -436,6 +437,7 @@ async function servicePlanAction(actor: SessionActor, planId: string, action: st
   const db = getDb();
   const [plan] = await db.select().from(servicePlans).where(and(eq(servicePlans.id, planId), eq(servicePlans.tenantId, actor.tenantId))).limit(1);
   if (!plan || (!actor.allLocations && (!plan.organizationLocationId || !actor.locationIds.has(plan.organizationLocationId)))) throw new DomainError("NOT_FOUND", "Service plan not found.", 404);
+  const [tenant] = await db.select({ timezone: tenants.defaultTimezone }).from(tenants).where(eq(tenants.id, actor.tenantId)).limit(1);
   const next = action === "pause" ? "paused" : action === "resume" ? "active" : action === "cancel" ? "canceled" : "";
   if (!next) throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
   const updated = await db.transaction(async (tx) => {
@@ -443,7 +445,8 @@ async function servicePlanAction(actor: SessionActor, planId: string, action: st
     const [current] = await tx.select().from(servicePlans).where(and(eq(servicePlans.id, planId), eq(servicePlans.tenantId, actor.tenantId))).limit(1);
     if (!current) throw new DomainError("NOT_FOUND", "Service plan not found.", 404);
     assertTransition("servicePlan", current.status, next);
-    const [saved] = await tx.update(servicePlans).set({ status: next, pauseFrom: next === "paused" ? new Date().toISOString().slice(0, 10) : null, pauseUntil: next === "active" ? null : undefined, canceledAt: next === "canceled" ? new Date() : undefined, updatedAt: new Date() }).where(and(eq(servicePlans.id, planId), eq(servicePlans.tenantId, actor.tenantId))).returning();
+    const now = new Date();
+    const [saved] = await tx.update(servicePlans).set({ status: next, pauseFrom: next === "paused" ? businessDate(now, tenant?.timezone ?? "UTC") : null, pauseUntil: next === "active" ? null : undefined, canceledAt: next === "canceled" ? now : undefined, updatedAt: now }).where(and(eq(servicePlans.id, planId), eq(servicePlans.tenantId, actor.tenantId))).returning();
     await recordEvent(actor, { type: `service_plan.${next}`, entityType: "service_plan", entityId: planId, auditAction: `service_plan.${next}`, before: { status: current.status }, after: { status: next }, locationId: current.organizationLocationId }, tx);
     return saved;
   });

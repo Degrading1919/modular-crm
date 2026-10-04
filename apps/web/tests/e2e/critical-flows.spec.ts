@@ -57,7 +57,9 @@ test("technician sees only field work and can inspect assigned route", async ({ 
 
   await page.getByRole("navigation", { name: "Field navigation" }).getByRole("link", { name: "Route" }).click();
   await expect(page.getByRole("heading", { name: "Your route" })).toBeVisible();
-  const routeDateLabel = await page.evaluate((value) => new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" }).format(new Date(value)), routeDate);
+  // A route date is a calendar day, not an instant in the viewer's timezone.
+  const routeDateLabel = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
+    .format(new Date(`${routeDate}T00:00:00.000Z`));
   await expect(page.getByRole("heading", { name: routeDateLabel, exact: true })).toBeVisible();
   const openJobHrefs = await page.getByRole("link", { name: /Open job/i }).evaluateAll((links) => links.map((link) => link.getAttribute("href")));
   expect(openJobHrefs).toEqual([

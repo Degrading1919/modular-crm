@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { api, body, date, friendly, money, patch, unwrapItem, unwrapItems } from "./api";
+import { businessDate } from "../lib/dates";
 import { Badge, Empty, Icon, Loading, Logo, Modal, Notice, useResource } from "./ui";
 import PayrollApp from "./PayrollApp";
 import DeveloperApp from "./DeveloperApp";
@@ -63,7 +64,7 @@ const routeFeatureKeys: Record<string, string[]> = {
   franchise: ["multi_location_management"],
 };
 
-type BusinessUser = { user?: { name?: string; email?: string; role?: string; permissions?: string[] }; tenant?: { name?: string; packKey?: string } };
+type BusinessUser = { user?: { name?: string; email?: string; role?: string; permissions?: string[] }; tenant?: { name?: string; packKey?: string; timezone?: string } };
 
 export default function BusinessApp({ section }: { section: string[] }) {
   const current = section[0] || "dashboard";
@@ -75,6 +76,7 @@ export default function BusinessApp({ section }: { section: string[] }) {
   const role = identity.data.user?.role?.toLowerCase() || "";
   const displayedName = identity.data.user?.name || "Business owner";
   const tenantName = identity.data.tenant?.name || "My business";
+  const tenantTimeZone = identity.data.tenant?.timezone || "UTC";
   const canManageFranchise = identity.data.user?.permissions?.includes("organization.franchise_manage") === true;
   const restricted = role.includes("technician") || role.includes("customer");
 
@@ -104,11 +106,11 @@ export default function BusinessApp({ section }: { section: string[] }) {
       <nav className="sidebar-nav" aria-label="Business navigation">{visibleNav.map((group) => <div key={group.label}><div className="nav-label">{group.label}</div>{group.items.map((item) => <Link key={item.key} className={`sidebar-link ${current === item.key ? "active" : ""}`} href={`/app/${item.key}`} onClick={() => setMenuOpen(false)}><Icon name={item.icon}/>{item.label}</Link>)}</div>)}</nav>
       <div className="sidebar-bottom"><button type="button" className="sidebar-link" style={{ width: "100%", border: 0, background: "transparent" }} onClick={logout}><Icon name="arrow"/>Sign out</button><div className="sidebar-account"><div className="avatar">{displayedName.slice(0, 1)}</div><div><strong>{displayedName}</strong><span>{friendly(identity.data.user?.role)}</span></div></div></div>
     </aside>
-    <main className="app-main"><header className="topbar"><div className="topbar-left"><button type="button" className="icon-button mobile-menu" aria-label="Open menu" onClick={() => setMenuOpen(true)}><Icon name="menu"/></button><span className="location-chip"><Icon name="building" size={16}/>{tenantName}</span><span className="topbar-date">{new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric" }).format(new Date())}</span></div><div className="topbar-right"><Link href="/app/tickets" className="icon-button" aria-label="Requests"><Icon name="bell"/></Link><div className="avatar" title={displayedName}>{displayedName.slice(0, 1)}</div></div></header><div className="content">
+    <main className="app-main"><header className="topbar"><div className="topbar-left"><button type="button" className="icon-button mobile-menu" aria-label="Open menu" onClick={() => setMenuOpen(true)}><Icon name="menu"/></button><span className="location-chip"><Icon name="building" size={16}/>{tenantName}</span><span className="topbar-date">{date(new Date().toISOString(), { weekday: "long", month: "long", day: "numeric", timeZone: tenantTimeZone })}</span></div><div className="topbar-right"><Link href="/app/tickets" className="icon-button" aria-label="Requests"><Icon name="bell"/></Link><div className="avatar" title={displayedName}>{displayedName.slice(0, 1)}</div></div></header><div className="content">
       {waitingForCapabilities ? <Loading label="Checking your workspace tools…"/> : routeBlocked ? <CapabilityUnavailable features={features} featureKeys={gatedFeatures}/> : routePermissionBlocked ? <Empty title="You don’t have access to franchise settings" description="Ask a business owner to manage franchise units and royalty statements." action={<Link className="btn btn-primary" href="/app/dashboard">Back to overview</Link>}/> : <>
         {current === "dashboard" && <Dashboard name={displayedName} features={features} />}
-        {current === "schedule" && <Schedule />}
-        {current === "routes" && <Routes />}
+        {current === "schedule" && <Schedule timeZone={tenantTimeZone} />}
+        {current === "routes" && <Routes timeZone={tenantTimeZone} />}
         {current === "sales" && <Hub title="Sales & services" subtitle="Build your pipeline, send estimates, and keep offerings current." features={features} cards={[{ title: "Estimates", text: "Create and follow up on proposals.", href: "/app/estimates", icon: "receipt", featureKeys: ["estimate_management"] }, { title: "Service catalog", text: "Manage what you offer and starting prices.", href: "/app/services", icon: "box", featureKeys: ["service_catalog"] }, { title: "Service plans", text: "See and manage recurring work.", href: "/app/service-plans", icon: "calendar", featureKeys: ["recurring_service_management"] }, { title: "Leads", text: "Move inquiries into active customers.", href: "/app/leads", icon: "spark" }]} />}
         {current === "billing" && <Hub title="Get paid" subtitle="Track invoices, balances, and money collected." features={features} cards={[{ title: "Invoices", text: "Issue invoices and see open balances.", href: "/app/invoices", icon: "receipt", featureKeys: ["invoicing"] }, { title: "Payments", text: "Review completed and failed payments.", href: "/app/payments", icon: "wallet", featureKeys: ["payment_collection"] }, { title: "Connections", text: "Choose how you accept payments.", href: "/app/connections", icon: "plug" }]} />}
         {current === "connections" && <Connections role={role} permissions={identity.data.user?.permissions} />}
@@ -302,10 +304,10 @@ function PaymentAction({ invoice, onDone }: { invoice: Entity; onDone: () => voi
   return <><button type="button" className="btn btn-primary" onClick={() => { setPaymentKey(crypto.randomUUID()); setOpen(true); }}>Record payment</button>{open && <Modal title="Record a payment" onClose={() => setOpen(false)}><form onSubmit={submit}><p className="subtle">Use the local demo payment provider to update this invoice.</p><div className="field"><label htmlFor="pay-amount">Amount</label><input id="pay-amount" type="number" min="0.01" step="0.01" required value={amount} onChange={(event) => { setAmount(event.target.value); setPaymentKey(crypto.randomUUID()); }}/></div>{error && <div style={{ marginTop: 15 }}><Notice kind="error" text={error}/></div>}<div className="modal-footer"><button type="button" className="btn btn-secondary" onClick={() => setOpen(false)}>Cancel</button><button className="btn btn-primary" type="submit" disabled={saving}>{saving ? "Processing…" : "Record payment"}</button></div></form></Modal>}</>;
 }
 
-function Schedule() {
+function Schedule({ timeZone }: { timeZone: string }) {
   const jobs = useResource<{ items: Entity[] }>("/jobs", { items: [] });
   const staff = useResource<{ items: Entity[] }>("/staff", { items: [] });
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0, 10));
+  const [selectedDate, setSelectedDate] = useState(() => businessDate(new Date(), timeZone));
   const [selectedJob, setSelectedJob] = useState<Entity | null>(null);
   const [technicianId, setTechnicianId] = useState("");
   const [error, setError] = useState("");
@@ -329,11 +331,11 @@ function Schedule() {
   </>;
 }
 
-function Routes() {
+function Routes({ timeZone }: { timeZone: string }) {
   const result = useResource<{ items: Entity[] }>("/routes", { items: [] });
   const staff = useResource<{ items: Entity[] }>("/staff", { items: [] });
   const [open, setOpen] = useState(false);
-  const [dateValue, setDateValue] = useState(new Date().toISOString().slice(0, 10));
+  const [dateValue, setDateValue] = useState(() => businessDate(new Date(), timeZone));
   const [technicianId, setTechnicianId] = useState("");
   const [selected, setSelected] = useState<Entity | null>(null);
   const [error, setError] = useState("");
