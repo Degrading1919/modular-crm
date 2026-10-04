@@ -15,9 +15,17 @@ async function expectPaymentRows(page: import("@playwright/test").Page, response
   const payment = items.find((item: { customerName: string; amountCents: number }) => item.customerName === "Carter Household" && item.amountCents === 2500);
   expect(payment).toBeDefined();
   // A customer may have several legitimate payments; identify one record by ID.
-  const row = page.getByRole("table").getByRole("row").filter({ has: page.locator(`a[href="/app/payments/${payment.id}"]`) });
+  const row = page.getByRole("table").locator(`tr[data-record-id="${payment.id}"]`);
   await expect(row.getByText("Carter Household", { exact: true })).toBeVisible();
+  await expect(page.locator('a[href^="/app/payments/"]')).toHaveCount(0);
   await expect(page.getByRole("button", { name: "New payment", exact: true })).toHaveCount(0);
+  const receipt = await page.request.get(`/api/v1/documents/receipt/${payment.id}`);
+  expect(receipt.status()).toBe(200);
+  expect(await receipt.json()).toMatchObject({ item: { kind: "receipt", title: "Payment receipt" } });
+  await row.getByRole("link", { name: "View receipt", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/app/documents/receipt/${payment.id}$`));
+  await expect(page.getByRole("heading", { name: "Payment receipt", exact: true })).toBeVisible();
+  await page.goto("/app/payments");
 }
 
 test("Morgan's operational destinations work without owner administration", async ({ page }) => {
@@ -26,7 +34,8 @@ test("Morgan's operational destinations work without owner administration", asyn
   expect(catalog.status()).toBe(200);
   const identity = await page.request.get("/api/v1/auth/me");
   const permissions = (await identity.json()).user.permissions as string[];
-  for (const permission of ["tenant.billing_manage", "tenant.update", "tenant.security_manage", "tenant.delete", "organization.franchise_manage", "compensation.read", "payroll.read", "payments.refund"]) {
+  expect(permissions).toContain("organization.read");
+  for (const permission of ["tenant.billing_manage", "tenant.update", "tenant.security_manage", "tenant.delete", "organization.update", "organization.locations_manage", "organization.franchise_manage", "compensation.read", "payroll.read", "payments.refund"]) {
     expect(permissions).not.toContain(permission);
   }
   for (const mutation of [
@@ -34,19 +43,25 @@ test("Morgan's operational destinations work without owner administration", asyn
     await page.request.post("/api/v1/capabilities/setup", { data: { selection: "custom", answers: {}, moduleKeys: [] } }),
     await page.request.patch("/api/v1/capabilities/route-planning", { data: { enabled: false } }),
   ]) expect(mutation.status()).toBe(403);
+  for (const endpoint of ["organization", "organization/locations"]) {
+    const createLocation = await page.request.post(`/api/v1/${endpoint}`, { data: { name: "Morgan cannot create this location", address: "12 Test Road" } });
+    expect(createLocation.status()).toBe(403);
+    expect(await createLocation.json()).toMatchObject({ error: { code: "FORBIDDEN" } });
+  }
 
   const navigation = page.getByRole("navigation", { name: "Business navigation" });
   for (const name of ["My capabilities", "Developer", "Pay & time", "Franchise"]) {
     await expect(navigation.getByRole("link", { name, exact: true })).toHaveCount(0);
   }
-  for (const [link, heading] of [["Schedule", "Schedule"], ["Jobs", "Jobs"], ["Routes", "Routes"], ["Get paid", "Get paid"], ["Staff", "Staff"], ["Connections", "Connections"], ["Settings", "Settings"]]) {
-    const endpoint = ({ Schedule: "jobs", Jobs: "jobs", Routes: "routes", Staff: "staff", Connections: "connections", Settings: "settings" } as Record<string, string>)[link];
+  for (const [link, heading] of [["Schedule", "Schedule"], ["Jobs", "Jobs"], ["Routes", "Routes"], ["Get paid", "Get paid"], ["Staff", "Staff"], ["Connections", "Connections"], ["Settings", "Settings"], ["Locations", "Locations"]]) {
+    const endpoint = ({ Schedule: "jobs", Jobs: "jobs", Routes: "routes", Staff: "staff", Connections: "connections", Settings: "settings", Locations: "organization" } as Record<string, string>)[link];
     const response = endpoint ? page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/${endpoint}` && response.request().method() === "GET") : null;
     await navigation.getByRole("link", { name: link, exact: true }).click();
     await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
     if (response) expect((await response).status()).toBe(200);
     await expect(page.getByText("This tool isn’t available yet.", { exact: true })).toHaveCount(0);
     await expect(page.getByText("You do not have access to this action.", { exact: true })).toHaveCount(0);
+    if (link === "Locations") await expect(page.getByRole("button", { name: "New location", exact: true })).toHaveCount(0);
   }
   await page.goto("/app/billing");
   const invoiceResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/invoices");
@@ -81,6 +96,9 @@ test("owner retains operational and administrative workspace access", async ({ p
   await expect(page.getByRole("button", { name: "Save my capabilities" })).toBeEnabled();
   await navigation.getByRole("link", { name: "Developer", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Developer tools", exact: true })).toBeVisible();
+  await navigation.getByRole("link", { name: "Locations", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Locations", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "New location", exact: true })).toBeEnabled();
   const payments = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/payments" && response.request().method() === "GET");
   await page.goto("/app/payments");
   await expectPaymentRows(page, await payments);

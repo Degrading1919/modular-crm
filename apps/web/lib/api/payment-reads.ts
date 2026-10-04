@@ -12,8 +12,9 @@ export async function handlePaymentReads(request: Request, path: string[], actor
   requireStaff(actor);
   requirePermission(actor, "payments.read");
 
-  // Match receipt object scope: the whole payment is visible only when every
-  // allocated invoice is visible. An unallocated payment uses customer scope.
+  // Use the invoice-list location model: every allocated invoice's business
+  // location must be in scope. An unallocated payment uses customer scope.
+  // Receipt documents separately enforce their stricter object-access rules.
   // EXISTS avoids duplicate rows for payments applied to several invoices.
   const locations = uuidArray(actor.locationIds);
   const invalidAllocation = sql`not exists (

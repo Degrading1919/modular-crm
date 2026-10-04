@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-04 — Office location access is read-only by default; Payments links use receipts
+
+- **Status:** Accepted
+- **Area:** UX / Implementation
+- **Decision:** Deny `organization.update` and `organization.locations_manage` in the canonical Office template, retaining scoped organization reads, operational permissions, Owner authority, and explicit custom-role grants. Payments must not link to nonexistent generic detail routes; receipt-capable states use the existing receipt surface and other states remain non-linked in tables and cards. Describe payment collection scope as invoice-list-compatible location scope, not receipt-equivalent object access.
+- **Rationale:** PR #5 review exposed default location-write authority contrary to the documented Office policy, and populated payment rows exposed an unimplemented detail destination. The read-only collection authorization is unchanged; receipt documents apply their own stricter object checks.
+- **Authoritative doc:** `docs/V1_PERMISSIONS.md`, `docs/PRODUCT_SCOPE.md`, `docs/ARCHITECTURE.md`
+
 ## 2026-10-04 — Workspace tools require both capability and staff permission
 
 - **Status:** Accepted

@@ -28,7 +28,7 @@ export type RoleTemplate = "owner" | "office" | "technician";
 
 const officeDenied = new Set<Permission>([
   "tenant.update", "tenant.billing_manage", "tenant.security_manage", "tenant.audit_read", "tenant.delete",
-  "organization.franchise_manage", "organization.rollup_reports_read", "roles.manage", "compensation.read", "compensation.manage",
+  "organization.update", "organization.locations_manage", "organization.franchise_manage", "organization.rollup_reports_read", "roles.manage", "compensation.read", "compensation.manage",
   "staff.invite", "staff.deactivate", "services.manage", "pricing.manage", "promotions.manage",
   "invoices.void", "payments.refund", "billing.settings_manage", "tax.manage",
   "automations.create", "automations.update", "automations.activate", "automations.archive", "automations.runs_retry",

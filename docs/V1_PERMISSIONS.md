@@ -38,7 +38,7 @@ Default:
 
 Default:
 - Owner/Admin: all
-- Office/Manager: read, location operational read as needed
+- Office/Manager: `organization.read` only by default; `organization.update` and `organization.locations_manage` require explicit grants
 - Field Technician: read assigned/basic location info only through scoped view models
 
 ### Staff and access

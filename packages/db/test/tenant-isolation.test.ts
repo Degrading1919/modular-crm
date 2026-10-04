@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { permissionsForRole, type Permission } from "@modular-crm/domain";
 import { fileURLToPath } from "node:url";
 import type { Database } from "../src/client.ts";
@@ -33,11 +33,15 @@ afterAll(async () => { await pglite?.close(); });
 describe("tenant-scoped persistence", () => {
   it("repairs seeded office whitelist drift from the canonical role template", async () => {
     await db.update(rolePermissions).set({ allowed: false }).where(eq(rolePermissions.roleTemplateId, seedIds.happyOfficeRole));
+    // Simulate the former canonical organization write grants as well as read drift.
+    await db.update(rolePermissions).set({ allowed: true }).where(and(eq(rolePermissions.roleTemplateId, seedIds.happyOfficeRole), inArray(rolePermissions.permissionKey, ["organization.update", "organization.locations_manage"])));
     await seedDevelopment(db);
     const rows = await db.select().from(rolePermissions).where(eq(rolePermissions.roleTemplateId, seedIds.happyOfficeRole));
     const template = permissionsForRole("office");
     for (const row of rows) expect(row.allowed, row.permissionKey).toBe(template.has(row.permissionKey as Permission));
     expect(rows.filter((row) => row.allowed).map((row) => row.permissionKey).sort()).toEqual([...template].sort());
+    expect(rows.find((row) => row.permissionKey === "organization.read")?.allowed).toBe(true);
+    for (const key of ["organization.update", "organization.locations_manage"]) expect(rows.find((row) => row.permissionKey === key)?.allowed, key).toBe(false);
     // The technician's deliberately narrower seeded fixture is not rewritten.
     const technician = await db.select().from(rolePermissions).where(eq(rolePermissions.roleTemplateId, seedIds.happyTechRole));
     expect(technician.find((row) => row.permissionKey === "communications.send")?.allowed).toBe(false);
