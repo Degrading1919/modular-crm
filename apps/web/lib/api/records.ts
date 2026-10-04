@@ -15,6 +15,7 @@ import { json, readBody } from "./http";
 import { first, normalized, rows, uuidArray } from "./sql";
 import { calculateServicePlanPrice, servicePlanFrequencyKey, type PlanScheduleVersion } from "./plan-lifecycle";
 import { reviseEstimate } from "./estimate-revisions";
+import { fieldTicketScope } from "./ticket-scope";
 
 type RecordResource = "leads" | "customers" | "jobs" | "estimates" | "invoices" | "service-plans" | "tickets" | "services";
 const resources = new Set<RecordResource>(["leads", "customers", "jobs", "estimates", "invoices", "service-plans", "tickets", "services"]);
@@ -40,12 +41,8 @@ function assertLocationAccess(actor: SessionActor, locationId: string | null): v
 async function assertTicketAccess(actor: SessionActor, id: string): Promise<void> {
   requireStaff(actor);
   if (actor.role === "technician") {
-    // Technicians may change only tickets they own or that belong to a job assigned to them, matching their field ticket list.
-    first(await rows(sql`select t.id from tickets t
-      where t.id=${id} and t.tenant_id=${actor.tenantId}
-        and (t.assigned_membership_id=${actor.membershipId} or (t.created_by_actor_type='staff' and t.created_by_actor_id=${actor.userId})
-          or exists (select 1 from job_assignments ja where ja.tenant_id=t.tenant_id and ja.job_id=t.job_id
-            and ja.membership_id=${actor.membershipId} and ja.removed_at is null)) limit 1`));
+    // Technicians may change only the tickets their field ticket list shows them.
+    first(await rows(sql`select t.id from tickets t where t.id=${id} and t.tenant_id=${actor.tenantId} and ${fieldTicketScope(actor)} limit 1`));
     return;
   }
   first(await rows(sql`select t.id from tickets t
