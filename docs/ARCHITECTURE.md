@@ -113,6 +113,10 @@ PR #4 verification on 2026-10-04 reproduced an existing PGlite TCP transport iso
 
 A deterministic two-client protocol check reproduces the collision on both revisions without seed data or preceding browser tests: client A parses an unnamed statement, client B replaces it, and client A's bind fails with `08P01`. An independently executed query can likewise remove client A's unnamed portal (`34000`). No date-test clock or capability mutation is necessary. This is an emulator limitation, not evidence of a date-semantic or production authentication regression. Keep authentication and browser assertions intact; do not hide it with retries, sleeps, or reordered tests.
 
+## Continuous integration boundary
+
+GitHub pull requests (including stacked bases) and pushes to `main` run independent lint, typecheck, unit/integration, production-build and complete browser gates. The browser app/worker use fresh real PostgreSQL 17 and local Mailpit services; PGlite TCP is for local convenience only. Existing in-process unit fixtures remain isolated. CI uses pinned pnpm, Node 22, frozen installs and temporary generated secrets, never deployment credentials, and never merges or deploys. Preserve Playwright's one worker and zero retries; see `docs/V1_DEVELOPER_WORKFLOW.md` for the workflow and failure diagnostics.
+
 ## Provider boundaries
 
 Business logic should depend on capabilities rather than providers.
