@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-05 — Client loading follows selection and explicit refresh, not render identity
+
+- **Status:** Accepted
+- **Area:** Architecture / Implementation
+- **Decision:** Keep client loading dependencies stable and complete: only meaningful endpoint, permission, identity, record selection or explicit refresh changes cause reads. Enforce exhaustive hook dependencies as errors and measure idle API GET counts across owner, field and portal browser flows without retries or increased timeouts.
+- **Rationale:** A render-created default history endpoint continuously retriggered the automation loading effect, generating hundreds of requests and transiently hiding completed/empty results. Lint fixes must not introduce equivalent loops in other effects.
+- **Authoritative doc:** `docs/ARCHITECTURE.md`
+
 ## 2026-10-05 — Production startup fails closed; readiness observes database and worker state
 
 - **Status:** Accepted

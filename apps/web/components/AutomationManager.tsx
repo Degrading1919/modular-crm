@@ -5,6 +5,7 @@ import { api, body, date, friendly, patch, unwrapItems } from "./api";
 import AutomationRuleBuilder, { type AutomationRuleBuilderRule } from "./AutomationRuleBuilder";
 
 const NO_PERMISSIONS: readonly string[] = [];
+const defaultRunsEndpoint = (ruleId?: string) => ruleId ? `/automations/${encodeURIComponent(ruleId)}/runs?limit=100` : "/automations/runs?limit=100";
 
 type AutomationRule = AutomationRuleBuilderRule & {
   source?: string;
@@ -75,7 +76,7 @@ function statusClass(status: string | null | undefined): string {
 
 export default function AutomationManager({
   rulesEndpoint = "/automations",
-  runsEndpoint = (ruleId) => ruleId ? `/automations/${encodeURIComponent(ruleId)}/runs?limit=100` : "/automations/runs?limit=100",
+  runsEndpoint = defaultRunsEndpoint,
   retryEndpoint = (runId) => `/automations/runs/${encodeURIComponent(runId)}/retry`,
   onChanged,
   permissions = NO_PERMISSIONS,
@@ -91,6 +92,8 @@ export default function AutomationManager({
   const [busyRunId, setBusyRunId] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  // Equivalent permission arrays from a parent are not a new history selection.
+  const canReadRuns = permissions.includes("automations.runs_read");
 
   const loadRules = useCallback(async () => {
     setLoadingRules(true);
@@ -105,7 +108,7 @@ export default function AutomationManager({
   }, [rulesEndpoint]);
 
   const loadRuns = useCallback(async (ruleId: string) => {
-    if (!permissions.includes("automations.runs_read")) { setRuns([]); setLoadingRuns(false); return; }
+    if (!canReadRuns) { setRuns([]); setLoadingRuns(false); return; }
     setLoadingRuns(true);
     try {
       const result = await api<{ items?: AutomationRun[] }>(runsEndpoint(ruleId || undefined));
@@ -116,7 +119,7 @@ export default function AutomationManager({
     } finally {
       setLoadingRuns(false);
     }
-  }, [runsEndpoint, permissions]);
+  }, [runsEndpoint, canReadRuns]);
 
   useEffect(() => { void loadRules(); }, [loadRules]);
   useEffect(() => { void loadRuns(selectedRuleId); }, [loadRuns, selectedRuleId]);

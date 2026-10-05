@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, friendly } from "./api";
 
 type IconName = "grid" | "users" | "calendar" | "route" | "briefcase" | "receipt" | "chart" | "globe" | "plug" | "settings" | "spark" | "bell" | "menu" | "close" | "arrow" | "plus" | "check" | "clock" | "map" | "wallet" | "search" | "chevron" | "external" | "download" | "person" | "shield" | "box" | "ticket" | "send" | "building" | "time" | "more" | "warning" | "refresh";
@@ -78,6 +78,7 @@ export function useResource<T>(path: string | null, initial: T) {
   const [loading, setLoading] = useState(Boolean(path));
   const [error, setError] = useState("");
   const [version, setVersion] = useState(0);
+  const reload = useCallback(() => setVersion((current) => current + 1), []);
   useEffect(() => {
     if (!path) return;
     let active = true;
@@ -85,7 +86,7 @@ export function useResource<T>(path: string | null, initial: T) {
     api<T>(path).then((result) => { if (active) { setData(result); setError(""); } }).catch((issue) => { if (active) setError(issue.message); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [path, version]);
-  return { data, loading, error, setData, reload: () => setVersion((current) => current + 1) };
+  return { data, loading, error, setData, reload };
 }
 
 export function Loading({ label = "Loading your workspace…" }: { label?: string }) {

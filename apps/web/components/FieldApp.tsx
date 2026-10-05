@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, body, date, friendly, unwrapItem, unwrapItems } from "./api";
 import { Badge, Empty, Icon, Loading, Logo, Modal, Notice, useResource } from "./ui";
 import PayrollApp from "./PayrollApp";
@@ -60,11 +60,11 @@ export default function FieldApp({ section }: { section: string[] }) {
     }).catch(() => {});
     return () => { cancelled = true; };
   }, [userId, tenantId]);
-  function persist(items: OfflineOperation[]) {
+  const persist = useCallback((items: OfflineOperation[]) => {
     if (!saveQueue(userId, tenantId, items)) throw new Error("This device could not save the field update and its evidence. Free up device storage and try again.");
     setOperations(items);
-  }
-  async function syncQueue(retryId?: string) {
+  }, [userId, tenantId]);
+  const syncQueue = useCallback(async (retryId?: string) => {
     const before = readQueue(userId, tenantId);
     if (!before.length) return;
     if (retryId) persist(readQueue(userId, tenantId).map((item) => item.id === retryId ? { ...item, status: "pending", error: undefined } : item));
@@ -75,12 +75,12 @@ export default function FieldApp({ section }: { section: string[] }) {
     if (before.some((item) => !remaining.some((retained) => retained.id === item.id))) window.dispatchEvent(new Event("modular-field-refreshed"));
     setSyncError(remaining.find((item) => item.error) ? fieldErrorText(remaining.find((item) => item.error)!.error) : "");
     if (!remaining.length) setNotice("Your field updates are synced.");
-  }
-  async function syncPending(retryId?: string) {
+  }, [userId, tenantId, persist]);
+  const syncPending = useCallback(async (retryId?: string) => {
     if (!userId || !tenantId) return;
     try { await withQueueLock(queueKey(userId, tenantId), () => syncQueue(retryId)); }
     catch (issue) { setSyncError((issue as Error).message); }
-  }
+  }, [userId, tenantId, syncQueue]);
   useEffect(() => {
     if (!userId || !tenantId) return;
     const handler = () => void syncPending();
@@ -89,7 +89,7 @@ export default function FieldApp({ section }: { section: string[] }) {
     window.addEventListener("storage", refresh);
     if (navigator.onLine) void syncPending();
     return () => { window.removeEventListener("online", handler); window.removeEventListener("storage", refresh); };
-  }, [userId, tenantId]);
+  }, [userId, tenantId, syncPending]);
   async function mutate(path: string, payload: unknown) {
     if (!userId || !tenantId) throw new Error("Sign in again before saving field updates.");
     const record = payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : { value: payload };

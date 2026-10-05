@@ -7,6 +7,7 @@ export default defineConfig([
   ...nextTypescript,
   {
     rules: {
+      "react-hooks/exhaustive-deps": "error",
       "@typescript-eslint/no-explicit-any": "off",
       "react-hooks/immutability": "off",
       "react-hooks/set-state-in-effect": "off",
