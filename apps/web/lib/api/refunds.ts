@@ -19,7 +19,7 @@ const refundRequest = z.object({
   idempotencyKey: z.string().trim().min(1).max(200).optional(),
 });
 
-function refundId(tenantId: string, invoiceId: string, key: string): string {
+export function refundId(tenantId: string, invoiceId: string, key: string): string {
   const bytes = createHash("sha256").update(`${tenantId}:${invoiceId}:${key}`).digest().subarray(0, 16);
   bytes[6] = (bytes[6]! & 0x0f) | 0x50;
   bytes[8] = (bytes[8]! & 0x3f) | 0x80;
@@ -53,15 +53,20 @@ export async function handleInvoiceRefund(request: Request, path: string[], acto
       .where(and(eq(paymentAllocations.tenantId, actor.tenantId), eq(paymentAllocations.invoiceId, invoiceId)));
     const ids = allocated.map(({ payment }) => payment.id);
     const refundRows = ids.length
-      ? await db.select({ paymentId: refunds.paymentId, amountMinor: refunds.amountMinor }).from(refunds)
-        .where(and(eq(refunds.tenantId, actor.tenantId), eq(refunds.status, "succeeded"), inArray(refunds.paymentId, ids)))
+      ? await db.select({ paymentId: refunds.paymentId, amountMinor: refunds.amountMinor, status: refunds.status }).from(refunds)
+        .where(and(eq(refunds.tenantId, actor.tenantId), inArray(refunds.status, ["succeeded", "pending"]), inArray(refunds.paymentId, ids)))
       : [];
     const refundedByPayment = new Map<string, bigint>();
-    for (const refund of refundRows) refundedByPayment.set(refund.paymentId, (refundedByPayment.get(refund.paymentId) ?? 0n) + refund.amountMinor);
+    const pendingByPayment = new Map<string, bigint>();
+    for (const refund of refundRows) {
+      const amounts = refund.status === "pending" ? pendingByPayment : refundedByPayment;
+      amounts.set(refund.paymentId, (amounts.get(refund.paymentId) ?? 0n) + refund.amountMinor);
+    }
     return json({ items: allocated.map(({ payment, allocation }) => normalized({
       id: payment.id,
       amountCents: allocation.amountMinor,
       refundedCents: refundedByPayment.get(payment.id) ?? 0n,
+      pendingRefundCents: pendingByPayment.get(payment.id) ?? 0n,
       status: payment.status,
       sourceType: payment.sourceType,
       method: payment.recordedMethod ?? payment.sourceType,

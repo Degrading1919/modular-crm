@@ -114,6 +114,7 @@ export type ServerConfig = Readonly<{
   smtp: Readonly<{ host: string; port: number; secure: boolean; user?: string; password?: string; from: string }>;
   platformName: string;
   platformEmailLimits: Readonly<{ hourly: number; daily: number; firstWeekHourly: number; firstWeekDaily: number }>;
+  stripePayments?: Readonly<{ secretKey: string; webhookSecret: string; mode: "test" | "live" }>;
 }>;
 
 export const DEVELOPMENT_AUTH_SECRET = "dev-only-replace-before-deploying-0123456789";
@@ -187,8 +188,16 @@ export function readServerConfig(env: Record<string, string | undefined>): Serve
   const platformEmailLimits = Object.freeze({ hourly: emailLimit("PLATFORM_EMAIL_HOURLY_LIMIT", 100), daily: emailLimit("PLATFORM_EMAIL_DAILY_LIMIT", 500),
     firstWeekHourly: emailLimit("PLATFORM_EMAIL_FIRST_WEEK_HOURLY_LIMIT", 25), firstWeekDaily: emailLimit("PLATFORM_EMAIL_FIRST_WEEK_DAILY_LIMIT", 100) });
   if (platformEmailLimits.firstWeekHourly > platformEmailLimits.hourly || platformEmailLimits.firstWeekDaily > platformEmailLimits.daily) problems.push("First-week email limits must not exceed the regular limits");
+  const stripeValues = [env.PAYMENTS_STRIPE_SECRET_KEY, env.PAYMENTS_STRIPE_WEBHOOK_SECRET, env.PAYMENTS_STRIPE_MODE];
+  const stripeConfigured = stripeValues.some(Boolean);
+  if (stripeConfigured && (!/^sk_(test|live)_[A-Za-z0-9]+$/.test(env.PAYMENTS_STRIPE_SECRET_KEY ?? "")
+    || !/^whsec_[A-Za-z0-9]+$/.test(env.PAYMENTS_STRIPE_WEBHOOK_SECRET ?? "")
+    || !["test", "live"].includes(env.PAYMENTS_STRIPE_MODE ?? "")
+    || !env.PAYMENTS_STRIPE_SECRET_KEY?.startsWith(`sk_${env.PAYMENTS_STRIPE_MODE}_`))) problems.push("PAYMENTS_STRIPE_SECRET_KEY, PAYMENTS_STRIPE_WEBHOOK_SECRET and PAYMENTS_STRIPE_MODE must be complete and use the same test/live mode");
+  if (stripeConfigured && environment === "test" && env.PAYMENTS_STRIPE_MODE === "live") problems.push("Live payment credentials must not be used in tests");
   if (problems.length) throw new Error(`Invalid server configuration: ${problems.join("; ")}.`);
   return Object.freeze({ environment, databaseUrl, mockConnectors, publicBaseUrl, authBaseUrl, appBaseUrl, localSmokeTest, workerHealthPort, workerPollStaleMs, workerJobMaxMs,
     smtp: Object.freeze({ host, port, secure, user: env.SMTP_USER, password: env.SMTP_PASSWORD, from }), platformName, platformEmailLimits,
-    storageEndpoint: env.STORAGE_ENDPOINT?.trim() || undefined, storageBucket: env.STORAGE_BUCKET?.trim() || "modular-crm" });
+    storageEndpoint: env.STORAGE_ENDPOINT?.trim() || undefined, storageBucket: env.STORAGE_BUCKET?.trim() || "modular-crm",
+    ...(stripeConfigured ? { stripePayments: Object.freeze({ secretKey: env.PAYMENTS_STRIPE_SECRET_KEY!, webhookSecret: env.PAYMENTS_STRIPE_WEBHOOK_SECRET!, mode: env.PAYMENTS_STRIPE_MODE as "test" | "live" }) } : {}) });
 }

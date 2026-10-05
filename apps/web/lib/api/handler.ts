@@ -28,9 +28,16 @@ import { handleInvoiceRefund } from "./refunds";
 import { handlePaymentReads } from "./payment-reads";
 import { handleRoutesField } from "./routes-field";
 import { handleWorkflow } from "./workflows";
+import { handleOnlinePaymentWebhook } from "./online-payment-webhooks";
+import { handleOnlinePaymentAccounts } from "./online-payment-accounts";
+import { handleOnlinePaymentSession } from "./online-payment-sessions";
+import { handleOnlinePaymentRefund } from "./online-payment-refunds";
+import { handleMockHostedPayment } from "./mock-hosted-payments";
 
 export async function handleV1(request: Request, path: string[]): Promise<Response> {
   try {
+    const paymentWebhook = await handleOnlinePaymentWebhook(request, path);
+    if (paymentWebhook) return paymentWebhook;
     const portalActivation = await handlePortalActivation(request, path);
     if (portalActivation) return portalActivation;
     if (path[0] === "auth") return await handleAuthRoute(request, path);
@@ -42,6 +49,14 @@ export async function handleV1(request: Request, path: string[]): Promise<Respon
     if (publicResult) return publicResult;
     const actor = await requireActor(request);
     await requireApiCapability(actor.tenantId, path, request.method);
+    const mockCheckout = await handleMockHostedPayment(request, path, actor);
+    if (mockCheckout) return mockCheckout;
+    const onlineAccount = await handleOnlinePaymentAccounts(request, path, actor);
+    if (onlineAccount) return onlineAccount;
+    const checkout = await handleOnlinePaymentSession(request, path, actor);
+    if (checkout) return checkout;
+    const onlineRefund = await handleOnlinePaymentRefund(request, path, actor);
+    if (onlineRefund) return onlineRefund;
     const connectorOAuth = await handleConnectorOAuth(request, path, actor);
     if (connectorOAuth) return connectorOAuth;
     const websiteDomains = await handleWebsiteDomains(request, path, actor);
