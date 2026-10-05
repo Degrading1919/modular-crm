@@ -12,10 +12,10 @@ export async function loadEmailBusiness(db: Database, tenantId: string, input: {
     const [row] = await db.select({ location: organizationLocations, business: organizations }).from(organizationLocations)
       .innerJoin(organizations, and(eq(organizations.id, organizationLocations.organizationId), eq(organizations.tenantId, tenantId)))
       .where(and(eq(organizationLocations.id, locationId), eq(organizationLocations.tenantId, tenantId))).limit(1);
-    if (row) return { name: row.business.displayName, replyTo: row.location.email ?? row.business.email ?? undefined,
+    if (row) return { tenantId, customerId: input.customerId ?? undefined, name: row.business.displayName, replyTo: row.location.email ?? row.business.email ?? undefined,
       address: row.location.addressLine1 ? [row.location.addressLine1, row.location.addressLine2, row.location.city, row.location.region, row.location.postalCode, row.location.countryCode].filter(Boolean).join(", ") : undefined };
   }
   const [tenant] = await db.select({ name: tenants.name }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
   if (!tenant) throw new Error("Email business not found");
-  return { name: tenant.name };
+  return { tenantId, customerId: input.customerId ?? undefined, name: tenant.name };
 }

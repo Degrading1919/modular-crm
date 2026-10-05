@@ -2,7 +2,7 @@ import nodemailer from "nodemailer";
 import { createHash } from "node:crypto";
 import { ConnectorError, type EmailCapability, type EmailInput } from "./types.ts";
 
-export type EmailBusiness = { name: string; address?: string; replyTo?: string };
+export type EmailBusiness = { name: string; address?: string; replyTo?: string; tenantId?: string; customerId?: string };
 export type SmtpConfig = { host: string; port: number; secure: boolean; user?: string; password?: string; from: string };
 export function unsubscribeHeaders(url?: string) {
   return url ? { "List-Unsubscribe": `<${url}>`, "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" } : undefined;
@@ -21,14 +21,14 @@ export function escapeEmailHtml(value: string): string {
 export function customerEmailParts(body: string, business: EmailBusiness, unsubscribeUrl?: string) {
   const footer = [business.name, business.address].filter(Boolean).join("\n");
   return {
-    body: `${body}\n\n${footer}${unsubscribeUrl ? `\nStop automated emails: ${unsubscribeUrl}` : ""}`,
-    html: `<div>${escapeEmailHtml(body).replace(/\n/g, "<br>")}</div><hr><p>${escapeEmailHtml(footer).replace(/\n/g, "<br>")}</p>${unsubscribeUrl ? `<p><a href="${escapeEmailHtml(unsubscribeUrl)}">Stop automated emails</a></p>` : ""}`,
+    body: `${body}\n\n${footer}${unsubscribeUrl ? `\nStop promotional emails: ${unsubscribeUrl}` : ""}`,
+    html: `<div>${escapeEmailHtml(body).replace(/\n/g, "<br>")}</div><hr><p>${escapeEmailHtml(footer).replace(/\n/g, "<br>")}</p>${unsubscribeUrl ? `<p><a href="${escapeEmailHtml(unsubscribeUrl)}">Stop promotional emails</a></p>` : ""}`,
     ...(business.replyTo ? { replyTo: business.replyTo } : {}),
     ...(unsubscribeUrl ? { unsubscribeUrl } : {}),
   };
 }
 /** Runtime SMTP only. No owner setup, vendor SDK, or test-success shortcut. */
-export function createPlatformEmailSender(smtp: SmtpConfig, production: boolean, business: EmailBusiness = { name: "Modular CRM" }): EmailCapability {
+export function createPlatformEmailSender(smtp: SmtpConfig, production: boolean, business: EmailBusiness = { name: "Modular CRM" }, platformName = "Modular CRM"): EmailCapability {
   const transport = nodemailer.createTransport({ host: smtp.host, port: smtp.port, secure: smtp.secure,
     requireTLS: production && !smtp.secure, connectionTimeout: 10_000, greetingTimeout: 10_000, socketTimeout: 30_000,
     ...(smtp.user ? { auth: { user: smtp.user, pass: smtp.password } } : {}),
@@ -39,7 +39,7 @@ export function createPlatformEmailSender(smtp: SmtpConfig, production: boolean,
       throw new ConnectorError("invalid_request", "Check the email address and subject.", false);
     }
     try {
-      const sent = await transport.sendMail({ from: { name: business.name, address }, to: input.to, subject: input.subject,
+      const sent = await transport.sendMail({ from: { name: `${business.name} via ${platformName}`, address }, to: input.to, subject: input.subject,
         text: input.body, html: input.html ?? `<p>${escapeEmailHtml(input.body).replace(/\n/g, "<br>")}</p>`,
         replyTo: input.replyTo ?? business.replyTo,
         // Stable identity aids diagnostics; SMTP itself cannot guarantee exactly-once delivery.

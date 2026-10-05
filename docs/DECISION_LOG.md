@@ -4,6 +4,15 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-05 — Essential service email and shared-sender protection
+
+- **Status:** Accepted
+- **Area:** Connectors / UX / Implementation
+- **Decision:** Declare service, marketing and account purposes; promotional opt-out/address requirements must not stop service updates, and unknown custom/legacy rules default to marketing. Protect platform SMTP with shared database-backed hourly/daily limits and lower first-week limits; defer excess work durably and identify the shared sender with a configurable “via” name. Separate unsubscribe signing with HKDF and a one-release legacy verification bridge; accept bounce/complaint suppression as deferred delivery-webhook work.
+- **Rationale:** Automation origin did not establish marketing purpose, and unbounded shared sending jeopardized every tenant's sender reputation.
+- **Authoritative doc:** `docs/CONNECTOR_SYSTEM.md`, `docs/DEPLOYMENT.md`, `docs/FEATURE_CATALOG.md`
+- **Supersedes:** Automation/nontransactional equivalence and business-only From naming in “Built-in business email and purpose-scoped unsubscribe”.
+
 ## 2026-10-05 — Built-in business email and purpose-scoped unsubscribe
 
 - **Status:** Accepted

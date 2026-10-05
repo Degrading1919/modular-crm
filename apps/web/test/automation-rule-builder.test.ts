@@ -9,6 +9,10 @@ const base = {
 };
 
 describe("plain-language automation builder payload", () => {
+  it("preserves an owner's explicit service purpose and defaults unclassified messages to promotions", () => {
+    expect(buildAutomationRulePayload({ ...base, purpose: "service" }).actions[0]).toMatchObject({ purpose: "service" });
+    expect(buildAutomationRulePayload(base).actions[0]).toMatchObject({ purpose: "marketing" });
+  });
   it("creates a declarative rule contract with grouped conditions and a saved draft", () => {
     expect(buildAutomationRulePayload(base)).toEqual({
       name: "Follow up after a visit", description: "Thank the customer", triggerConfig: { event: "job.completed" },
@@ -16,13 +20,13 @@ describe("plain-language automation builder payload", () => {
         { field: "job.status", operator: "equals", value: "completed" },
         { field: "job.service_id", operator: "exists" },
       ] },
-      actions: [{ actionType: "send_email", configuration: { subject: "Visit complete", body: "Thanks for choosing us." } }], status: "draft",
+      actions: [{ actionType: "send_email", purpose: "marketing", configuration: { subject: "Visit complete", body: "Thanks for choosing us." } }], status: "draft",
     });
   });
 
   it("provides required configuration for texts and office follow-ups", () => {
     expect(buildAutomationRulePayload({ ...base, conditions: [], action: "send_sms", status: "active" }).actions[0]).toEqual({
-      actionType: "send_sms", configuration: { body: "Thanks for choosing us." },
+      actionType: "send_sms", purpose: "marketing", configuration: { body: "Thanks for choosing us." },
     });
     expect(buildAutomationRulePayload({ ...base, conditions: [], action: "create_ticket" }).actions[0]).toEqual({
       actionType: "create_ticket", configuration: { type: "general", title: "Review request", description: "Please review" },
