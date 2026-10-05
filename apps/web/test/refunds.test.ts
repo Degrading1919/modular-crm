@@ -136,7 +136,7 @@ describe("invoice refunds", () => {
 
     const additionalPayment = await handleWorkflow(new Request(`http://localhost/api/v1/invoices/${invoice.id}/pay`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ amountCents: 3_000, method: "manual", idempotencyKey: "payment-after-refund" }),
+      body: JSON.stringify({ amountCents: 3_000, method: "cash", idempotencyKey: "payment-after-refund" }),
     }), ["invoices", invoice.id, "pay"], owner);
     expect(additionalPayment?.status).toBe(200);
     expect((await additionalPayment!.json()).invoice.balanceCents).toBe(3_000);

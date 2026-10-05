@@ -64,6 +64,8 @@ export async function handleInvoiceRefund(request: Request, path: string[], acto
       refundedCents: refundedByPayment.get(payment.id) ?? 0n,
       status: payment.status,
       sourceType: payment.sourceType,
+      method: payment.recordedMethod ?? payment.sourceType,
+      reference: payment.reference,
       createdAt: payment.createdAt,
     })) });
   }

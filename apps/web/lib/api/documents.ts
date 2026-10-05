@@ -6,7 +6,7 @@ import {
   payments, payrollCalculations, payrollComponents, payrollPeriods, refunds, royaltyStatements,
   serviceLocations, servicePlans, services, user,
 } from "@modular-crm/db";
-import { DomainError, requirePermission } from "@modular-crm/domain";
+import { DomainError, paymentMethodLabel, requirePermission } from "@modular-crm/domain";
 import { getDb } from "../db";
 import { assertCustomerDocumentAccess, assertCustomerServiceLocationAccess, requireStaff, type SessionActor } from "./actor";
 import { apiError, json } from "./http";
@@ -155,7 +155,7 @@ async function receiptDocument(actor: SessionActor, id: string): Promise<Custome
   const [org] = await db.select().from(organizations).where(eq(organizations.tenantId, actor.tenantId)).limit(1);
   return { kind: "receipt", title: "Payment receipt", number: `RCPT-${row.payment.id.slice(0, 8).toUpperCase()}`, date: dateText(row.payment.receivedAt) ?? dateText(row.payment.createdAt), status: row.payment.status,
     business: branding(org?.displayName ?? actor.tenantName, org?.email, org?.phone), customer: { name: row.customer.displayName, email: row.customer.billingEmail },
-    lines: [{ description: "Payment received", amountMinor: row.payment.amountMinor }],
+    lines: [{ description: `Payment received · ${paymentMethodLabel(row.payment.recordedMethod, row.payment.sourceType)}${row.payment.reference ? ` · Reference: ${row.payment.reference}` : ""}`, amountMinor: row.payment.amountMinor }],
     totals: [{ label: "Amount paid", amountMinor: row.payment.amountMinor ?? 0, currency: row.payment.currency }],
     summary: allocations.length ? `Applied to ${allocations.map((item) => item.invoice.invoiceNumber).join(", ")}` : null };
 }

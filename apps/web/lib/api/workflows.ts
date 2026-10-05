@@ -2,11 +2,11 @@ import { createHash, randomBytes } from "node:crypto";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
-  auditEvents, completionProofs, creditAllocations, customerContacts, customers, domainEvents, estimateApprovals, estimateItems, estimateRevisions, estimates, hasUsableFeature, invoiceItems, invoices, jobAssignments, jobStatusEvents,
+  auditEvents, completionProofs, connectorInstallations, creditAllocations, customerContacts, customers, domainEvents, estimateApprovals, estimateItems, estimateRevisions, estimates, hasUsableFeature, invoiceItems, invoices, jobAssignments, jobStatusEvents,
   jobs, leads, loadTenantCapabilities, memberships, paymentAllocations, payments, recurrenceRules, refunds, serviceLocations, servicePlans, services, tenants,
   secureEstimateTokens,
 } from "@modular-crm/db";
-import { assertTransition, DomainError, invoiceFinancialPosition, requirePermission, type Permission } from "@modular-crm/domain";
+import { assertTransition, DomainError, invoiceFinancialPosition, manualPaymentMethods, requirePermission, type Permission } from "@modular-crm/domain";
 import { getCapability } from "../connectors";
 import { getDb } from "../db";
 import type { Database } from "@modular-crm/db";
@@ -375,13 +375,22 @@ async function invoiceAction(request: Request, actor: SessionActor, invoiceId: s
     return json({ item: normalized(issued) });
   }
   if (action !== "pay") throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
-  const body = await readBody(request, z.object({ amountCents: z.number().int().positive(), method: z.enum(["test", "manual"]).default("test"), fail: z.boolean().optional(), idempotencyKey: z.string().trim().min(1).max(200).optional() }));
+  const body = await readBody(request, z.object({ amountCents: z.number().int().positive(), method: z.enum(["test", "manual", ...manualPaymentMethods]), reference: z.string().trim().max(200).optional(), fail: z.boolean().optional(), idempotencyKey: z.string().trim().min(1).max(200).optional() }));
   if (actor.kind === "customer" && body.method !== "test") throw new DomainError("FORBIDDEN", "A customer payment must use the connected payment service.", 403);
+  if (actor.kind === "staff" && body.method !== "test") requirePermission(actor, "payments.record_manual");
+  const recordedMethod = body.method === "manual" ? null : body.method;
+  const reference = body.reference || null;
+  const sourceType = body.method === "test" ? "mock" : "manual";
+  let connectedMock = false;
+  if (body.method === "test") {
+    const [demo] = await db.select({ id: connectorInstallations.id }).from(connectorInstallations).where(and(eq(connectorInstallations.tenantId, actor.tenantId), eq(connectorInstallations.connectorKey, "mock-payments"), eq(connectorInstallations.status, "connected"))).limit(1);
+    connectedMock = Boolean(demo);
+  }
   const clientKey = (request.headers.get("idempotency-key") ?? body.idempotencyKey)?.trim();
   if (!clientKey || clientKey.length > 200) throw new DomainError("VALIDATION_ERROR", "Provide a payment retry key.", 422);
   const idempotencyKey = `invoice:${invoiceId}:${clientKey}`;
   // Connector hydration reads the database; do it before the invoice transaction so local PGlite cannot deadlock.
-  const capability = body.method === "test" ? await getCapability(actor.tenantId, "payments") : null;
+  const capability = body.method === "test" && connectedMock ? await getCapability(actor.tenantId, "payments") : null;
   const outcome = await db.transaction(async (tx) => {
     // Lock the invoice before checking retries and its balance so concurrent payments cannot over-allocate.
     await tx.execute(sql`SELECT id FROM invoices WHERE tenant_id = ${actor.tenantId} AND id = ${invoiceId} FOR UPDATE`);
@@ -389,11 +398,16 @@ async function invoiceAction(request: Request, actor: SessionActor, invoiceId: s
     if (!current) throw new DomainError("NOT_FOUND", "Invoice not found.", 404);
     const [prior] = await tx.select().from(payments).where(and(eq(payments.tenantId, actor.tenantId), eq(payments.idempotencyKey, idempotencyKey))).limit(1);
     if (prior) {
-      if (prior.amountMinor !== BigInt(body.amountCents) || prior.sourceType !== (body.method === "manual" ? "manual" : "mock")) {
+      // Pre-migration test payments have known mock provenance but no recorded method.
+      // Legacy unspecified manual requests may replay an old receipt, never create a new one.
+      const priorMethod = prior.recordedMethod ?? (prior.sourceType === "mock" ? "test" : null);
+      if (prior.amountMinor !== BigInt(body.amountCents) || prior.sourceType !== sourceType || priorMethod !== recordedMethod || prior.reference !== reference) {
         throw new DomainError("IDEMPOTENCY_CONFLICT", "This payment retry key was used for a different request.", 409);
       }
       return { payment: prior, duplicate: true, balanceCents: Number(current.balanceMinor) };
     }
+    if (body.method === "manual") throw new DomainError("VALIDATION_ERROR", "Choose how the customer paid: cash, check, card taken outside the app, or other.", 422);
+    if (body.method === "test" && !connectedMock) throw new DomainError("VALIDATION_ERROR", "Test payments are available only with a connected demo payment service.", 422);
     if (!["issued", "partially_paid", "overdue"].includes(current.status)) throw new DomainError("INVALID_TRANSITION", "This invoice is not ready for payment.", 409);
     if (body.amountCents > Number(current.balanceMinor)) throw new DomainError("VALIDATION_ERROR", "Payment exceeds the open balance.", 422);
     if (body.method === "test" && !capability) throw new DomainError("EXTERNAL_SERVICE_ERROR", "Connect test payments or record a manual payment.", 503);
@@ -405,7 +419,7 @@ async function invoiceAction(request: Request, actor: SessionActor, invoiceId: s
       status = charge.status;
       providerReference = charge.reference;
     }
-    const [payment] = await tx.insert(payments).values({ tenantId: actor.tenantId, customerId: current.customerId, status, sourceType: body.method === "manual" ? "manual" : "mock", providerReference, amountMinor: BigInt(body.amountCents), currency: current.currency, receivedAt: status === "succeeded" ? new Date() : null, failureCode: status === "failed" ? "mock_declined" : null, failureMessage: status === "failed" ? "Test payment declined" : null, idempotencyKey, recordedByActorType: actor.kind, recordedByActorId: actor.userId }).returning();
+    const [payment] = await tx.insert(payments).values({ tenantId: actor.tenantId, customerId: current.customerId, status, sourceType, recordedMethod, reference, providerReference, amountMinor: BigInt(body.amountCents), currency: current.currency, receivedAt: status === "succeeded" ? new Date() : null, failureCode: status === "failed" ? "mock_declined" : null, failureMessage: status === "failed" ? "Test payment declined" : null, idempotencyKey, recordedByActorType: actor.kind, recordedByActorId: actor.userId }).returning();
     if (!payment) throw new Error("Could not record payment");
     let balanceCents = Number(current.balanceMinor);
     if (status === "succeeded") {
@@ -425,7 +439,7 @@ async function invoiceAction(request: Request, actor: SessionActor, invoiceId: s
       await tx.update(invoices).set({ paidMinor, balanceMinor: BigInt(balanceCents), status: position.status, updatedAt: new Date() })
         .where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, actor.tenantId)));
     }
-    await recordEvent(actor, { type: status === "succeeded" ? "payment.succeeded" : "payment.failed", entityType: "payment", entityId: payment.id, payload: { invoiceId, customerId: current.customerId, amountCents: body.amountCents }, auditAction: `payment.${status}`, locationId: current.organizationLocationId }, tx);
+    await recordEvent(actor, { type: status === "succeeded" ? "payment.succeeded" : "payment.failed", entityType: "payment", entityId: payment.id, payload: { invoiceId, customerId: current.customerId, amountCents: body.amountCents, method: recordedMethod, reference }, auditAction: `payment.${status}`, locationId: current.organizationLocationId }, tx);
     return { payment, duplicate: false, balanceCents };
   });
   return json({ item: normalized(outcome.payment), duplicate: outcome.duplicate, invoice: { id: invoiceId, balanceCents: outcome.balanceCents } });

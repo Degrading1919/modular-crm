@@ -167,7 +167,7 @@ async function portalList(actor: SessionActor, resource: string): Promise<Respon
       from invoices i where i.tenant_id=${actor.tenantId} and i.customer_id=any(${uuidArray(customerIds)}) and i.status<>'draft'
         and ${invoiceLocationPredicate(actor, "i")}
       order by i.created_at desc`); break;
-    case "payments": items = await rows(sql`select p.id,p.status,p.amount_minor,p.currency,p.received_at,
+    case "payments": items = await rows(sql`select p.id,p.status,p.amount_minor,p.currency,p.received_at,coalesce(p.recorded_method,p.source_type) as method,p.reference,
         json_agg(json_build_object('invoiceId',i.id,'invoiceNumber',i.invoice_number,'appliedAmountMinor',pa.amount_minor) order by i.invoice_number) as allocations
       from payments p
       join payment_allocations pa on pa.payment_id=p.id and pa.tenant_id=p.tenant_id

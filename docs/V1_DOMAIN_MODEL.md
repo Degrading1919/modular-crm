@@ -170,6 +170,7 @@ Service/product/fee/tax/discount line.
 
 ### Payment
 Recorded payment against an invoice or account.
+Method (Cash, Check, externally taken Card, or Other) and an optional business reference are distinct from source/connector provenance. New staff recordings require an explicit method; historical unspecified methods remain unknown. See billing rules for demo payment and retry restrictions.
 
 ### Refund
 Money returned against a payment.

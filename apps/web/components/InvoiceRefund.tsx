@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { paymentMethodLabel } from "@modular-crm/domain";
 import { api, body, money } from "./api";
 
 export type RefundPaymentContext = {
@@ -9,6 +10,8 @@ export type RefundPaymentContext = {
   refundedCents: number;
   status: string;
   sourceType: string;
+  method?: string;
+  reference?: string | null;
   createdAt: string;
 };
 
@@ -81,7 +84,7 @@ export default function InvoiceRefund({
     {refundablePayments.length > 1 && <label className="field">Payment
       <select value={selected?.id ?? ""} onChange={(event) => { setPaymentId(event.target.value); setAmount(""); }}>
         {refundablePayments.map((payment) => <option key={payment.id} value={payment.id}>
-          {money(payment.amountCents - payment.refundedCents, currency)} remaining · {payment.sourceType === "manual" ? "Manual payment" : "Test payment"}
+          {money(payment.amountCents - payment.refundedCents, currency)} remaining · {paymentMethodLabel(payment.method, payment.sourceType)}{payment.reference ? ` · ${payment.reference}` : ""}
         </option>)}
       </select>
     </label>}
