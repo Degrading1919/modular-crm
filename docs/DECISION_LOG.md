@@ -4,6 +4,22 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-05 — Owner-authorized independent PR review loop
+
+- **Status:** Accepted
+- **Area:** Implementation
+- **Decision:** Codex implements one verified slice per PR and processes Claude's owner-authorized `@codex` verdicts/tasks. Corrections stay on the same PR; new slices stack on the most recent approved unmerged branch. Only the owner merges or deploys.
+- **Rationale:** Independent execution and review, explicit handoffs, and durable resume rules allow overnight progress without relying on chat memory or implementer summaries.
+- **Authoritative doc:** `docs/AGENT_REVIEW_LOOP.md`
+
+## 2026-10-04 — Operational summaries present facts, scope, and recovery truthfully
+
+- **Status:** Accepted
+- **Area:** Product / UX / Implementation
+- **Decision:** Derive upcoming/next service from eligible scoped jobs and their business calendar dates, never from recurrence guesses or fabricated time labels. Reconcile current collectible balances, separate currencies, and disclose location scope; attribute whole receipts/refunds only to known locations without exposing partially authorized allocations or inventing refund splits. Present plain recovery copy while preserving machine error contracts and offline behavior.
+- **Rationale:** Missing scheduling queries, divergent balance filters, raw-cent cards, customer-home payment attribution, and incompatible authentication error envelopes undermined trust in otherwise valid records.
+- **Authoritative doc:** `docs/PRODUCT_SCOPE.md`
+
 ## 2026-10-04 — Field actions and offline recovery share a causal contract
 
 - **Status:** Accepted

@@ -3,6 +3,8 @@ import { DomainError, requirePermission, settledPaymentStatuses } from "@modular
 import { rows, uuidArray, type DbRow } from "./sql";
 import { requireStaff, type SessionActor } from "./actor";
 import { json } from "./http";
+import { businessTimeZone, jobBusinessDate, openInvoiceBalance, upcomingJob } from "./read-facts";
+import { reportColumns, reportValue } from "../presentation";
 
 export type ReportingActor = SessionActor & { kind: "staff"; organizationId: string; membershipId: string };
 type ReportType = "financial" | "customers" | "jobs" | "routes" | "staff" | "inventory" | "locations";
@@ -57,7 +59,7 @@ export function buildReportScopeCtes(actor: ReportingActor, options: { rollup?: 
         AND l.organization_id IN (SELECT id FROM authorized_organizations)
         AND (${includeChildren} OR ${actor.allLocations} OR l.id = ANY(${uuidArray(actor.locationIds)}))
         AND (${locationId}::uuid IS NULL OR l.id = ${locationId}::uuid)
-    )`;
+    ), scope_options AS (select ${locationId}::uuid is null as include_unassigned)`;
 }
 
 function locatedScope(actor: ReportingActor, alias: string, locationColumn: string, organizationColumn: string, includeChildren = false): SQL {
@@ -66,8 +68,8 @@ function locatedScope(actor: ReportingActor, alias: string, locationColumn: stri
   return sql`${organization} IN (SELECT id FROM authorized_organizations)
     AND (
       ${location} IN (SELECT id FROM allowed_locations)
-      OR (${location} IS NULL AND ${actor.allLocations} AND ${organization} = ${actor.organizationId})
-      OR (${location} IS NULL AND ${includeChildren} AND ${organization} IN (SELECT id FROM authorized_organizations))
+      OR (${location} IS NULL AND (select include_unassigned from scope_options) AND ${actor.allLocations} AND ${organization} = ${actor.organizationId})
+      OR (${location} IS NULL AND (select include_unassigned from scope_options) AND ${includeChildren} AND ${organization} IN (SELECT id FROM authorized_organizations))
     )`;
 }
 
@@ -93,10 +95,42 @@ function customerScopeCte(actor: ReportingActor, includeChildren = false): SQL {
       AND (
         c.owning_location_id IN (SELECT id FROM allowed_locations)
         OR service_location.organization_location_id IS NOT NULL
-        OR (c.owning_location_id IS NULL AND (${actor.allLocations} OR ${includeChildren})
+        OR (c.owning_location_id IS NULL AND (select include_unassigned from scope_options) AND (${actor.allLocations} OR ${includeChildren})
           AND c.organization_id IN (SELECT id FROM authorized_organizations))
       )
   )`;
+}
+
+/** A whole receipt/refund is visible only when every allocated invoice is in scope.
+ * Refunds have no invoice allocation: cross-location receipts remain Unassigned,
+ * rather than inventing a proportional allocation or using a customer's home. */
+function paymentScopeCte(actor: ReportingActor, includeChildren = false): SQL {
+  return sql`, payment_scope AS (
+    select p.*, case when allocation.invoice_count=0 then c.owning_location_id
+      when allocation.location_count=1 and not allocation.has_unassigned then allocation.location_id else null end as location_id
+    from payments p join customers c on c.id=p.customer_id and c.tenant_id=p.tenant_id
+    cross join lateral (
+      select count(*) as invoice_count, count(distinct i.organization_location_id) as location_count,
+        min(i.organization_location_id::text)::uuid as location_id,
+        bool_or(i.organization_location_id is null) as has_unassigned
+      from payment_allocations pa join invoices i on i.tenant_id=pa.tenant_id and i.id=pa.invoice_id
+      where pa.tenant_id=p.tenant_id and pa.payment_id=p.id
+    ) allocation
+    where p.tenant_id=${actor.tenantId} and c.organization_id in (select id from authorized_organizations)
+      and not exists (select 1 from payment_allocations pa
+        left join invoices i on i.tenant_id=pa.tenant_id and i.id=pa.invoice_id
+        where pa.tenant_id=p.tenant_id and pa.payment_id=p.id
+          and (i.id is null or i.customer_id<>p.customer_id
+            or not (${locatedScope(actor, "i", "organization_location_id", "organization_id", includeChildren)})))
+      and (allocation.invoice_count>0 or (${locatedScope(actor, "c", "owning_location_id", "organization_id", includeChildren)}))
+  )`;
+}
+
+async function presentationScope(actor: ReportingActor, options: { rollup?: boolean; locationId?: string } = {}) {
+  const locations = await rows(sql`${buildReportScopeCtes(actor, options)} select name from allowed_locations order by name`);
+  return { label: locations.length ? locations.map((location) => String(location.name)).join(", ") : "No accessible business locations",
+    includesUnassigned: actor.allLocations && !options.locationId,
+    includesCrossLocationReceipts: locations.length > 1 && !options.locationId };
 }
 
 function customerLocationScope(actor: ReportingActor, includeChildren = false): SQL {
@@ -217,47 +251,41 @@ function parseLocationId(value: string | null): string | undefined {
 }
 
 async function dashboard(actor: ReportingActor): Promise<Response> {
-  const timeZone = await organizationTimeZone(actor);
-  const todayParts = dateParts(new Date(), timeZone);
-  const today = dateString(todayParts.year, todayParts.month, todayParts.day);
-  const tomorrow = addDays(today, 1);
-  const weekOut = addDays(today, 7);
   const scope = buildReportScopeCtes(actor);
   const customerScope = customerScopeCte(actor);
   const metrics = (await rows(sql`${scope}${customerScope}
     SELECT
       (SELECT count(*)::int FROM jobs j WHERE j.tenant_id = ${actor.tenantId}
         AND ${locatedScope(actor, "j", "organization_location_id", "organization_id")}
-        AND j.scheduled_date = ${today}::date AND j.status <> 'canceled') AS "todaysJobs",
+        AND j.scheduled_date = ${jobBusinessDate()} AND j.status NOT IN ('draft','unscheduled','canceled')) AS "todaysJobs",
       (SELECT count(*)::int FROM jobs j WHERE j.tenant_id = ${actor.tenantId}
         AND ${locatedScope(actor, "j", "organization_location_id", "organization_id")}
-        AND j.scheduled_date = ${today}::date AND j.status = 'scheduled'
+        AND j.scheduled_date = ${jobBusinessDate()} AND j.status = 'scheduled'
         AND NOT EXISTS (SELECT 1 FROM job_assignments ja WHERE ja.tenant_id = j.tenant_id AND ja.job_id = j.id AND ja.removed_at IS NULL)) AS "unassignedJobs",
-      (SELECT coalesce(sum(i.balance_minor), 0)::bigint FROM invoices i WHERE i.tenant_id = ${actor.tenantId}
+      (SELECT coalesce(sum(${openInvoiceBalance()}), 0)::bigint FROM invoices i WHERE i.tenant_id = ${actor.tenantId}
         AND ${locatedScope(actor, "i", "organization_location_id", "organization_id")}
-        AND i.status NOT IN ('draft', 'void') AND i.voided_at IS NULL AND i.balance_minor > 0) AS "openBalanceCents",
+        ) AS "openBalanceCents",
       (SELECT count(*)::int FROM customer_scope c WHERE c.status = 'active') AS "activeCustomers"`))[0] ?? {};
 
   const [upcoming, overdue] = await Promise.all([
     rows(sql`${scope}
-      SELECT j.id, c.display_name AS "customerName", s.name AS "serviceName",
+      SELECT j.id, j.scheduled_date AS "scheduledDate", c.display_name AS "customerName", s.name AS "serviceName",
         concat_ws(', ', sl.address_line1, sl.city, sl.region) AS address,
-        to_char(j.service_window_start AT TIME ZONE ${timeZone}, 'FMHH12:MI AM') AS "scheduledTime", j.status
+        to_char(j.service_window_start AT TIME ZONE ${businessTimeZone()}, 'FMHH12:MI AM') AS "scheduledTime", j.status
       FROM jobs j
       JOIN customers c ON c.tenant_id = j.tenant_id AND c.id = j.customer_id
       JOIN services s ON s.tenant_id = j.tenant_id AND s.id = j.service_id
       LEFT JOIN service_locations sl ON sl.tenant_id = j.tenant_id AND sl.id = j.service_location_id
       WHERE j.tenant_id = ${actor.tenantId}
         AND ${locatedScope(actor, "j", "organization_location_id", "organization_id")}
-        AND j.scheduled_date >= ${today}::date AND j.scheduled_date < ${weekOut}::date
-        AND j.status NOT IN ('canceled', 'completed', 'skipped', 'missed')
+        AND ${upcomingJob()} AND j.scheduled_date < ${jobBusinessDate()} + 7
       ORDER BY j.scheduled_date, j.service_window_start NULLS LAST, j.id LIMIT 5`),
     rows(sql`${scope}
-      SELECT count(*)::int AS count, coalesce(sum(i.balance_minor), 0)::bigint AS "balanceCents"
+      SELECT i.currency, count(*)::int AS count, coalesce(sum(i.balance_minor), 0)::bigint AS "balanceCents"
       FROM invoices i WHERE i.tenant_id = ${actor.tenantId}
         AND ${locatedScope(actor, "i", "organization_location_id", "organization_id")}
-        AND i.status NOT IN ('draft', 'void') AND i.voided_at IS NULL
-        AND i.balance_minor > 0 AND i.due_at < ${zonedMidnight(today, timeZone)}::timestamptz`),
+        AND ${openInvoiceBalance()} > 0 AND (i.due_at at time zone ${businessTimeZone("i")})::date < ${jobBusinessDate("i")}
+      GROUP BY i.currency`),
   ]);
 
   const attention: { id: string; title: string; detail: string; href: string }[] = [];
@@ -265,105 +293,87 @@ async function dashboard(actor: ReportingActor): Promise<Response> {
     id: "unassigned-jobs", title: "Jobs need assignment",
     detail: `${number(metrics.unassignedJobs)} job${number(metrics.unassignedJobs) === 1 ? "" : "s"} scheduled today do not have a technician assigned.`, href: "/app/jobs",
   });
-  if (number(overdue[0]?.count) > 0) attention.push({
+  if (sum(overdue, "count") > 0) attention.push({
     id: "overdue-invoices", title: "Overdue invoices",
-    detail: `${number(overdue[0]?.count)} invoice${number(overdue[0]?.count) === 1 ? " has" : "s have"} ${formatCents(number(overdue[0]?.balanceCents))} still due.`, href: "/app/billing",
+    detail: `${sum(overdue, "count")} invoice${sum(overdue, "count") === 1 ? " has" : "s have"} ${overdue.map((row) => formatCents(number(row.balanceCents), String(row.currency))).join(" · ")} still due.`, href: "/app/billing",
   });
 
+  const balances = (await rows(sql`${scope} select i.currency, sum(${openInvoiceBalance()})::bigint as cents from invoices i
+    where i.tenant_id=${actor.tenantId} and ${locatedScope(actor, "i", "organization_location_id", "organization_id")}
+    group by i.currency`)).map((balance) => ({ currency: balance.currency, cents: number(balance.cents) }));
   return json({ item: {
     metrics: {
       todaysJobs: number(metrics.todaysJobs), unassignedJobs: number(metrics.unassignedJobs),
-      openBalanceCents: number(metrics.openBalanceCents), activeCustomers: number(metrics.activeCustomers),
+      openBalanceCents: balances.length > 1 ? null : number(metrics.openBalanceCents), activeCustomers: number(metrics.activeCustomers),
     },
     attention,
-    upcomingJobs: upcoming.map((job) => ({ ...job, scheduledTime: job.scheduledTime ?? "Today" })),
+    upcomingJobs: upcoming,
+    scope: await presentationScope(actor),
+    balances,
   } });
 }
 
-function formatCents(cents: number): string {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(cents / 100);
+function formatCents(cents: number, currency = "USD"): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(cents / 100);
 }
 
-async function financialReport(actor: ReportingActor, period: Period, locationId?: string) {
-  const scope = buildReportScopeCtes(actor, { locationId });
-  const customers = customerScopeCte(actor);
-  const result = await rows(sql`${scope}${customers}, invoice_totals AS (
-      SELECT i.organization_location_id AS location_id,
-        coalesce(sum(i.total_minor) FILTER (WHERE i.issued_at >= ${period.startAt}::timestamptz AND i.issued_at < ${period.endAt}::timestamptz), 0)::bigint AS invoiced_cents,
-        coalesce(sum(i.balance_minor) FILTER (WHERE i.issued_at < ${period.endAt}::timestamptz AND i.balance_minor > 0), 0)::bigint AS outstanding_cents,
-        coalesce(sum(i.balance_minor) FILTER (WHERE i.balance_minor > 0 AND (i.due_at IS NULL OR i.due_at::date >= ${period.asOfDate}::date)), 0)::bigint AS current_cents,
-        coalesce(sum(i.balance_minor) FILTER (WHERE i.balance_minor > 0 AND i.due_at::date < ${period.asOfDate}::date AND ${period.asOfDate}::date - i.due_at::date BETWEEN 1 AND 30), 0)::bigint AS days_1_30_cents,
-        coalesce(sum(i.balance_minor) FILTER (WHERE i.balance_minor > 0 AND ${period.asOfDate}::date - i.due_at::date BETWEEN 31 AND 60), 0)::bigint AS days_31_60_cents,
-        coalesce(sum(i.balance_minor) FILTER (WHERE i.balance_minor > 0 AND ${period.asOfDate}::date - i.due_at::date BETWEEN 61 AND 90), 0)::bigint AS days_61_90_cents,
-        coalesce(sum(i.balance_minor) FILTER (WHERE i.balance_minor > 0 AND ${period.asOfDate}::date - i.due_at::date > 90), 0)::bigint AS over_90_cents
-      FROM invoices i WHERE i.tenant_id = ${actor.tenantId}
-        AND ${locatedScope(actor, "i", "organization_location_id", "organization_id")}
-        AND i.status NOT IN ('draft', 'void') AND i.voided_at IS NULL AND i.issued_at IS NOT NULL
-      GROUP BY i.organization_location_id
-    ), payment_totals AS (
-      SELECT c.location_id,
-        coalesce(sum(p.amount_minor) FILTER (WHERE p.status IN (${settledPaymentStatusSql}) AND p.received_at >= ${period.startAt}::timestamptz AND p.received_at < ${period.endAt}::timestamptz), 0)::bigint AS gross_collected_cents,
-        count(p.id) FILTER (WHERE p.status = 'failed' AND p.created_at >= ${period.startAt}::timestamptz AND p.created_at < ${period.endAt}::timestamptz)::int AS failed_payments
-      FROM customer_scope c LEFT JOIN payments p ON p.tenant_id = c.tenant_id AND p.customer_id = c.id
-      GROUP BY c.location_id
-    ), refund_totals AS (
-      SELECT c.location_id, coalesce(sum(r.amount_minor), 0)::bigint AS refunds_cents
-      FROM customer_scope c JOIN payments p ON p.tenant_id = c.tenant_id AND p.customer_id = c.id
-      JOIN refunds r ON r.tenant_id = p.tenant_id AND r.payment_id = p.id
-      WHERE r.status = 'succeeded' AND coalesce(r.completed_at, r.created_at) >= ${period.startAt}::timestamptz
-        AND coalesce(r.completed_at, r.created_at) < ${period.endAt}::timestamptz
-      GROUP BY c.location_id
-    ), financial_facts AS (
-      SELECT location_id, invoiced_cents, outstanding_cents, current_cents,
-        days_1_30_cents, days_31_60_cents, days_61_90_cents, over_90_cents,
-        0::bigint AS gross_collected_cents, 0::bigint AS refunds_cents, 0::int AS failed_payments
-      FROM invoice_totals
-      UNION ALL
-      SELECT location_id, 0::bigint, 0::bigint, 0::bigint, 0::bigint, 0::bigint, 0::bigint, 0::bigint,
-        gross_collected_cents, 0::bigint, failed_payments
-      FROM payment_totals
-      UNION ALL
-      SELECT location_id, 0::bigint, 0::bigint, 0::bigint, 0::bigint, 0::bigint, 0::bigint, 0::bigint,
-        0::bigint, refunds_cents, 0::int
-      FROM refund_totals
-    ), financial_totals AS (
-      SELECT location_id,
-        sum(invoiced_cents)::bigint AS invoiced_cents,
-        sum(outstanding_cents)::bigint AS outstanding_cents,
-        sum(current_cents)::bigint AS current_cents,
-        sum(days_1_30_cents)::bigint AS days_1_30_cents,
-        sum(days_31_60_cents)::bigint AS days_31_60_cents,
-        sum(days_61_90_cents)::bigint AS days_61_90_cents,
-        sum(over_90_cents)::bigint AS over_90_cents,
-        sum(gross_collected_cents)::bigint AS gross_collected_cents,
-        sum(refunds_cents)::bigint AS refunds_cents,
-        sum(failed_payments)::int AS failed_payments
-      FROM financial_facts GROUP BY location_id
-    ), report_rows AS (
-      SELECT ft.location_id AS "locationId", coalesce(al.name, 'Unassigned') AS "locationName",
-        ft.invoiced_cents AS "invoicedCents",
-        (ft.gross_collected_cents - ft.refunds_cents)::bigint AS "collectedCents",
-        ft.outstanding_cents AS "outstandingCents", ft.refunds_cents AS "refundsCents",
-        ft.failed_payments AS "failedPayments", ft.current_cents AS "currentCents",
-        ft.days_1_30_cents AS "days1To30Cents", ft.days_31_60_cents AS "days31To60Cents",
-        ft.days_61_90_cents AS "days61To90Cents", ft.over_90_cents AS "over90DaysCents"
-      FROM financial_totals ft LEFT JOIN allowed_locations al ON al.id = ft.location_id
-      UNION ALL
-      SELECT al.id, al.name, 0::bigint, 0::bigint, 0::bigint, 0::bigint, 0::int,
-        0::bigint, 0::bigint, 0::bigint, 0::bigint, 0::bigint
-      FROM allowed_locations al
-      WHERE NOT EXISTS (SELECT 1 FROM financial_totals ft WHERE ft.location_id = al.id)
-    )
-    SELECT * FROM report_rows ORDER BY "locationName"`);
+async function financialReport(actor: ReportingActor, period: Period, locationId?: string, rollup = false) {
+  const scope = buildReportScopeCtes(actor, { locationId, rollup });
+  const result = await rows(sql`${scope}${paymentScopeCte(actor, rollup)}, invoice_facts AS (
+    select i.*, ${openInvoiceBalance()} as open_balance,
+      (i.due_at at time zone coalesce(l.timezone,o.timezone,'UTC'))::date as due_date,
+      (current_timestamp at time zone coalesce(l.timezone,o.timezone,'UTC'))::date as today
+    from invoices i
+    join organizations o on o.tenant_id=i.tenant_id and o.id=i.organization_id
+    left join organization_locations l on l.tenant_id=i.tenant_id and l.id=i.organization_location_id
+    where i.tenant_id=${actor.tenantId} and ${locatedScope(actor, "i", "organization_location_id", "organization_id", rollup)}
+      and i.status not in ('draft','void') and i.voided_at is null and i.issued_at is not null
+  ), financial_facts AS (
+    select organization_location_id as location_id, currency,
+      case when issued_at>=${period.startAt}::timestamptz and issued_at<${period.endAt}::timestamptz then total_minor else 0 end as invoiced_cents,
+      open_balance as outstanding_cents, 0::bigint as gross_collected_cents, 0::bigint as refunds_cents, 0 as failed_payments,
+      case when due_date is null or due_date>=today then open_balance else 0 end as current_cents,
+      case when today-due_date between 1 and 30 then open_balance else 0 end as days_1_30_cents,
+      case when today-due_date between 31 and 60 then open_balance else 0 end as days_31_60_cents,
+      case when today-due_date between 61 and 90 then open_balance else 0 end as days_61_90_cents,
+      case when today-due_date>90 then open_balance else 0 end as over_90_cents
+    from invoice_facts
+    union all
+    select p.location_id,p.currency,0,0,p.amount_minor,0,0,0,0,0,0,0 from payment_scope p
+      where p.status in (${settledPaymentStatusSql}) and p.received_at>=${period.startAt}::timestamptz and p.received_at<${period.endAt}::timestamptz
+    union all
+    select p.location_id,r.currency,0,0,0,r.amount_minor,0,0,0,0,0,0 from payment_scope p
+      join refunds r on r.tenant_id=p.tenant_id and r.payment_id=p.id
+      where r.status='succeeded' and coalesce(r.completed_at,r.created_at)>=${period.startAt}::timestamptz
+        and coalesce(r.completed_at,r.created_at)<${period.endAt}::timestamptz
+    union all
+    select p.location_id,p.currency,0,0,0,0,1,0,0,0,0,0 from payment_scope p
+      where p.status='failed' and p.created_at>=${period.startAt}::timestamptz and p.created_at<${period.endAt}::timestamptz
+    union all
+    select al.id,t.default_currency,0,0,0,0,0,0,0,0,0,0 from allowed_locations al
+      join tenants t on t.id=${actor.tenantId}
+  )
+  select f.location_id as "locationId", coalesce(al.name,'Unassigned') as "locationName", f.currency,
+    sum(invoiced_cents)::bigint as "invoicedCents", sum(outstanding_cents)::bigint as "outstandingCents",
+    (sum(gross_collected_cents)-sum(refunds_cents))::bigint as "collectedCents",
+    sum(refunds_cents)::bigint as "refundsCents", sum(failed_payments)::int as "failedPayments",
+    sum(current_cents)::bigint as "currentCents", sum(days_1_30_cents)::bigint as "days1To30Cents",
+    sum(days_31_60_cents)::bigint as "days31To60Cents", sum(days_61_90_cents)::bigint as "days61To90Cents",
+    sum(over_90_cents)::bigint as "over90DaysCents"
+  from financial_facts f left join allowed_locations al on al.id=f.location_id
+  group by f.location_id,al.name,f.currency order by "locationName",f.currency`);
+  const currencies = [...new Set(result.map((row) => String(row.currency)))];
   return {
     title: "Money collected and still due",
-    metrics: [
-      metric("invoicedCents", "Invoiced", sum(result, "invoicedCents")),
-      metric("collectedCents", "Collected after refunds", sum(result, "collectedCents")),
-      metric("outstandingCents", "Open balance", sum(result, "outstandingCents")),
-      metric("refundsCents", "Refunds", sum(result, "refundsCents")),
-      metric("failedPayments", "Failed payments", sum(result, "failedPayments")),
-    ],
+    metrics: [...currencies.flatMap((currency) => {
+      const currencyRows = result.filter((row) => row.currency === currency);
+      return [
+        metric("invoicedCents", "Invoiced", sum(currencyRows, "invoicedCents")),
+        metric("collectedCents", "Collected after refunds", sum(currencyRows, "collectedCents")),
+        metric("outstandingCents", "Open balance", sum(currencyRows, "outstandingCents"), "Current unpaid issued invoices"),
+        metric("refundsCents", "Refunds", sum(currencyRows, "refundsCents")),
+      ].map((entry) => ({ ...entry, currency, label: currencies.length>1 ? `${entry.label} (${currency})` : entry.label }));
+    }), metric("failedPayments", "Failed payments", sum(result, "failedPayments"))],
     rows: result,
   };
 }
@@ -384,8 +394,12 @@ async function customerReport(actor: ReportingActor, period: Period, locationId?
     rows(sql`${scope}${customers}
       SELECT count(*) FILTER (WHERE sp.status = 'active')::int AS "activeRecurringPlans",
         count(*) FILTER (WHERE sp.status = 'paused')::int AS "pausedRecurringPlans",
-        coalesce(sum(CASE WHEN sp.status = 'active' AND sp.pricing_snapshot->>'amountMinor' ~ '^-?[0-9]+$'
-          THEN (sp.pricing_snapshot->>'amountMinor')::numeric ELSE 0 END), 0)::bigint AS "activePlanPriceCents"
+        case when count(*) filter (where sp.status='active' and
+          (coalesce(sp.pricing_snapshot->>'amountMinor','') !~ '^[0-9]+$' or sp.pricing_snapshot->>'currency' is null))>0
+          or count(distinct sp.pricing_snapshot->>'currency') filter (where sp.status='active')>1 then null
+          else coalesce(sum(CASE WHEN sp.status = 'active' AND sp.pricing_snapshot->>'amountMinor' ~ '^[0-9]+$'
+            THEN (sp.pricing_snapshot->>'amountMinor')::numeric ELSE 0 END), 0)::bigint end AS "activePlanPriceCents",
+        min(sp.pricing_snapshot->>'currency') filter (where sp.status='active') as currency
       FROM service_plans sp JOIN customer_scope c ON c.tenant_id = sp.tenant_id AND c.id = sp.customer_id
       WHERE sp.tenant_id = ${actor.tenantId} AND sp.status IN ('active', 'paused')
         AND (sp.organization_location_id IN (SELECT id FROM allowed_locations)
@@ -417,11 +431,12 @@ async function customerReport(actor: ReportingActor, period: Period, locationId?
   const approved = number(estimateRows[0]?.estimatesApproved);
   const declined = number(estimateRows[0]?.estimatesDeclined);
   const metrics = [
-    metric("active", "Active customers", active), metric("paused", "Paused customers", paused),
-    metric("inactive", "Inactive customers", inactive), metric("newCustomers", "New customers", newCustomers),
+    metric("active", "Active customers", active, "Current status"), metric("paused", "Paused customers", paused, "Current status"),
+    metric("inactive", "Inactive customers", inactive, "Current status"), metric("newCustomers", "New customers", newCustomers),
     metric("lostCustomers", "Made inactive", lostCustomers), metric("netGrowth", "Net customer growth", newCustomers - lostCustomers),
-    metric("activeRecurringPlans", "Active recurring plans", number(planRows[0]?.activeRecurringPlans)),
-    metric("activePlanPriceCents", "Active plan price inputs", number(planRows[0]?.activePlanPriceCents)),
+    metric("activeRecurringPlans", "Active recurring plans", number(planRows[0]?.activeRecurringPlans), "Current active plans"),
+    { ...metric("activePlanPriceCents", "Active plan price inputs", planRows[0]?.activePlanPriceCents == null ? null : number(planRows[0]?.activePlanPriceCents),
+      planRows[0]?.activePlanPriceCents == null ? "Missing prices or more than one currency" : "Current prices, not invoiced revenue"), currency: String(planRows[0]?.currency ?? "USD") },
     metric("leadConversionRate", "Lead conversion", terminalLeads ? rounded(convertedLeads / terminalLeads * 100) : null),
     metric("estimatesSent", "Estimates sent", number(estimateRows[0]?.estimatesSent)),
     metric("estimateConversionRate", "Estimate approval rate", approved + declined ? rounded(approved / (approved + declined) * 100) : null),
@@ -524,7 +539,7 @@ function membershipScope(actor: ReportingActor, alias: string): SQL {
   const org = safeIdentifier(alias, "organization_id");
   const defaultLocation = safeIdentifier(alias, "default_location_id");
   return sql`${org} IN (SELECT id FROM authorized_organizations) AND (
-    (${actor.allLocations} AND ${org} = ${actor.organizationId})
+    (${actor.allLocations} AND (select include_unassigned from scope_options) AND ${org} = ${actor.organizationId})
     OR ${defaultLocation} IN (SELECT id FROM allowed_locations)
     OR EXISTS (SELECT 1 FROM membership_location_scopes ms
       WHERE ms.tenant_id = ${actor.tenantId} AND ms.membership_id = ${member}
@@ -538,8 +553,12 @@ async function staffReport(actor: ReportingActor, period: Period, locationId?: s
     SELECT m.id AS "staffId", u.name AS "staffName", count(*) FILTER (WHERE j.status = 'completed')::int AS "completedJobs",
       coalesce(sum(extract(epoch FROM (j.actual_completed_at - j.actual_started_at)))
         FILTER (WHERE j.status = 'completed' AND j.actual_started_at IS NOT NULL AND j.actual_completed_at IS NOT NULL), 0)::numeric AS "serviceSeconds",
-      coalesce(sum(CASE WHEN j.price_snapshot->>'amountMinor' ~ '^-?[0-9]+$' THEN (j.price_snapshot->>'amountMinor')::numeric ELSE 0 END)
-        FILTER (WHERE j.status = 'completed'), 0)::bigint AS "revenueCents"
+      case when count(*) filter (where j.status='completed' and
+        (coalesce(j.price_snapshot->>'amountMinor','') !~ '^[0-9]+$' or j.price_snapshot->>'currency' is null))>0
+        or count(distinct j.price_snapshot->>'currency') filter (where j.status='completed')>1 then null
+        else coalesce(sum(CASE WHEN j.price_snapshot->>'amountMinor' ~ '^[0-9]+$' THEN (j.price_snapshot->>'amountMinor')::numeric ELSE 0 END)
+          FILTER (WHERE j.status = 'completed'), 0)::bigint end AS "revenueCents",
+      min(j.price_snapshot->>'currency') filter (where j.status='completed') as currency
     FROM jobs j JOIN job_assignments ja ON ja.tenant_id = j.tenant_id AND ja.job_id = j.id
       AND ja.removed_at IS NULL AND ja.assignment_role = 'primary'
     JOIN memberships m ON m.tenant_id = ja.tenant_id AND m.id = ja.membership_id
@@ -551,24 +570,25 @@ async function staffReport(actor: ReportingActor, period: Period, locationId?: s
   const enriched = staffRows.map((row) => {
     const completedJobs = number(row.completedJobs);
     const serviceHours = number(row.serviceSeconds) / 3600;
-    const revenueCents = number(row.revenueCents);
+    const revenueCents = row.revenueCents == null ? null : number(row.revenueCents);
     return { staffId: row.staffId, staffName: row.staffName, completedJobs, serviceHours: rounded(serviceHours),
       jobsPerServiceHour: serviceHours ? rounded(completedJobs / serviceHours) : null,
-      revenueCents, revenuePerHourCents: serviceHours ? rounded(revenueCents / serviceHours) : null };
+      currency: row.currency, revenueCents, revenuePerHourCents: serviceHours && revenueCents !== null ? rounded(revenueCents / serviceHours) : null };
   });
   const totalJobs = sum(enriched, "completedJobs");
   const totalHours = sum(enriched, "serviceHours");
-  const totalRevenue = sum(enriched, "revenueCents");
+  const currencies = [...new Set(enriched.map((row) => row.currency).filter(Boolean))];
+  const totalRevenue = enriched.some((row) => row.revenueCents === null) || currencies.length > 1 ? null : sum(enriched, "revenueCents");
   const metrics = [metric("completedJobs", "Completed jobs", totalJobs), metric("serviceHours", "Actual service hours", rounded(totalHours)),
     metric("jobsPerServiceHour", "Jobs per service hour", totalHours ? rounded(totalJobs / totalHours) : null),
-    metric("revenueCents", "Service revenue inputs", totalRevenue),
-    metric("revenuePerHourCents", "Revenue per service hour", totalHours ? rounded(totalRevenue / totalHours) : null)];
+    { ...metric("revenueCents", "Service price inputs", totalRevenue, totalRevenue === null ? "Missing prices or more than one currency" : "Job prices, not invoiced revenue"), currency: String(currencies[0] ?? "USD") },
+    { ...metric("revenuePerHourCents", "Price inputs per service hour", totalHours && totalRevenue !== null ? rounded(totalRevenue / totalHours) : null), currency: String(currencies[0] ?? "USD") }];
 
   // Payroll figures are added only with the separate payroll-report permission.
   if (actor.permissions.has("reports.payroll_read")) {
     const payroll = (await rows(sql`${scope}, latest_calculations AS (
         SELECT DISTINCT ON (pc.payroll_period_id, pc.membership_id) pc.id, pc.tenant_id, pc.payroll_period_id,
-          pc.membership_id, pc.gross_amount_minor, pc.calculation_snapshot
+          pc.membership_id, pc.gross_amount_minor, pc.currency, pc.calculation_snapshot
         FROM payroll_calculations pc
         WHERE pc.tenant_id = ${actor.tenantId}
         ORDER BY pc.payroll_period_id, pc.membership_id, pc.version DESC
@@ -579,8 +599,9 @@ async function staffReport(actor: ReportingActor, period: Period, locationId?: s
       )
       SELECT coalesce(sum(CASE WHEN lc.calculation_snapshot->>'hours' ~ '^[0-9]+(?:\\.[0-9]+)?$'
           THEN (lc.calculation_snapshot->>'hours')::numeric ELSE 0 END), 0)::numeric AS "approvedHours",
-        coalesce(sum(lc.gross_amount_minor), 0)::bigint AS "grossPayCents",
-        coalesce(sum(ct.tips_cents), 0)::bigint AS "tipsCents"
+        case when count(distinct lc.currency)>1 then null else coalesce(sum(lc.gross_amount_minor), 0)::bigint end AS "grossPayCents",
+        case when count(distinct lc.currency)>1 then null else coalesce(sum(ct.tips_cents), 0)::bigint end AS "tipsCents",
+        min(lc.currency) as currency
       FROM latest_calculations lc
       JOIN payroll_periods pp ON pp.tenant_id = lc.tenant_id AND pp.id = lc.payroll_period_id
       JOIN memberships m ON m.tenant_id = lc.tenant_id AND m.id = lc.membership_id
@@ -600,8 +621,8 @@ async function staffReport(actor: ReportingActor, period: Period, locationId?: s
         AND (coalesce(j.organization_location_id, rp.organization_location_id, sh.organization_location_id, m.default_location_id) IN (SELECT id FROM allowed_locations)
           OR (${actor.allLocations} AND m.organization_id = ${actor.organizationId}))`))[0] ?? {};
     metrics.push(metric("approvedHours", "Approved hours", rounded(number(payroll.approvedHours))),
-      metric("grossPayCents", "Calculated gross pay", number(payroll.grossPayCents)),
-      metric("tipsCents", "Payroll tips", number(payroll.tipsCents)),
+      { ...metric("grossPayCents", "Calculated gross pay", payroll.grossPayCents == null ? null : number(payroll.grossPayCents), payroll.grossPayCents == null ? "More than one currency; see Pay & time" : "Reviewed or approved payroll in this period"), currency: String(payroll.currency ?? "USD") },
+      { ...metric("tipsCents", "Payroll tips", payroll.tipsCents == null ? null : number(payroll.tipsCents)), currency: String(payroll.currency ?? "USD") },
       metric("mileageMeters", "Payroll mileage input (meters)", number(mileage.mileageMeters)));
   }
   return { title: "Technician productivity and payroll inputs", metrics, rows: enriched };
@@ -674,25 +695,6 @@ async function locationsReport(actor: ReportingActor, period: Period, locationId
         AND ${locatedScope(actor, "j", "organization_location_id", "organization_id", true)}
         AND j.scheduled_date >= ${period.startDate}::date AND j.scheduled_date < ${period.endDateExclusive}::date
       GROUP BY j.organization_location_id
-    ), invoice_totals AS (
-      SELECT i.organization_location_id AS location_id, coalesce(sum(i.total_minor), 0)::bigint AS invoiced_cents
-      FROM invoices i WHERE i.tenant_id = ${actor.tenantId}
-        AND ${locatedScope(actor, "i", "organization_location_id", "organization_id", true)}
-        AND i.issued_at >= ${period.startAt}::timestamptz AND i.issued_at < ${period.endAt}::timestamptz
-        AND i.status NOT IN ('draft', 'void') AND i.voided_at IS NULL GROUP BY i.organization_location_id
-    ), payment_totals AS (
-      SELECT c.location_id, coalesce(sum(p.amount_minor) FILTER (WHERE p.status IN (${settledPaymentStatusSql})
-        AND p.received_at >= ${period.startAt}::timestamptz AND p.received_at < ${period.endAt}::timestamptz), 0)::bigint AS gross_collected_cents
-      FROM customer_scope c LEFT JOIN payments p ON p.tenant_id = c.tenant_id AND p.customer_id = c.id
-      GROUP BY c.location_id
-    ), refund_totals AS (
-      SELECT c.location_id, coalesce(sum(r.amount_minor), 0)::bigint AS refunds_cents
-      FROM customer_scope c JOIN payments p ON p.tenant_id = c.tenant_id AND p.customer_id = c.id
-      JOIN refunds r ON r.tenant_id = p.tenant_id AND r.payment_id = p.id
-      WHERE r.status = 'succeeded'
-        AND coalesce(r.completed_at, r.created_at) >= ${period.startAt}::timestamptz
-        AND coalesce(r.completed_at, r.created_at) < ${period.endAt}::timestamptz
-      GROUP BY c.location_id
     ), customer_totals AS (
       SELECT c.location_id, count(*) FILTER (WHERE c.status = 'active')::int AS active_customers,
         count(*) FILTER (WHERE c.created_at >= ${period.startAt}::timestamptz AND c.created_at < ${period.endAt}::timestamptz)::int AS new_customers
@@ -700,22 +702,25 @@ async function locationsReport(actor: ReportingActor, period: Period, locationId
     )
     SELECT al.id AS "locationId", al.name AS "locationName",
       coalesce(jt.jobs, 0)::int AS jobs, coalesce(jt.completed_jobs, 0)::int AS "completedJobs",
-      coalesce(it.invoiced_cents, 0)::bigint AS "invoicedCents",
-      (coalesce(pt.gross_collected_cents, 0) - coalesce(rt.refunds_cents, 0))::bigint AS "collectedCents",
       coalesce(ct.active_customers, 0)::int AS "activeCustomers", coalesce(ct.new_customers, 0)::int AS "newCustomers"
     FROM allowed_locations al
     LEFT JOIN job_totals jt ON jt.location_id = al.id
-    LEFT JOIN invoice_totals it ON it.location_id = al.id
-    LEFT JOIN payment_totals pt ON pt.location_id = al.id
-    LEFT JOIN refund_totals rt ON rt.location_id = al.id
     LEFT JOIN customer_totals ct ON ct.location_id = al.id
     ORDER BY al.name`);
+  const financial = await financialReport(actor, period, locationId, true);
   return {
     title: "Authorized location rollup",
     metrics: [metric("jobs", "Jobs", sum(result, "jobs")), metric("completedJobs", "Completed jobs", sum(result, "completedJobs")),
-      metric("invoicedCents", "Invoiced", sum(result, "invoicedCents")), metric("collectedCents", "Collected", sum(result, "collectedCents")),
+      ...financial.metrics.filter((entry) => ["invoicedCents", "collectedCents"].includes(entry.key)),
       metric("activeCustomers", "Active customers", sum(result, "activeCustomers")), metric("newCustomers", "New customers", sum(result, "newCustomers"))],
-    rows: result,
+    rows: financial.rows.map((row, index) => {
+      const location = result.find((entry) => entry.locationId === row.locationId);
+      const repeatedLocation = financial.rows.slice(0, index).some((entry) => entry.locationId === row.locationId);
+      return { locationId: row.locationId, locationName: row.locationName, currency: row.currency,
+        jobs: repeatedLocation ? null : location?.jobs ?? null, completedJobs: repeatedLocation ? null : location?.completedJobs ?? null,
+        activeCustomers: repeatedLocation ? null : location?.activeCustomers ?? null, newCustomers: repeatedLocation ? null : location?.newCustomers ?? null,
+        invoicedCents: row.invoicedCents, collectedCents: row.collectedCents };
+    }),
   };
 }
 
@@ -760,13 +765,17 @@ async function handleReportRequest(request: Request, actor: SessionActor, isExpo
   const scopedActor = authorize(actor, [...reportPermissions(type), ...(isExport ? ["reports.export" as const] : [])]);
   const timeZone = await organizationTimeZone(scopedActor);
   const data = await report(scopedActor, type, makePeriod(range, timeZone), locationId);
-  if (!isExport) return json({ item: { title: data.title, metrics: data.metrics, rows: data.rows } });
+  if (!isExport) return json({ item: { title: data.title, metrics: data.metrics, rows: data.rows,
+    scope: await presentationScope(scopedActor, { locationId, rollup: type === "locations" }), timeZone } });
   const rowsForExport = data.rows.slice(0, csvRowLimit);
   const columns = rowsForExport[0]
-    ? Object.keys(rowsForExport[0]).map((key) => ({ key, label: key.replace(/([A-Z])/g, " $1").replace(/^./, (letter) => letter.toUpperCase()) }))
-    : exportColumns[type];
+    ? reportColumns(rowsForExport[0])
+    : exportColumns[type].map((column) => ({ ...column, label: reportColumns({ [column.key]: null })[0]!.label }));
   const truncated = data.rows.length > csvRowLimit;
-  return new Response(reportRowsToCsv(rowsForExport, columns), {
+  const presentedRows = rowsForExport.map((row: DbRow) => Object.fromEntries(columns.map(({ key }) => [key,
+    /Cents$/.test(key) ? row[key] == null ? "" : reportValue(key, row[key], String(row.currency ?? "USD")) : row[key],
+  ])));
+  return new Response(reportRowsToCsv(presentedRows, columns), {
     status: 200,
     headers: {
       "content-type": "text/csv; charset=utf-8",

@@ -6,6 +6,8 @@ Modular CRM is a reusable SaaS platform for niche service businesses. It should 
 
 ## Development model
 
+For the owner-authorized GitHub build-and-review loop, read [docs/AGENT_REVIEW_LOOP.md](docs/AGENT_REVIEW_LOOP.md) before acting on an `@codex` task or verdict. It defines reviewer handoffs, stacked branches, verification, and the prohibition on merging or deploying.
+
 The project owner prefers end-to-end implementation after scope is well defined.
 
 Detailed product requirements belong in repository documentation. Autonomous implementation prompts should stay compact: define the mission, source of truth, hard guardrails, and completion standard, then allow the agent to solve the implementation.

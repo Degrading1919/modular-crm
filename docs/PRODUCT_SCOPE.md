@@ -8,6 +8,18 @@ The system should let a business owner go from signup to a usable business stack
 
 The product should be specified deeply enough before the first major Codex implementation task that Codex can build the initial backend and frontend end to end with minimal clarification or architectural rework.
 
+## Truthful operational presentation
+
+Upcoming work and **Next service** must come from actual eligible scheduled jobs (scheduled, dispatched, en route, in progress, or paused), using each job's business-location calendar date and the viewer's authorized scope. Customer summaries include one-time jobs as well as recurring-plan jobs. Recurrence is not proof of a booked visit; absent jobs remain explicitly not scheduled. A missing service time must not be replaced with “Today.”
+
+Balances due mean current unpaid issued invoices, excluding drafts, voids, and written-off invoices. Historical invoice totals and actual amounts paid remain distinct from balances due. Financial summaries separate currencies, format minor units consistently, and identify their business-location scope; live balances are not represented as historical period snapshots. Receipts and refunds require every allocated invoice to be in scope and are attributed only when a single business location is known (or, for unallocated receipts, the customer's owning location). Cross-location receipts/refunds remain unassigned, never proportionally guessed, and are included only when every allocation is authorized by the report scope, never in a single-location report.
+
+Missing pricing inputs stay unknown, not zero. Pricing inputs are not invoice revenue, and a summary that cannot represent multiple currencies reliably must show an unknown value rather than add incompatible amounts.
+
+Invoice rows identify their actual business and location, including broader owner-visible businesses that are outside the dashboard's named scope. Report screens and CSV downloads use the same money formatting and plain column names, not internal IDs or minor-unit labels; API numeric fields retain their existing minor-unit contract.
+
+User-facing failures must explain the problem and a useful recovery step in plain language, including authentication, connection, and validation failures. Preserve machine-readable status, codes, conflict details, and offline retry behavior; do not expose internal transitions, provider errors, or HTTP status numbers as user instructions. Preserve useful plain-language recovery copy. Failed reads must not masquerade as zero balances or empty successful summaries.
+
 ## Core customer outcomes
 
 A business owner should be able to:

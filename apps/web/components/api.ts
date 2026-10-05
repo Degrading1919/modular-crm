@@ -1,3 +1,6 @@
+import { userError } from "../lib/user-errors";
+import { moneyValue } from "../lib/presentation";
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -11,26 +14,38 @@ export class ApiError extends Error {
 }
 
 export async function api<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(path.startsWith("/api/") ? path : `/api/v1${path}`, {
-    ...init,
-    credentials: "include",
-    headers: {
-      ...(init.body ? { "Content-Type": "application/json" } : {}),
-      ...init.headers,
-    },
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetch(path.startsWith("/api/") ? path : `/api/v1${path}`, {
+      ...init,
+      credentials: "include",
+      headers: {
+        ...(init.body ? { "Content-Type": "application/json" } : {}),
+        ...init.headers,
+      },
+      cache: "no-store",
+    });
+  } catch (issue) {
+    if (issue instanceof Error && issue.name === "AbortError") throw issue;
+    throw new TypeError("We couldn’t reach the service. Check your connection and try again.");
+  }
   const contentType = response.headers.get("content-type") || "";
-  const payload = contentType.includes("application/json") ? await response.json() : null;
+  let payload;
+  try { payload = contentType.includes("application/json") ? await response.json() : null; }
+  catch {
+    if (response.ok) throw new TypeError("We couldn’t read the response. Please try again.");
+    throw new ApiError(userError(undefined, response.status, path), response.status, "INVALID_RESPONSE");
+  }
   if (!response.ok) {
-    const error = payload?.error as { code?: string; message?: string; details?: unknown } | undefined;
+    const error = (payload?.error ?? payload) as { code?: string; message?: string; details?: unknown } | undefined;
     throw new ApiError(
-      error?.message || `We couldn’t complete that action (${response.status}). Please try again.`,
+      userError(error, response.status, path),
       response.status,
       error?.code,
       error?.details,
     );
   }
+  if (payload === null && response.status !== 204) throw new TypeError("We couldn’t read the response. Please try again.");
   return payload as T;
 }
 
@@ -51,7 +66,7 @@ export function unwrapItems<T>(result: { items?: T[] } | T[]): T[] {
 }
 
 export function money(cents: number | null | undefined, currency = "USD") {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format((Number(cents) || 0) / 100);
+  return moneyValue(Number(cents) || 0, currency);
 }
 
 export function date(value: string | null | undefined, options?: Intl.DateTimeFormatOptions) {
