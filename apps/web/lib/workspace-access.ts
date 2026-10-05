@@ -81,4 +81,5 @@ export const createPermissions: Record<string, Permission> = {
   invoices: "invoices.create", "service-plans": "service_plans.create", tickets: "tickets.create",
   services: "services.manage", staff: "staff.invite", communications: "communications.send",
   organization: "organization.locations_manage",
+  payments: "payments.record_manual",
 };

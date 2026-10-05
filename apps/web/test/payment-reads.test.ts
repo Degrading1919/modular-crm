@@ -52,7 +52,7 @@ describe("read-only payment collection", () => {
     const items = await list(owner);
     const payment = items.find((item) => item.id === seedIds.happyPayment);
     expect(payment).toMatchObject({ customerName: "Carter Household", amountCents: 2500, method: "mock", status: "succeeded" });
-    expect(Object.keys(payment!).sort()).toEqual(["id", "customerName", "amountCents", "currency", "method", "status", "createdAt"].sort());
+    expect(Object.keys(payment!).sort()).toEqual(["id", "customerName", "amountCents", "currency", "method", "reference", "status", "createdAt"].sort());
     expect(Number.isNaN(Date.parse(payment!.createdAt))).toBe(false);
   });
   it("allows permitted office staff without requiring invoice or owner permissions", async () => {

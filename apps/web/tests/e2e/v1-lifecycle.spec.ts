@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { chooseStaffRecord } from "./staff-picker";
 
 const password = "Demo12345!";
 
@@ -46,8 +47,8 @@ test("V1 lifecycle: estimate approval through field work, billing, and feedback"
 
   await page.goto("/app/estimates");
   await page.getByRole("button", { name: "New estimate" }).click();
-  await page.getByLabel("Customer", { exact: true }).selectOption({ label: "Carter Household" });
-  await page.getByLabel("Service", { exact: true }).selectOption({ label: serviceName });
+  await chooseStaffRecord(page, "Customer", "Carter Household");
+  await chooseStaffRecord(page, "Service", serviceName);
   await page.getByLabel("What is included?").fill(estimateTitle);
   await page.getByLabel("Total price").fill("36");
   await page.getByLabel("Description").fill(`Approved estimate ${suffix}.`);
@@ -162,7 +163,7 @@ test("V1 lifecycle: estimate approval through field work, billing, and feedback"
   // billing preference, so it remains eligible for the office's manual invoice flow.
   await page.goto("/app/invoices");
   await page.getByRole("button", { name: "New invoice" }).click();
-  await page.getByLabel("Customer", { exact: true }).selectOption({ label: "Carter Household" });
+  await chooseStaffRecord(page, "Customer", "Carter Household");
   await page.getByLabel("Description").fill(invoiceDescription);
   await page.getByLabel("Amount").fill("36");
   const invoiceCreatedResponse = page.waitForResponse((response) =>

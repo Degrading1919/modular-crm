@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-05 — Staff select real records and record the actual payment method
+
+- **Status:** Accepted
+- **Area:** Product / UX / Implementation
+- **Decision:** Staff create forms use scoped searchable named records and saved service-address choices, persisting the selected address for jobs/plans. Record money already received with an explicit Cash, Check, externally taken Card, or Other method and optional reference; separate these facts from connector provenance, preserve authorization/allocation/idempotency, and never default to a test charge or infer a historical method.
+- **Rationale:** Raw-ID forms, ignored addresses, and test-only invoice recording prevented usable staff entry and misrepresented real receipts. Payments recording reuses the existing invoice workflow while the collection stays read-only.
+- **Authoritative doc:** `docs/PRODUCT_SCOPE.md`, `docs/V1_BUSINESS_RULES.md`, `docs/V1_DATABASE_SCHEMA.md`
+
 ## 2026-10-05 — Owner-authorized independent PR review loop
 
 - **Status:** Accepted

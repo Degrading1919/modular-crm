@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { chooseStaffRecord } from "./staff-picker";
 
 async function signIn(page: Page) {
   await page.goto("/login");
@@ -45,7 +46,7 @@ test("owner records inventory movements and refunds a collected invoice payment"
 
   await page.goto("/app/invoices");
   await page.getByRole("button", { name: "New invoice" }).click();
-  await page.getByLabel("Customer", { exact: true }).selectOption({ label: "Carter Household" });
+  await chooseStaffRecord(page, "Customer", "Carter Household");
   const description = `E2E refundable invoice ${suffix}`;
   await page.getByLabel("Description").fill(description);
   await page.getByLabel("Amount").fill("32.50");
@@ -62,9 +63,10 @@ test("owner records inventory movements and refunds a collected invoice payment"
   await page.getByRole("button", { name: "Issue invoice" }).click();
   await expect(page.getByText("Issue invoice completed.")).toBeVisible();
   await page.getByRole("button", { name: "Record payment" }).click();
+  await page.getByLabel("How the customer paid").selectOption("cash");
   await page.getByRole("button", { name: "Record payment", exact: true }).last().click();
   await expect(page.getByRole("heading", { name: "Refund a payment" })).toBeVisible();
-  await expect(page.getByText("Mock · Succeeded", { exact: false })).toBeVisible();
+  await expect(page.getByText("Cash · Succeeded", { exact: false })).toBeVisible();
 
   await page.getByLabel("Refund amount (USD)").fill("5.00");
   await page.getByLabel("Reason (optional)").fill(`E2E refund ${suffix}`);

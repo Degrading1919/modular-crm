@@ -20,6 +20,12 @@ Invoice rows identify their actual business and location, including broader owne
 
 User-facing failures must explain the problem and a useful recovery step in plain language, including authentication, connection, and validation failures. Preserve machine-readable status, codes, conflict details, and offline retry behavior; do not expose internal transitions, provider errors, or HTTP status numbers as user instructions. Preserve useful plain-language recovery copy. Failed reads must not masquerade as zero balances or empty successful summaries.
 
+## Staff record selection and payment recording
+
+Staff create forms select named customers, services, open invoices, and saved service addresses rather than asking for internal IDs. Customer searches match name, phone, email, and address on the server within the existing tenant/location authorization; picking a customer offers only their accessible active service addresses. A single available address is selected automatically, while multiple addresses require an explicit choice. Jobs and service plans persist that choice; no eligible saved address requires recovery rather than a guessed address.
+
+Recording money already received is distinct from charging a customer. Staff must choose Cash, Check, Card (taken outside the app), or Other and may enter a reference such as a check number. Persist payment method separately from source/connector provenance and show it in payment history and receipts. Keep invoice allocation, permission/capability checks, balance validation, and idempotent retries; a changed method/reference is a different request. Historical unspecified payments remain honestly “Method not recorded,” not guessed as cash or card; new unspecified requests are rejected. Explicit test payments require a connected mock payment service; staff recording never defaults to a test charge. The Payments collection remains a scoped read model; its recording form invokes the existing invoice-payment workflow, not a new generic payment mutation.
+
 ## Core customer outcomes
 
 A business owner should be able to:

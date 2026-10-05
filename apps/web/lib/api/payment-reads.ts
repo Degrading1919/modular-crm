@@ -33,7 +33,8 @@ export async function handlePaymentReads(request: Request, path: string[], actor
   const items = await getDb().select({
     id: payments.id, customerName: customers.displayName,
     amountCents: payments.amountMinor, currency: payments.currency,
-    method: payments.sourceType, status: payments.status, createdAt: payments.createdAt,
+    method: sql<string>`coalesce(${payments.recordedMethod}, ${payments.sourceType})`, reference: payments.reference,
+    status: payments.status, createdAt: payments.createdAt,
   }).from(payments)
     .innerJoin(customers, and(eq(customers.id, payments.customerId), eq(customers.tenantId, payments.tenantId)))
     .where(and(eq(payments.tenantId, actor.tenantId), invalidAllocation, locationScope))

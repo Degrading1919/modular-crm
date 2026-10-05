@@ -77,7 +77,7 @@ it("routes the successful payment producer event through the default receipt rec
 
   const paymentResponse = await handleWorkflow(new Request(`http://localhost/api/v1/invoices/${invoice!.id}/pay`, {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ amountCents: 2_500, method: "manual", idempotencyKey: "receipt-producer-worker" }),
+    body: JSON.stringify({ amountCents: 2_500, method: "cash", idempotencyKey: "receipt-producer-worker" }),
   }), ["invoices", invoice!.id, "pay"], owner);
   expect(paymentResponse?.status).toBe(200);
   const payment = (await paymentResponse!.json() as { item: { id: string; status: string } }).item;

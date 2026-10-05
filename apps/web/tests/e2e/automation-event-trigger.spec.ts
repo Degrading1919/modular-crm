@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { chooseStaffRecord } from "./staff-picker";
 
 const password = "Demo12345!";
 
@@ -34,7 +35,7 @@ test("an issued invoice triggers an active automation and records its action", a
 
   await page.goto("/app/invoices");
   await page.getByRole("button", { name: "New invoice" }).click();
-  await page.getByLabel("Customer", { exact: true }).selectOption({ label: "Carter Household" });
+  await chooseStaffRecord(page, "Customer", "Carter Household");
   await page.getByLabel("Description").fill(`Automation acceptance invoice ${suffix}`);
   await page.getByLabel("Amount").fill("72.00");
 
