@@ -18,8 +18,6 @@ env:
   DATABASE_URL: postgresql://modular:modular@127.0.0.1:5432/modular_crm
   BETTER_AUTH_URL: http://localhost:3000
   APP_BASE_URL: http://localhost:3000
-  MOCK_CONNECTORS: "true"
-  DOMAIN_VERIFICATION_MODE: mock
   MAILPIT_SMTP_HOST: 127.0.0.1
   MAILPIT_SMTP_PORT: "1025"
   MAILPIT_API_URL: http://127.0.0.1:8025
@@ -75,6 +73,8 @@ jobs:
           - 8025:8025
     env:
       PLAYWRIGHT_HTML_OPEN: never
+      MOCK_CONNECTORS: "true"
+      DOMAIN_VERIFICATION_MODE: mock
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -99,3 +99,5 @@ jobs:
             apps/web/test-results/
           retention-days: 7
           if-no-files-found: warn
+
+warning: in the working copy of '.github/workflows/ci.yml', LF will be replaced by CRLF the next time Git touches it
