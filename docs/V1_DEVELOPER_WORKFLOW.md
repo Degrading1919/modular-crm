@@ -61,6 +61,10 @@ Existing unit/integration tests retain their in-process isolated fixtures, inclu
 
 Tests must not depend on real external providers.
 
+Field status badges can project updates saved on the device before sync finishes. Tests that assert server state after a field action must observe that action's successful sync response or poll the server state, retaining strict state/evidence assertions rather than relying on the projected badge or a notice from an earlier action.
+
+For export latency regressions, measure the database query separately from route compilation and retain `EXPLAIN (ANALYZE, BUFFERS)` evidence. The full business export evaluates primary-key metadata once; its regression checks actual plan loops rather than a machine-dependent elapsed-time limit. CI continues to use the existing development server and worker because the confirmed delay was the query, not Next.js compilation.
+
 Use:
 
 - mock connectors

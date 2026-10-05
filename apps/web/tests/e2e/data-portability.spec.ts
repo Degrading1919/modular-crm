@@ -41,7 +41,9 @@ test("owner previews, imports once, and exports tenant data", async ({ page }) =
   expect(exportCsv.status()).toBe(200);
   expect(await exportCsv.text()).toContain(email);
 
+  const exportStarted = Date.now();
   const fullExport = await page.request.get("/api/v1/exports/business-data");
+  console.info(`Business-data export: HTTP ${fullExport.status()} in ${Date.now() - exportStarted}ms`);
   expect(fullExport.status()).toBe(200);
   const business = await fullExport.json();
   expect(business.data.customers.some((customer: { billingEmail: string }) => customer.billingEmail === email)).toBe(true);
