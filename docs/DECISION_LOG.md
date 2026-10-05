@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-04 — Operational summaries present facts, scope, and recovery truthfully
+
+- **Status:** Accepted
+- **Area:** Product / UX / Implementation
+- **Decision:** Derive upcoming/next service from eligible scoped jobs and their business calendar dates, never from recurrence guesses or fabricated time labels. Reconcile current collectible balances, separate currencies, and disclose location scope; attribute whole receipts/refunds only to known locations without exposing partially authorized allocations or inventing refund splits. Present plain recovery copy while preserving machine error contracts and offline behavior.
+- **Rationale:** Missing scheduling queries, divergent balance filters, raw-cent cards, customer-home payment attribution, and incompatible authentication error envelopes undermined trust in otherwise valid records.
+- **Authoritative doc:** `docs/PRODUCT_SCOPE.md`
+
 ## 2026-10-04 — Field actions and offline recovery share a causal contract
 
 - **Status:** Accepted

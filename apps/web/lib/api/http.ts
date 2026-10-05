@@ -7,8 +7,8 @@ export function json(data: unknown, status = 200, headers?: HeadersInit): Respon
 
 export function apiError(error: unknown): Response {
   if (error instanceof DomainError) return json({ error: { code: error.code, message: error.message, details: error.details } }, error.status);
-  if (error instanceof ZodError) return json({ error: { code: "VALIDATION_ERROR", message: "Check the highlighted information.", details: error.flatten() } }, 422);
-  if (error instanceof SyntaxError) return json({ error: { code: "VALIDATION_ERROR", message: "Invalid JSON request." } }, 400);
+  if (error instanceof ZodError) return json({ error: { code: "VALIDATION_ERROR", message: "Check the information you entered and try again.", details: error.flatten() } }, 422);
+  if (error instanceof SyntaxError) return json({ error: { code: "VALIDATION_ERROR", message: "We couldn’t read this update. Please try again." } }, 400);
   const cause = error instanceof Error && "cause" in error ? error.cause : undefined;
   const causeCode = cause && typeof cause === "object" && "code" in cause ? String(cause.code) : undefined;
   console.error(JSON.stringify({ event: "api.error", name: error instanceof Error ? error.name : "UnknownError", causeCode }));

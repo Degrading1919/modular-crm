@@ -1,13 +1,15 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { consentRecords, customerAssets, customerChangeRequests, customerContacts, customerPreferences, customers, notificationPreferences, serviceFeedback, ticketStatusDefinitions, ticketTypeDefinitions, tickets } from "@modular-crm/db";
-import { DomainError } from "@modular-crm/domain";
+import { DomainError, settledPaymentStatuses } from "@modular-crm/domain";
 import { getDb } from "../db";
 import { type SessionActor } from "./actor";
 import { recordEvent } from "./events";
 import { json, readBody } from "./http";
 import { normalized, rows, uuidArray } from "./sql";
 import { estimateAction, invoiceAction } from "./workflows";
+import { openInvoiceBalance, upcomingJob } from "./read-facts";
+import { balanceTotals } from "../presentation";
 
 function customerActor(actor: SessionActor): asserts actor is SessionActor & { kind: "customer"; customerIds: Set<string> } {
   if (actor.kind !== "customer") throw new DomainError("FORBIDDEN", "Customer access is required.", 403);
@@ -140,8 +142,11 @@ async function portalList(actor: SessionActor, resource: string): Promise<Respon
   let items: Record<string, unknown>[];
   switch (resource) {
     case "services": items = await rows(sql`select sp.*,s.name as service_name,rr.frequency_type as frequency,sl.address_line1 as address,
-      (select min(j.scheduled_date) from jobs j where j.tenant_id=sp.tenant_id and j.service_plan_id=sp.id and j.scheduled_date>=current_date and j.status not in ('completed','skipped','canceled')) as next_service
+      (select min(j.scheduled_date) from jobs j where j.tenant_id=sp.tenant_id and j.service_plan_id=sp.id
+        and j.customer_id=sp.customer_id and j.organization_id=c.organization_id
+        and ${customerLocationPredicate(actor, "j.customer_id", "j.service_location_id")} and ${upcomingJob()}) as next_service
       from service_plans sp join services s on s.id=sp.service_id and s.tenant_id=sp.tenant_id
+      join customers c on c.id=sp.customer_id and c.tenant_id=sp.tenant_id
       join recurrence_rules rr on rr.id=sp.recurrence_rule_id and rr.tenant_id=sp.tenant_id
       join service_locations sl on sl.id=sp.service_location_id and sl.tenant_id=sp.tenant_id
       where sp.tenant_id=${actor.tenantId} and ${customerLocationPredicate(actor, "sp.customer_id", "sp.service_location_id")} order by sp.created_at desc`); break;
@@ -157,7 +162,8 @@ async function portalList(actor: SessionActor, resource: string): Promise<Respon
       from estimates e join estimate_revisions er on er.estimate_id=e.id and er.tenant_id=e.tenant_id and er.revision_number=e.current_revision
       where e.tenant_id=${actor.tenantId} and ${customerLocationPredicate(actor, "e.customer_id", "e.service_location_id")} and e.status<>'draft'
       order by e.created_at desc`); break;
-    case "invoices": items = await rows(sql`select i.*,i.invoice_number as number,i.total_minor as total_cents,i.balance_minor as balance_cents,i.due_at as due_date
+    case "invoices": items = await rows(sql`select i.*,i.invoice_number as number,i.total_minor as total_cents,i.paid_minor as paid_cents,
+      i.balance_minor as balance_cents,${openInvoiceBalance()} as open_balance_cents,i.due_at as due_date
       from invoices i where i.tenant_id=${actor.tenantId} and i.customer_id=any(${uuidArray(customerIds)}) and i.status<>'draft'
         and ${invoiceLocationPredicate(actor, "i")}
       order by i.created_at desc`); break;
@@ -166,7 +172,8 @@ async function portalList(actor: SessionActor, resource: string): Promise<Respon
       from payments p
       join payment_allocations pa on pa.payment_id=p.id and pa.tenant_id=p.tenant_id
       join invoices i on i.id=pa.invoice_id and i.tenant_id=pa.tenant_id and i.customer_id=p.customer_id
-      where p.tenant_id=${actor.tenantId} and p.customer_id=any(${uuidArray(customerIds)}) and p.status in ('succeeded','refunded') and i.status<>'draft'
+      where p.tenant_id=${actor.tenantId} and p.customer_id=any(${uuidArray(customerIds)})
+        and p.status in (${sql.join(settledPaymentStatuses.map((status) => sql`${status}`), sql`, `)}) and i.status<>'draft'
         and ${invoiceLocationPredicate(actor, "i")}
         and not exists (select 1 from payment_allocations hidden_pa join invoices hidden_i
           on hidden_i.id=hidden_pa.invoice_id and hidden_i.tenant_id=hidden_pa.tenant_id
@@ -194,7 +201,10 @@ async function portalList(actor: SessionActor, resource: string): Promise<Respon
   if (resource === "files") items = items.map((item) => ({ ...item, url: `/api/v1/files/${item.id}/download` }));
   if (resource === "services") {
     const history = await portalList(actor, "visits").then(async (response) => ((await response.json()) as { items: Record<string, unknown>[] }).items);
-    items = items.map((item) => ({ ...item, priceCents: Number((item.pricing_snapshot as Record<string, unknown> | null)?.amountMinor ?? 0), history: history.filter((job) => job.servicePlanId === item.id) }));
+    items = items.map((item) => ({ ...item, currency: (item.pricing_snapshot as Record<string, unknown> | null)?.currency ?? null,
+      priceCents: (item.pricing_snapshot as Record<string, unknown> | null)?.amountMinor == null
+        || (item.pricing_snapshot as Record<string, unknown> | null)?.currency == null
+      ? null : Number((item.pricing_snapshot as Record<string, unknown>).amountMinor), history: history.filter((job) => job.servicePlanId === item.id) }));
   }
   return json({ items: normalized(items) });
 }
@@ -238,18 +248,24 @@ export async function handlePortal(request: Request, path: string[], actor: Sess
   if (request.method === "GET" && resource === "profile") return json({ item: await profile(actor) });
   if (request.method === "PATCH" && resource === "profile") return updateProfile(request, actor);
   if (request.method === "GET" && resource === "overview") {
-    const [services, invoices, tickets, requests] = await Promise.all([portalList(actor, "services").then((res) => res.json()), portalList(actor, "invoices").then((res) => res.json()), portalList(actor, "tickets").then((res) => res.json()), portalList(actor, "requests").then((res) => res.json())]);
+    const [services, invoices, tickets, requests, visits, upcoming] = await Promise.all([portalList(actor, "services").then((res) => res.json()), portalList(actor, "invoices").then((res) => res.json()), portalList(actor, "tickets").then((res) => res.json()), portalList(actor, "requests").then((res) => res.json()),
+      portalList(actor, "visits").then((res) => res.json()),
+      rows(sql`select j.id,j.scheduled_date as "scheduledDate",j.service_plan_id as "servicePlanId",s.name as "serviceName",
+        sl.address_line1 as address,j.status from jobs j
+        join services s on s.tenant_id=j.tenant_id and s.id=j.service_id
+        join service_locations sl on sl.tenant_id=j.tenant_id and sl.id=j.service_location_id
+        where j.tenant_id=${actor.tenantId} and ${customerLocationPredicate(actor, "j.customer_id", "j.service_location_id")}
+          and ${upcomingJob()} order by j.scheduled_date,j.service_window_start nulls last,j.id limit 1`)]);
     const plans = services.items as Record<string, unknown>[];
     const bills = invoices.items as Record<string, unknown>[];
-    const nextPlan = plans.filter((item) => !!item.nextService).sort((a, b) => String(a.nextService).localeCompare(String(b.nextService)))[0];
     const latestInvoice = bills[0] ?? null;
-    const recentService = plans.flatMap((plan) => (plan.history as Record<string, unknown>[] | undefined) ?? [])
-      .filter((job) => job.status === "completed").sort((a, b) => String(b.actualCompletedAt ?? b.scheduledDate).localeCompare(String(a.actualCompletedAt ?? a.scheduledDate)))[0] ?? null;
-    return json({ item: { name: actor.name, nextService: nextPlan ? { ...nextPlan, scheduledDate: nextPlan.nextService } : null,
+    const recentService = visits.items[0] as Record<string, unknown> | undefined;
+    const balances = balanceTotals(bills);
+    return json({ item: { name: actor.name, nextService: normalized(upcoming[0] ?? null),
       activeServiceName: plans.find((plan) => plan.status === "active")?.serviceName ?? null, servicePlan: plans.find((plan) => plan.status === "active") ?? null,
       recentService: recentService ? { ...recentService, completedAt: recentService.actualCompletedAt, summary: recentService.customerSummary } : null,
       latestInvoice, requests: requests.items, services: plans, invoices: bills, tickets: tickets.items,
-      balanceCents: bills.reduce((sum, item) => sum + Number(item.balanceCents ?? 0), 0) } });
+      balances, balanceCents: balances.length === 1 ? balances[0]!.cents : null } });
   }
   if (request.method === "GET" && ["services", "visits", "estimates", "invoices", "payments", "tickets", "requests", "files"].includes(resource ?? "")) return portalList(actor, resource!);
   if (request.method === "POST" && resource === "requests") return createRequest(request, actor);

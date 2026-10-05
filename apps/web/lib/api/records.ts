@@ -16,6 +16,7 @@ import { first, normalized, rows, uuidArray } from "./sql";
 import { calculateServicePlanPrice, servicePlanFrequencyKey, type PlanScheduleVersion } from "./plan-lifecycle";
 import { reviseEstimate } from "./estimate-revisions";
 import { fieldTicketScope } from "./ticket-scope";
+import { openInvoiceBalance, upcomingJob } from "./read-facts";
 
 type RecordResource = "leads" | "customers" | "jobs" | "estimates" | "invoices" | "service-plans" | "tickets" | "services";
 const resources = new Set<RecordResource>(["leads", "customers", "jobs", "estimates", "invoices", "service-plans", "tickets", "services"]);
@@ -60,7 +61,9 @@ function viewQuery(resource: RecordResource, actor: SessionActor, id?: string): 
     case "leads": return sql`select l.*, trim(concat_ws(' ', l.first_name, l.last_name)) as name, l.source_detail as source
       from leads l where l.tenant_id = ${actor.tenantId} and ${locationSql(actor, sql`l.owning_location_id`)} ${byId} order by l.created_at desc limit ${limit}`;
     case "customers": return sql`select c.*, c.display_name as name, c.billing_email as email, c.billing_phone as phone,
-      coalesce(c.billing_address->>'line1', sl.address_line1, '') as address
+      coalesce(c.billing_address->>'line1', sl.address_line1, '') as address,
+      (select min(j.scheduled_date) from jobs j where j.tenant_id=c.tenant_id and j.customer_id=c.id
+        and j.organization_id=c.organization_id and ${locationSql(actor, sql`j.organization_location_id`)} and ${upcomingJob()}) as next_service
       from customers c left join lateral (select address_line1 from service_locations where tenant_id = c.tenant_id and customer_id = c.id order by created_at limit 1) sl on true
       where c.tenant_id = ${actor.tenantId} and ${locationSql(actor, sql`c.owning_location_id`)} ${byId} order by c.created_at desc limit ${limit}`;
     case "jobs": return sql`select j.*, c.display_name as customer_name, s.name as service_name, sl.address_line1 as address,
@@ -81,7 +84,8 @@ function viewQuery(resource: RecordResource, actor: SessionActor, id?: string): 
       where e.tenant_id=${actor.tenantId} and ${locationSql(actor, sql`e.organization_location_id`)} ${byId}
       order by e.created_at desc limit ${limit}`;
     case "invoices": return sql`select i.*, c.display_name as customer_name, i.invoice_number as number,
-      i.total_minor as total_cents, i.balance_minor as balance_cents, i.due_at as due_date
+      i.total_minor as total_cents, i.paid_minor as paid_cents, i.balance_minor as balance_cents,
+      ${openInvoiceBalance()} as open_balance_cents, i.due_at as due_date
       from invoices i join customers c on c.id=i.customer_id and c.tenant_id=i.tenant_id
       where i.tenant_id=${actor.tenantId} and ${locationSql(actor, sql`i.organization_location_id`)} ${byId}
       order by i.created_at desc limit ${limit}`;
@@ -98,7 +102,10 @@ function viewQuery(resource: RecordResource, actor: SessionActor, id?: string): 
              when rr.frequency_type='weekly' and rr.interval=2 then 'every_two_weeks'
              when rr.frequency_type='weekly' and rr.interval=4 then 'every_four_weeks'
              else rr.frequency_type end) as frequency,
-      rr.configuration->'scheduleVersions' as recurrence_versions
+      rr.configuration->'scheduleVersions' as recurrence_versions,
+      (select min(j.scheduled_date) from jobs j where j.tenant_id=sp.tenant_id and j.service_plan_id=sp.id
+        and j.customer_id=sp.customer_id and j.organization_id=c.organization_id
+        and ${locationSql(actor, sql`j.organization_location_id`)} and ${upcomingJob()}) as next_service
       from service_plans sp join customers c on c.id=sp.customer_id and c.tenant_id=sp.tenant_id
       join services s on s.id=sp.service_id and s.tenant_id=sp.tenant_id
       join recurrence_rules rr on rr.id=sp.recurrence_rule_id and rr.tenant_id=sp.tenant_id
