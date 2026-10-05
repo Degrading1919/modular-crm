@@ -47,7 +47,15 @@ On pull requests/default-branch changes run:
 4. unit tests
 5. integration tests
 6. build
-7. critical end-to-end tests where CI environment supports browser/database services
+7. complete end-to-end suite against isolated database/mail services
+
+Implemented by `.github/workflows/ci.yml`; view current [CI status and runs](https://github.com/Degrading1919/modular-crm/actions/workflows/ci.yml). It triggers on every pull request regardless of base branch and on pushes to `main`.
+
+Independent checks are named **Lint**, **Typecheck**, **Unit and integration tests**, **Production build**, and **Playwright (PostgreSQL)**, so one failed gate does not hide other results. They use Node 22, pnpm's exact `packageManager` version, frozen dependency installs and a pnpm store cache. Build/auth and encryption keys are freshly generated and masked per job, not repository secrets or deployment credentials. Existing dotenv scripts accept CI environment variables without a `.env`; a fresh local clone must replace the example auth secret before building.
+
+The browser job uses `postgres:17-alpine` and `axllent/mailpit:v1.27.8`, matching Compose. It migrates and seeds a fresh PostgreSQL database, installs Chromium with its system dependencies, then runs `pnpm test:e2e --reporter=line,html`. Playwright keeps one worker and zero retries. Failure artifacts contain the HTML report, retained traces and screenshots for seven days; only isolated development fixtures and temporary sessions are used. No real provider accounts, MinIO service, deployment or application image build is involved.
+
+Existing unit/integration tests retain their in-process isolated fixtures, including PGlite where already used. The app and worker in CI use real PostgreSQL; CI must not start the PGlite TCP server or compensate for its transport limitation with retries, sleeps or ordering changes. PGlite remains a local convenience, not evidence of production PostgreSQL behavior.
 
 ## Test isolation
 

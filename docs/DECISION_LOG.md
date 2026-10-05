@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-05 — GitHub quality gates use real PostgreSQL for browser verification
+
+- **Status:** Accepted
+- **Area:** Architecture / Implementation
+- **Decision:** Every pull request on any base branch and each push to `main` runs independent lint, typecheck, unit/integration, production build and complete Playwright gates. Use Node 22, repository-pinned pnpm, frozen installs, fresh PostgreSQL 17/Mailpit browser services and generated temporary secrets; keep existing isolated unit fixtures and reserve PGlite TCP for local convenience. CI does not retry failing tests, merge, deploy, or use production credentials.
+- **Rationale:** Reviewer/laptop-only checks and the documented PGlite TCP isolation defect should not define PostgreSQL browser verification; independent gate names and failure artifacts make failures attributable.
+- **Authoritative doc:** `docs/ARCHITECTURE.md`, `docs/V1_DEVELOPER_WORKFLOW.md`
+
 ## 2026-10-05 — Staff select real records and record the actual payment method
 
 - **Status:** Accepted

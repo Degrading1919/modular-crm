@@ -24,7 +24,7 @@ The intended user may have little technical experience beyond Facebook, email, s
 
 ## Local quickstart
 
-The standard local setup uses Docker Compose for PostgreSQL, MinIO, and Mailpit. Install Docker with Compose, Node.js 20.9 or newer, and pnpm 11.19.0 (the version recorded in `package.json`). From the repository root:
+The standard local setup uses Docker Compose for PostgreSQL, MinIO, and Mailpit. Install Docker with Compose, Node.js 22, and pnpm 11.19.0 (the version recorded in `package.json`). From the repository root:
 
 ```powershell
 pnpm install
@@ -39,7 +39,7 @@ On macOS or Linux, use `cp .env.example .env` in place of `Copy-Item`. Keep the 
 
 The example environment also enables local custom-domain verification simulation. Production mode rejects simulated verification even if that development setting is present.
 
-The example `BETTER_AUTH_SECRET` is valid only for local development. Before `pnpm build` or a production start, set a unique secret of at least 32 characters in the environment; the production build and runtime reject the example value.
+The example `BETTER_AUTH_SECRET` is valid only for local development. Before `pnpm build` or a production start, set a unique secret of at least 32 characters in the environment or your ignored `.env`; the production build and runtime reject the example value. For example, run `openssl rand -hex 32` and use the generated value. Never commit it or reuse a CI test secret for deployment.
 
 Open the application at [http://localhost:3000](http://localhost:3000). Mailpit's local email inbox is available at [http://localhost:8025](http://localhost:8025), and the MinIO console at [http://localhost:9001](http://localhost:9001). The seeded tenants and playtest scenarios are documented in [V1 Seed and Playtest Scenarios](./docs/V1_SEED_SCENARIOS.md).
 
@@ -73,6 +73,10 @@ pnpm infra:pglite
 ```
 
 It prints the PostgreSQL URL it serves (by default `postgresql://postgres:postgres@127.0.0.1:5433/postgres`). Copy that URL into `DATABASE_URL` in `.env`, then run `pnpm db:migrate`, `pnpm db:seed`, and `pnpm dev` as above. This local database is stored under `.local-data/pglite/`; set `PGLITE_PORT` or `PGLITE_DATA_DIR` before starting the server to choose another port or data directory. PGlite covers the database required for the application; Compose remains the documented option when you also want the local MinIO and Mailpit services. If MinIO is not running, remove or comment out the five `OBJECT_STORAGE_ENDPOINT`, `OBJECT_STORAGE_BUCKET`, `OBJECT_STORAGE_ACCESS_KEY`, `OBJECT_STORAGE_SECRET_KEY`, and `OBJECT_STORAGE_REGION` values from `.env` to use durable local file storage.
+
+## Continuous integration
+
+[GitHub CI](https://github.com/Degrading1919/modular-crm/actions/workflows/ci.yml) runs lint, typecheck, unit/integration tests, production build, and the complete Playwright suite on every pull request (including stacked branches) and pushes to `main`. Browser tests use fresh PostgreSQL 17 and Mailpit services, not the local PGlite TCP emulator. Node 22, the repository's pinned pnpm, frozen installs, a pnpm store cache, and generated per-job test secrets make the environment reproducible without a local `.env` or provider credentials. Failed browser runs retain an HTML report and traces for seven days. See [developer quality gates](docs/V1_DEVELOPER_WORKFLOW.md#ci). CI never deploys or merges.
 
 ## Repository role
 
