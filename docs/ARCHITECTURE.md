@@ -157,3 +157,7 @@ Industry Packs may install default recipes without preventing owners from creati
 Routing is a first-class V1 capability rather than a later add-on.
 
 The shared core should support route stops, technician assignment, stop ordering, geocoded locations, estimated drive time, service duration, route optimization requests, and persisted route plans. Mapping/routing providers should remain behind connector/provider boundaries.
+
+Field mutations use a serial, identity-scoped persisted queue. Transitions, notes and proof for the same job retain FIFO order; shift actions retain their own FIFO order. An unresolved operation holds later operations for that work item, not unrelated jobs, mileage or new ticket drafts. Sync, enqueue, retry and discard are serialized across the local page and, where Web Locks are available, across tabs. Retries preserve operation IDs, timestamps, payloads and expected prior states; offline projected statuses never bypass server validation or conflict detection.
+
+Route publication validates all stops inside the dispatch transaction: tenant/organization/location, route date, current assignment and canonical job readiness must match before any stop is dispatched. Re-publication after optimization may retain this route's already dispatched/active/finished stops, but must never reset their job progress. Dispatch records canonical job history and domain events atomically with publication.

@@ -5,7 +5,7 @@ import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import { and, eq } from "drizzle-orm";
 import {
-  breaks, fieldOperationReceipts, fileLinks, files, jobStatusEvents, jobs, notes, schema, seedDevelopment, seedIds, shifts, timeEntries,
+  breaks, completionProofs, fieldOperationReceipts, fileLinks, files, jobAssignments, jobStatusEvents, jobs, notes, schema, seedDevelopment, seedIds, shifts, timeEntries,
   type Database,
 } from "@modular-crm/db";
 import { permissionsForRole } from "@modular-crm/domain";
@@ -74,7 +74,7 @@ describe("field offline mutation receipts", () => {
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
     expect(await second.json()).toMatchObject({ item: { id: seedIds.recleanJob, status: "en_route" }, duplicate: true });
-    expect(await db.select().from(jobStatusEvents).where(and(eq(jobStatusEvents.tenantId, seedIds.happyTenant), eq(jobStatusEvents.jobId, seedIds.recleanJob)))).toHaveLength(1);
+    expect(await db.select().from(jobStatusEvents).where(and(eq(jobStatusEvents.tenantId, seedIds.happyTenant), eq(jobStatusEvents.jobId, seedIds.recleanJob), eq(jobStatusEvents.toStatus, "en_route")))).toHaveLength(1);
 
     await expect(transitionJob(technician, seedIds.recleanJob, "en_route", {
       expectedPriorState: "dispatched",
@@ -94,7 +94,7 @@ describe("field offline mutation receipts", () => {
     ]);
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
-    expect(await db.select().from(jobStatusEvents).where(and(eq(jobStatusEvents.tenantId, seedIds.happyTenant), eq(jobStatusEvents.jobId, seedIds.upcomingJob)))).toHaveLength(1);
+    expect(await db.select().from(jobStatusEvents).where(and(eq(jobStatusEvents.tenantId, seedIds.happyTenant), eq(jobStatusEvents.jobId, seedIds.upcomingJob), eq(jobStatusEvents.toStatus, "en_route")))).toHaveLength(1);
     expect((await db.select().from(jobs).where(eq(jobs.id, seedIds.upcomingJob)))[0]?.status).toBe("en_route");
   });
 
@@ -157,5 +157,28 @@ describe("field offline mutation receipts", () => {
     expect(storagePutMock).toHaveBeenCalledTimes(1);
     await expect(postFieldJob(technician, seedIds.recleanJob, "note", { ...noteBody, text: "Changed detail" }))
       .rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT", status: 409 });
+  });
+
+  it("replays a field completion without duplicating checklist, photo, completion proof or job events", async () => {
+    const jobId = id(960);
+    await db.insert(jobs).values({ id: jobId, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, serviceId: seedIds.weeklyService, status: "dispatched", scheduledDate: "2026-10-04", billable: false });
+    await db.insert(jobAssignments).values({ tenantId: seedIds.happyTenant, jobId, membershipId: seedIds.terryMembership, assignmentRole: "primary" });
+    await transitionJob(technician, jobId, "in_progress", { expectedPriorState: "dispatched" });
+    const body = { clientOperationId: id(961), deviceTimestamp: "2026-10-04T15:00:00Z", expectedPriorState: "in_progress", checklist: { propertyConfirmed: true, gateSecured: true }, note: "Offline completion evidence", photoDataUrl: "data:image/png;base64,aGVsbG8=", photoName: "proof.png" };
+    const uploadCount = storagePutMock.mock.calls.length;
+    const first = await postFieldJob(technician, jobId, "complete", body);
+    expect(first.status).toBe(200);
+    const retry = await postFieldJob(technician, jobId, "complete", body);
+    expect(await retry.json()).toMatchObject({ item: { id: jobId, status: "completed" }, duplicate: true });
+    const proof = await db.select().from(completionProofs).where(eq(completionProofs.jobId, jobId));
+    expect(proof).toHaveLength(1);
+    expect(proof[0]?.snapshot).toMatchObject({ checklist: { propertyConfirmed: true, gateSecured: true } });
+    expect(await db.select().from(fileLinks).where(eq(fileLinks.entityId, jobId))).toHaveLength(1);
+    expect(await db.select().from(jobStatusEvents).where(and(eq(jobStatusEvents.jobId, jobId), eq(jobStatusEvents.toStatus, "completed")))).toHaveLength(1);
+    expect(storagePutMock.mock.calls.length - uploadCount).toBe(1);
+    await expect(postFieldJob(technician, jobId, "complete", { ...body, note: "changed evidence" })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT", status: 409 });
+    await expect(postFieldJob(cleanTechnician, jobId, "complete", body)).rejects.toMatchObject({ status: 404 });
+    await expect(postFieldJob({ ...technician, membershipId: seedIds.caseyMembership }, jobId, "complete", body)).rejects.toMatchObject({ status: 404 });
+    await expect(postFieldJob({ ...technician, permissions: new Set() }, jobId, "complete", body)).rejects.toMatchObject({ status: 404 });
   });
 });

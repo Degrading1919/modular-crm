@@ -147,6 +147,8 @@ Primary capabilities:
 
 The technician experience should hide unrelated office functionality by default.
 
+Field job actions must intersect canonical legal transitions with the technician's granted permissions, including an explicit resume action for paused jobs. Device-saved progress must be distinguished from office-synced progress. Failed/conflicted updates retain evidence for review, current-job inspection and deliberate retry; technicians can download saved details before confirming discard of an update and its later dependent updates. Discard must leave unrelated work intact and must explain that it does not undo anything already received by the office.
+
 ### Customer
 
 Persistent self-service portal plus secure action links.

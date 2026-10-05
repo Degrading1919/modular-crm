@@ -274,10 +274,10 @@ export async function seedDevelopment(db: Database, actorIds: Partial<Record<See
 
     await tx.insert(jobs).values([
       { id: seedIds.completedJob, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, servicePlanId: seedIds.carterPlan, serviceId: seedIds.weeklyService, status: "completed", scheduledDate: day(-7), actualStartedAt: at(-7, 14), actualCompletedAt: at(-7, 15), priceSnapshot: { amountMinor: 2500, currency: "USD" }, customerSummary: "Yard cleanup completed" },
-      { id: seedIds.upcomingJob, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, servicePlanId: seedIds.carterPlan, serviceId: seedIds.weeklyService, status: "scheduled", scheduledDate: day(2), serviceWindowStart: at(2, 13), serviceWindowEnd: at(2, 17), priceSnapshot: { amountMinor: 2500, currency: "USD" } },
+      { id: seedIds.upcomingJob, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, servicePlanId: seedIds.carterPlan, serviceId: seedIds.weeklyService, status: "dispatched", assignedRouteId: seedIds.happyRoute, scheduledDate: day(2), serviceWindowStart: at(2, 13), serviceWindowEnd: at(2, 17), priceSnapshot: { amountMinor: 2500, currency: "USD" } },
       { id: seedIds.skippedJob, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: seedIds.nguyen, serviceLocationId: seedIds.nguyenLocation, servicePlanId: seedIds.nguyenPlan, serviceId: seedIds.weeklyService, status: "skipped", scheduledDate: day(-5), billable: false, skipReasonCode: "unsafe_pet", customerSummary: "Visit skipped because access was unsafe" },
-      { id: seedIds.recleanJob, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, serviceId: seedIds.weeklyService, parentJobId: seedIds.completedJob, relationType: "reclean", status: "scheduled", scheduledDate: day(2), billable: false },
-      { id: seedIds.cleanJob, tenantId: seedIds.cleanTenant, organizationId: seedIds.cleanOrganization, organizationLocationId: seedIds.cleanBranch, customerId: seedIds.cleanCarter, serviceLocationId: seedIds.cleanCarterLocation, servicePlanId: seedIds.cleanCarterPlan, serviceId: seedIds.cleanService, status: "scheduled", scheduledDate: day(2), priceSnapshot: { amountMinor: 2700, currency: "USD" } },
+      { id: seedIds.recleanJob, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, serviceId: seedIds.weeklyService, parentJobId: seedIds.completedJob, relationType: "reclean", status: "dispatched", assignedRouteId: seedIds.happyRoute, scheduledDate: day(2), billable: false },
+      { id: seedIds.cleanJob, tenantId: seedIds.cleanTenant, organizationId: seedIds.cleanOrganization, organizationLocationId: seedIds.cleanBranch, customerId: seedIds.cleanCarter, serviceLocationId: seedIds.cleanCarterLocation, servicePlanId: seedIds.cleanCarterPlan, serviceId: seedIds.cleanService, status: "dispatched", assignedRouteId: seedIds.cleanRoute, scheduledDate: day(2), priceSnapshot: { amountMinor: 2700, currency: "USD" } },
     ]).onConflictDoNothing();
     await tx.insert(jobAssignments).values([
       { id: uuid(320), tenantId: seedIds.happyTenant, jobId: seedIds.completedJob, membershipId: seedIds.terryMembership, assignmentRole: "primary", assignedAt: at(-8) },
@@ -287,8 +287,12 @@ export async function seedDevelopment(db: Database, actorIds: Partial<Record<See
       { id: uuid(324), tenantId: seedIds.cleanTenant, jobId: seedIds.cleanJob, membershipId: seedIds.cleanTechMembership, assignmentRole: "primary", assignedAt: at(-1) },
     ]).onConflictDoNothing();
     await tx.insert(jobStatusEvents).values([
-      { id: uuid(330), tenantId: seedIds.happyTenant, jobId: seedIds.completedJob, fromStatus: "scheduled", toStatus: "started", actorType: "staff", actorId: seedIds.terryMembership, occurredAt: at(-7, 14) },
-      { id: uuid(331), tenantId: seedIds.happyTenant, jobId: seedIds.completedJob, fromStatus: "started", toStatus: "completed", actorType: "staff", actorId: seedIds.terryMembership, occurredAt: at(-7, 15) },
+      { id: uuid(333), tenantId: seedIds.happyTenant, jobId: seedIds.completedJob, fromStatus: "scheduled", toStatus: "dispatched", actorType: "staff", actorId: seedIds.oliviaMembership, occurredAt: at(-8) },
+      { id: uuid(334), tenantId: seedIds.happyTenant, jobId: seedIds.upcomingJob, fromStatus: "scheduled", toStatus: "dispatched", actorType: "staff", actorId: seedIds.oliviaMembership, occurredAt: at(-1) },
+      { id: uuid(335), tenantId: seedIds.happyTenant, jobId: seedIds.recleanJob, fromStatus: "scheduled", toStatus: "dispatched", actorType: "staff", actorId: seedIds.oliviaMembership, occurredAt: at(-1) },
+      { id: uuid(336), tenantId: seedIds.cleanTenant, jobId: seedIds.cleanJob, fromStatus: "scheduled", toStatus: "dispatched", actorType: "staff", actorId: seedIds.cleanOwnerMembership, occurredAt: at(-1) },
+      { id: uuid(330), tenantId: seedIds.happyTenant, jobId: seedIds.completedJob, fromStatus: "dispatched", toStatus: "in_progress", actorType: "staff", actorId: seedIds.terryMembership, occurredAt: at(-7, 14) },
+      { id: uuid(331), tenantId: seedIds.happyTenant, jobId: seedIds.completedJob, fromStatus: "in_progress", toStatus: "completed", actorType: "staff", actorId: seedIds.terryMembership, occurredAt: at(-7, 15) },
       { id: uuid(332), tenantId: seedIds.happyTenant, jobId: seedIds.skippedJob, fromStatus: "scheduled", toStatus: "skipped", reasonCode: "unsafe_pet", actorType: "staff", actorId: seedIds.terryMembership, occurredAt: at(-5, 14) },
     ]).onConflictDoNothing();
     await tx.insert(routePlans).values([
@@ -296,9 +300,9 @@ export async function seedDevelopment(db: Database, actorIds: Partial<Record<See
       { id: seedIds.cleanRoute, tenantId: seedIds.cleanTenant, organizationLocationId: seedIds.cleanBranch, membershipId: seedIds.cleanTechMembership, routeDate: day(2), status: "published", startLocation: { label: "Main Branch" }, endLocation: { label: "Main Branch" }, plannedStartAt: at(2, 13), estimatedDistanceMeters: 8400, estimatedDriveSeconds: 1800, estimatedServiceSeconds: 1800, publishedAt: at(-1) },
     ]).onConflictDoNothing();
     await tx.insert(routeStops).values([
-      { id: uuid(340), tenantId: seedIds.happyTenant, routePlanId: seedIds.happyRoute, jobId: seedIds.upcomingJob, sequence: 1, status: "pending", plannedArrivalAt: at(2, 14) },
-      { id: uuid(341), tenantId: seedIds.happyTenant, routePlanId: seedIds.happyRoute, jobId: seedIds.recleanJob, sequence: 2, status: "pending", plannedArrivalAt: at(2, 15) },
-      { id: uuid(342), tenantId: seedIds.cleanTenant, routePlanId: seedIds.cleanRoute, jobId: seedIds.cleanJob, sequence: 1, status: "pending", plannedArrivalAt: at(2, 14) },
+      { id: uuid(340), tenantId: seedIds.happyTenant, routePlanId: seedIds.happyRoute, jobId: seedIds.upcomingJob, sequence: 1, status: "planned", plannedArrivalAt: at(2, 14) },
+      { id: uuid(341), tenantId: seedIds.happyTenant, routePlanId: seedIds.happyRoute, jobId: seedIds.recleanJob, sequence: 2, status: "planned", plannedArrivalAt: at(2, 15) },
+      { id: uuid(342), tenantId: seedIds.cleanTenant, routePlanId: seedIds.cleanRoute, jobId: seedIds.cleanJob, sequence: 1, status: "planned", plannedArrivalAt: at(2, 14) },
     ]).onConflictDoNothing();
     await tx.insert(completionProofs).values([
       { id: uuid(350), tenantId: seedIds.happyTenant, jobId: seedIds.completedJob, completedAt: at(-7, 15), completedByMembershipId: seedIds.terryMembership, summary: "Front and back yard cleaned; gate secured", snapshot: { checklist: ["Yard swept", "Gate secured"], photoCount: 0 } },

@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-04 — Field actions and offline recovery share a causal contract
+
+- **Status:** Accepted
+- **Area:** Architecture / UX / Implementation
+- **Decision:** Offer field actions only when canonical job state and granted permissions permit them; publish routes only after atomically validating and dispatching their eligible stops. Keep offline execution serial with FIFO dependency boundaries per job and per shift, allowing unrelated eligible work past unresolved items. Preserve evidence and operation identity through review/retry, with export and explicit dependent-aware discard that never undoes server work.
+- **Rationale:** Scheduled-job buttons, partial route readiness and a global queue failure barrier made valid field work inconsistent or unrecoverable. Seed fixtures must represent legal transitions and published-route dispatch state.
+- **Authoritative doc:** `docs/ARCHITECTURE.md`, `docs/PRODUCT_SCOPE.md`, `docs/V1_FIELD_APP.md`
+
 ## 2026-10-04 — Office location access is read-only by default; Payments links use receipts
 
 - **Status:** Accepted

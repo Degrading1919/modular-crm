@@ -100,7 +100,7 @@ test("field queue preserves operation identity and evidence through retry, confl
 
     const notePath = `/api/v1/field/jobs/${jobId}/note`;
     const attempts: Array<Record<string, unknown>> = [];
-    let transientFailuresRemaining = 2;
+    let connectionUnavailable = true;
     const savedEvidence = `Evidence retained across reconnect ${unique}`;
     await field.getByLabel("What should the office know?").fill(savedEvidence);
     await field.getByRole("button", { name: "Save note" }).click();
@@ -117,8 +117,7 @@ test("field queue preserves operation identity and evidence through retry, confl
 
     await field.route(notePath, async (route) => {
       attempts.push(route.request().postDataJSON() as Record<string, unknown>);
-      if (transientFailuresRemaining > 0) {
-        transientFailuresRemaining -= 1;
+      if (connectionUnavailable) {
         await route.abort("internetdisconnected");
       } else {
         await route.continue();
@@ -129,6 +128,9 @@ test("field queue preserves operation identity and evidence through retry, confl
     await field.reload();
     const retainedAfterReload = await field.getByLabel(/Queued update/).first();
     await expect(retainedAfterReload).toContainText(savedEvidence);
+    await expect(retainedAfterReload).toContainText(/pending sync/i);
+    await expect.poll(() => attempts.length).toBeGreaterThan(0);
+    connectionUnavailable = false;
     await retainedAfterReload.getByRole("button", { name: "Retry update" }).click();
     await expect(field.getByText("Your field updates are synced.", { exact: false })).toBeVisible();
     expect(offlinePayload?.clientOperationId).toBeTruthy();
@@ -143,8 +145,8 @@ test("field queue preserves operation identity and evidence through retry, confl
     await field.getByRole("button", { name: "Save note" }).click();
     const conflict = field.getByLabel(/Queued update/).first();
     await expect(conflict).toContainText(/needs review/i);
-    await expect(conflict).toContainText("Expected state: in_progress");
-    await expect(conflict).toContainText("Current state: canceled");
+    await expect(conflict).toContainText("Expected state: In Progress");
+    await expect(conflict).toContainText("Current state: Canceled");
     await expect(conflict.getByText(conflictEvidence).first()).toBeVisible();
 
     await field.reload();

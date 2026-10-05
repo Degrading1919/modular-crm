@@ -83,6 +83,10 @@ On reconnect:
 
 Do not silently overwrite office changes.
 
+Sync remains serial, with causal ordering per job and per shift rather than a global failure barrier. Job actions use the canonical state graph and granted permissions; pending device-saved transitions project the next legal action without relaxing server checks. Paused jobs offer **Resume job**, not a new start. Route publication atomically dispatches every eligible scheduled stop or requires the office to review changed stops before publishing.
+
+Queue recovery offers current-job review, unchanged-ID retry, downloadable saved details/evidence, and confirmed discard. Discard includes later dependent updates for that work item so they cannot be replayed without their prerequisite, preserves unrelated queued work, and never claims to reverse already accepted server work. Unresolved items must not be retried automatically as if they were transient connectivity failures.
+
 ## Conflict examples
 
 If office cancels a job while technician was offline and technician later attempts completion:
