@@ -8,7 +8,7 @@ Newest entries go first.
 
 - **Status:** Accepted
 - **Area:** Product / UX / Implementation
-- **Decision:** Staff create forms use scoped searchable named records and saved service-address choices, persisting the selected address for jobs/plans. Record money already received with an explicit Cash, Check, externally taken Card, or Other method and optional reference; separate these facts from connector provenance, preserve authorization/allocation/idempotency, and never default to a test charge or infer a historical method.
+- **Decision:** Staff create forms use scoped searchable named records and saved service-address choices, persisting the selected address for jobs/plans and validating the operational branch resolved from address, customer, then workspace. Record money already received with an explicit Cash, Check, externally taken Card, or Other method and optional reference; separate these facts from connector provenance, preserve authorization/allocation/idempotency, and never default to a test charge or infer a historical method.
 - **Rationale:** Raw-ID forms, ignored addresses, and test-only invoice recording prevented usable staff entry and misrepresented real receipts. Payments recording reuses the existing invoice workflow while the collection stays read-only.
 - **Authoritative doc:** `docs/PRODUCT_SCOPE.md`, `docs/V1_BUSINESS_RULES.md`, `docs/V1_DATABASE_SCHEMA.md`
 

@@ -281,10 +281,11 @@ async function createResource(resource: RecordResource, request: Request, actor:
     const [service] = await db.select().from(services).where(and(eq(services.tenantId, actor.tenantId), body.serviceId ? eq(services.id, body.serviceId) : eq(services.name, body.serviceName ?? ""))).limit(1);
     if (!service) throw new DomainError("VALIDATION_ERROR", "Choose a service from your catalog.", 422);
     const location = await chosenServiceLocation(actor, customer.id, body.serviceLocationId);
-    assertLocationAccess(actor, location.organizationLocationId);
+    const organizationLocationId = location.organizationLocationId ?? customer.owningLocationId ?? locationId;
+    assertLocationAccess(actor, organizationLocationId);
     const status = body.scheduledDate ? "scheduled" : "unscheduled";
     const job = await db.transaction(async (tx) => {
-      const [created] = await tx.insert(jobs).values({ tenantId: actor.tenantId, organizationId: customer.organizationId, organizationLocationId: location.organizationLocationId, customerId: customer.id, serviceLocationId: location.id, serviceId: service.id, status, scheduledDate: body.scheduledDate, estimatedDurationMinutes: service.defaultDurationMinutes, internalSummary: body.notes }).returning();
+      const [created] = await tx.insert(jobs).values({ tenantId: actor.tenantId, organizationId: customer.organizationId, organizationLocationId, customerId: customer.id, serviceLocationId: location.id, serviceId: service.id, status, scheduledDate: body.scheduledDate, estimatedDurationMinutes: service.defaultDurationMinutes, internalSummary: body.notes }).returning();
       if (!created) throw new Error("Could not create job");
       await tx.insert(jobStatusEvents).values({ tenantId: actor.tenantId, jobId: created.id, fromStatus: null, toStatus: status, actorType: "staff", actorId: actor.userId });
       await recordEvent(actor, { type: "job.created", entityType: "job", entityId: created.id, payload: { status }, auditAction: "job.create", locationId: created.organizationLocationId }, tx);
@@ -364,7 +365,8 @@ async function createResource(resource: RecordResource, request: Request, actor:
     if (!customer || !service) throw new DomainError("NOT_FOUND", "Customer or service not found.", 404);
     assertLocationAccess(actor, customer.owningLocationId);
     const location = await chosenServiceLocation(actor, customer.id, body.serviceLocationId);
-    assertLocationAccess(actor, location.organizationLocationId);
+    const organizationLocationId = location.organizationLocationId ?? customer.owningLocationId ?? locationId;
+    assertLocationAccess(actor, organizationLocationId);
     const [tenant] = await db.select({ timezone: tenants.defaultTimezone }).from(tenants).where(eq(tenants.id, actor.tenantId));
     const timezone = tenant?.timezone ?? "America/New_York";
     const effectiveFrom = body.startDate ?? new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date());
@@ -398,7 +400,7 @@ async function createResource(resource: RecordResource, request: Request, actor:
       if (!rule) throw new Error("Could not create recurrence");
       const [plan] = await tx.insert(servicePlans).values({
         tenantId: actor.tenantId, customerId: customer.id, serviceLocationId: location.id,
-        organizationLocationId: location.organizationLocationId,
+        organizationLocationId,
         serviceId: service.id, recurrenceRuleId: rule.id, status: "active", effectiveFrom,
         pricingSnapshot: planPriceSnapshot, billingConfiguration: { type: "per_job" },
       }).returning();

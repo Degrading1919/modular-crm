@@ -89,6 +89,26 @@ describe("scoped searchable staff records", () => {
   });
 });
 describe("saved address selection", () => {
+  it.each(["jobs", "service-plans"].flatMap((resource) => [
+    { resource, name: "workspace fallback", customerBranch: null, addressBranch: null, expectedBranch: seedIds.augusta },
+    { resource, name: "customer fallback", customerBranch: seedIds.northAugusta, addressBranch: null, expectedBranch: seedIds.northAugusta },
+    { resource, name: "explicit address precedence", customerBranch: seedIds.augusta, addressBranch: seedIds.northAugusta, expectedBranch: seedIds.northAugusta },
+  ]))("preserves $name for $resource and scoped staff visibility", async ({ resource, customerBranch, addressBranch, expectedBranch }) => {
+    const customerId = crypto.randomUUID(), addressId = crypto.randomUUID();
+    await db.insert(customers).values({ id: customerId, tenantId: owner.tenantId, organizationId: seedIds.happyOrganization, owningLocationId: customerBranch, displayName: "Branch fallback household", customerType: "residential" });
+    await db.insert(serviceLocations).values({ id: addressId, tenantId: owner.tenantId, customerId, organizationLocationId: addressBranch, name: "Home", addressLine1: "123 Saved Address", city: "Augusta", region: "GA", postalCode: "30909" });
+    const response = await create(resource, { customerId, serviceId: seedIds.weeklyService, serviceLocationId: addressId, frequency: "weekly", scheduledDate: "2026-10-06", startDate: "2026-10-06" }, owner);
+    expect(response!.status).toBe(201);
+    const { item } = await response!.json();
+    expect(item).toMatchObject({ organizationLocationId: expectedBranch, serviceLocationId: addressId });
+    const table = resource === "jobs" ? jobs : servicePlans;
+    const [stored] = await db.select().from(table).where(eq(table.id, item.id));
+    expect(stored).toMatchObject({ organizationLocationId: expectedBranch, serviceLocationId: addressId });
+    if (expectedBranch === seedIds.augusta) expect((await read(`${resource}/${item.id}`, morgan)).item.id).toBe(item.id);
+    else await expect(read(`${resource}/${item.id}`, morgan)).rejects.toMatchObject({ status: 404 });
+    const [address] = await db.select().from(serviceLocations).where(eq(serviceLocations.id, addressId));
+    expect(address!.organizationLocationId).toBe(addressBranch);
+  });
   it.each(["jobs", "service-plans"])("persists the chosen saved address for %s and rejects unrelated/hidden choices", async (resource) => {
     const payload = { customerId: fixtureCustomer, serviceId: seedIds.weeklyService, serviceLocationId: secondAddress, frequency: "weekly", scheduledDate: "2026-10-06" };
     const response = await create(resource, payload);
