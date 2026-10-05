@@ -8,12 +8,12 @@ import { and, eq } from "drizzle-orm";
 import { seedDevelopment, seedIds, seedUserIds, schema, type Database } from "@modular-crm/db";
 import type { SessionActor } from "../lib/api/actor.ts";
 
-const { getDbMock, sendDevelopmentEmailMock, authApiMock } = vi.hoisted(() => ({
-  getDbMock: vi.fn(), sendDevelopmentEmailMock: vi.fn(),
+const { getDbMock, sendPlatformEmailMock, authApiMock } = vi.hoisted(() => ({
+  getDbMock: vi.fn(), sendPlatformEmailMock: vi.fn(),
   authApiMock: { signUpEmail: vi.fn(), requestPasswordReset: vi.fn() },
 }));
 vi.mock("../lib/db.ts", () => ({ getDb: getDbMock }));
-vi.mock("../lib/mail.ts", () => ({ sendDevelopmentEmail: sendDevelopmentEmailMock }));
+vi.mock("../lib/mail.ts", () => ({ sendPlatformEmail: sendPlatformEmailMock }));
 vi.mock("../lib/auth.ts", () => ({ auth: { api: authApiMock } }));
 
 process.env.DATABASE_URL ??= "postgres://localhost:5433/modular_crm_test";
@@ -90,13 +90,14 @@ describe("customer portal lifecycle", () => {
   it("invites with a hashed expiring activation token and revokes without erasing grants", async () => {
     const email = "portal-lifecycle-test@example.test";
     await db.insert(schema.user).values({ id: "portal-lifecycle-test-user", name: "Portal Customer", email });
-    sendDevelopmentEmailMock.mockClear();
+    sendPlatformEmailMock.mockClear();
     const invited = await staffCall(`/customers/${seedIds.carter}/portal-access`, "POST", { email, serviceLocationIds: [seedIds.carterLocation] });
     expect(invited.status).toBe(201);
     const { item } = await invited.json() as { item: { id: string; status: string; serviceLocationIds: string[] } };
     expect(item).toMatchObject({ status: "invited", serviceLocationIds: [seedIds.carterLocation] });
-    expect(sendDevelopmentEmailMock).toHaveBeenCalledOnce();
-    const invitation = String(sendDevelopmentEmailMock.mock.calls[0]?.[2]);
+    expect(sendPlatformEmailMock).toHaveBeenCalledOnce();
+    expect(sendPlatformEmailMock.mock.calls[0]?.[3]).toMatchObject({ name: "Happy Yards Pet Waste", replyTo: "hello@happyyards.local", address: expect.stringContaining("125 Broad Street") });
+    const invitation = String(sendPlatformEmailMock.mock.calls[0]?.[2]);
     const activationUrl = new URL(invitation.slice(invitation.lastIndexOf("http")));
     const token = activationUrl.searchParams.get("token")!;
     const [storedToken] = await db.select().from(schema.verification).where(eq(schema.verification.identifier, `portal_invite:${item.id}`));
@@ -141,7 +142,7 @@ describe("customer portal lifecycle", () => {
     await db.insert(schema.user).values({ id: "portal-mail-failure-user", name: "Mail Failure", email });
     const priorInviteEvents = await db.select().from(schema.domainEvents).where(and(eq(schema.domainEvents.tenantId, seedIds.happyTenant), eq(schema.domainEvents.eventType, "customer_portal_access.invited")));
     const priorInviteAudits = await db.select().from(schema.auditEvents).where(and(eq(schema.auditEvents.tenantId, seedIds.happyTenant), eq(schema.auditEvents.action, "customer.portal_access_invite")));
-    sendDevelopmentEmailMock.mockRejectedValueOnce(new Error("SMTP unavailable"));
+    sendPlatformEmailMock.mockRejectedValueOnce(new Error("SMTP unavailable"));
     await expect(staffCall(`/customers/${seedIds.carter}/portal-access`, "POST", { email, serviceLocationIds: [seedIds.carterLocation] }))
       .rejects.toMatchObject({ status: 503 });
     const [savedUser] = await db.select().from(schema.user).where(eq(schema.user.id, "portal-mail-failure-user"));

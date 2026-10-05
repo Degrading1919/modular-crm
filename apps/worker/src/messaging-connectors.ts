@@ -74,14 +74,17 @@ async function connectLive(db: Database, registry: ConnectorRegistry, row: Insta
     registry.createOAuthScope(row.tenantId, row.connectorKey, tokens, [channel]));
 }
 
-/** Rebuilds a send scope from persisted tenant installations, with local mock delivery only when no service is configured. */
-export async function hydrateMessagingConnector(db: Database, registry: ConnectorRegistry, tenantId: string, channel: "email" | "sms"): Promise<{ installationId: string | null; mode: "mock" | "connected" }> {
+/** Rebuilds persisted live scopes. Platform email needs no tenant connection; broken live credentials fail closed. */
+export async function hydrateMessagingConnector(db: Database, registry: ConnectorRegistry, tenantId: string, channel: "email" | "sms", mockConnectors = process.env.MOCK_CONNECTORS === "true"): Promise<{ installationId: string | null; mode: "mock" | "connected" | "platform" }> {
   const rows = await db.select().from(connectorInstallations).where(eq(connectorInstallations.tenantId, tenantId));
   const relevant = rows.filter((row) => registry.getDefinition(row.connectorKey)?.manifest.capabilities.includes(channel));
   if (relevant.length === 0) {
-    if (process.env.MOCK_CONNECTORS !== "true") throw new ConnectorError("not_connected", "Connect a messaging service", false);
-    registry.connectMock(tenantId, "mock-communication");
-    return { installationId: null, mode: "mock" };
+    if (mockConnectors) {
+      registry.connectMock(tenantId, "mock-communication");
+      return { installationId: null, mode: "mock" };
+    }
+    if (channel === "email") return { installationId: null, mode: "platform" };
+    throw new ConnectorError("not_connected", "Connect a texting service", false);
   }
   const connected = relevant.filter((row) => row.status === "connected");
   const live = connected.filter((row) => registry.getDefinition(row.connectorKey)?.manifest.availability === "credentials_ready")
@@ -92,10 +95,11 @@ export async function hydrateMessagingConnector(db: Database, registry: Connecto
     return { installationId: live.id, mode: "connected" };
   }
   const mock = connected.find((row) => row.connectorKey === "mock-communication");
-  if (mock) {
+  if (mock && mockConnectors) {
     registry.connectMock(tenantId, "mock-communication");
     registry.setPrimary(tenantId, channel, "mock-communication");
     return { installationId: mock.id, mode: "mock" };
   }
-  throw new ConnectorError("not_connected", "Connect a messaging service", false);
+  if (channel === "email" && !relevant.some((row) => ["needs_attention", "expired", "error"].includes(row.status))) return { installationId: null, mode: "platform" };
+  throw new ConnectorError("not_connected", channel === "sms" ? "Connect a texting service" : "Reconnect your email service", false);
 }

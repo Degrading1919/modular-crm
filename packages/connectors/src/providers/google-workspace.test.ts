@@ -17,6 +17,21 @@ const scopeControl = (enabledCapabilities: ("calendar" | "email")[], grantedScop
 });
 
 describe("Google Workspace OAuth connector", () => {
+  it("preserves HTML, business Reply-To and standard one-click headers in Gmail MIME", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const raw = Buffer.from(JSON.parse(String(init?.body)).raw, "base64url").toString("utf8");
+      expect(raw).toContain("Reply-To: owner@business.test");
+      expect(raw).toContain("List-Unsubscribe: <https://crm.example.test/email/unsubscribe?token=signed>");
+      expect(raw).toContain("List-Unsubscribe-Post: List-Unsubscribe=One-Click");
+      expect(raw).toContain("multipart/alternative");
+      expect(raw).toContain("Business address");
+      return json({ id: "decorated-mail" });
+    }) as ProviderFetch;
+    const email = createGoogleWorkspaceConnector({ ...config, fetcher }).oauth.createScope(scopeControl(["email"])).email!;
+    await expect(email.sendEmail({ to: "customer@example.test", subject: "Reminder", body: "Business address", html: "<p>Business address</p>",
+      replyTo: "owner@business.test", unsubscribeUrl: "https://crm.example.test/email/unsubscribe?token=signed", idempotencyKey: "decorated" })).resolves.toMatchObject({ status: "sent" });
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
   it("requests only the enabled capability scopes and gates missing app configuration", () => {
     const connector = createGoogleWorkspaceConnector(config);
     expect(connector.oauth.scopesForCapabilities?.(["calendar", "email", "payments"])).toEqual(allScopes);

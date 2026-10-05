@@ -231,8 +231,13 @@ export const OAUTH_CONNECTOR_DEFINITIONS: readonly ConnectorDefinition[] = [
 ];
 
 export function createMockConnectorRegistry(options: { includePlannedProviders?: boolean; now?: () => Date } = {}): ConnectorRegistry {
+  return createConnectorRegistry({ ...options, mockConnectors: true });
+}
+
+/** Live definitions in production; mocks are an explicit development choice. */
+export function createConnectorRegistry(options: { mockConnectors?: boolean; includePlannedProviders?: boolean; now?: () => Date } = {}): ConnectorRegistry {
   const registry = new ConnectorRegistry(options.now);
-  for (const definition of MOCK_CONNECTOR_DEFINITIONS) registry.register(definition);
+  if (options.mockConnectors) for (const definition of MOCK_CONNECTOR_DEFINITIONS) registry.register(definition);
   for (const definition of OAUTH_CONNECTOR_DEFINITIONS) registry.register(definition);
   if (options.includePlannedProviders) for (const definition of PLANNED_PROVIDER_DEFINITIONS) registry.register(definition);
   return registry;

@@ -31,6 +31,12 @@ All targets use digest-pinned Node 22 slim, frozen pnpm installs and a non-root 
 
 Both long-lived processes presently validate the entire shared configuration, even where a particular setting is primarily consumed by the other process. Store secrets in your host's runtime secret facility. Do not commit an environment file or place secrets in an image/PR/log. Configure durable object storage separately if enabling uploads; container-local storage is ephemeral and these images do not provision persistence/connectors.
 
+## Platform sender domain
+
+Configure a verified platform sender in `SMTP_FROM`; the app supplies each business's display name and real contact Reply-To. Authorize the chosen SMTP relay in the sender domain's SPF record, enable its DKIM signing, and publish DMARC with aligned SPF or DKIM before tightening enforcement after monitoring reports. Do not put a tenant's unverified address in From. The relay must DKIM-sign `List-Unsubscribe` and `List-Unsubscribe-Post` for [RFC 8058 one-click unsubscribe](https://www.rfc-editor.org/rfc/rfc8058); preserve these headers when relaying. Configure the external HTTPS `APP_BASE_URL` correctly so customer opt-out links reach this app. See [sender authentication guidance](https://support.google.com/mail/answer/81126?hl=en).
+
+Customer email includes text/HTML and the actual business street address. Nontransactional sends fail visibly if a customer/address is missing rather than inventing details. Unsubscribe is a signed public POST with no login requirement; GET is confirmation-only to avoid mail scanners changing preferences. Keep `BETTER_AUTH_SECRET` stable while issued links should remain valid; rotation invalidates existing signed links. The UI's sent status means relay acceptance, not inbox delivery; monitor provider delivery/bounce signals separately. SMTP cannot guarantee exactly-once across ambiguous acceptance, even with stable Message-ID. Validate sender authentication, reply handling and opt-out with controlled test addresses before human-authorized deployment. CI and local verification use Mailpit exclusively and do not prove real relay deliverability.
+
 ## Release order and checks
 
 1. Take a database backup and validate migration/rollback compatibility for the release. Use the same built revision for all targets.

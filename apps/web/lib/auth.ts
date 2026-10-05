@@ -14,15 +14,15 @@ export const auth = betterAuth({
     enabled: true,
     requireEmailVerification: false,
     sendResetPassword: async ({ user, url }) => {
-      const { sendDevelopmentEmail } = await import("./mail");
+      const { sendPlatformEmail, passwordSetupBusiness } = await import("./mail");
       const setupUrl = toPasswordSetupUrl(url, process.env.BETTER_AUTH_URL ?? "http://localhost:3000");
-      await sendDevelopmentEmail(user.email, "Set your Modular CRM password", `Open this link to set your password: ${setupUrl}`);
+      await sendPlatformEmail(user.email, "Set your Modular CRM password", `Open this link to set your password: ${setupUrl}`, await passwordSetupBusiness(getDb(), user.id, setupUrl));
     },
   },
   emailVerification: {
     sendVerificationEmail: async ({ user, url }) => {
-      const { sendDevelopmentEmail } = await import("./mail");
-      await sendDevelopmentEmail(user.email, "Verify your Modular CRM email", `Open this link to verify your email: ${url}`);
+      const { sendPlatformEmail } = await import("./mail");
+      await sendPlatformEmail(user.email, "Verify your Modular CRM email", `Open this link to verify your email: ${url}`);
     },
   },
   rateLimit: { enabled: true, window: 60, max: 30 },

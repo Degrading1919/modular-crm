@@ -15,7 +15,10 @@ export function apiError(error: unknown): Response {
   const seen = new Set<unknown>();
   while (current && typeof current === "object" && !seen.has(current)) {
     seen.add(current);
-    if ("code" in current && current.code === "22P02") return json({ error: { code: "VALIDATION_ERROR", message: "Check the information you entered and try again." } }, 400);
+    if ("code" in current && current.code === "22P02") {
+      console.info(JSON.stringify({ event: "api.invalid_input", level: "info", code: "22P02" }));
+      return json({ error: { code: "VALIDATION_ERROR", message: "Check the information you entered and try again." } }, 400);
+    }
     current = "cause" in current ? current.cause : undefined;
   }
   const cause = error instanceof Error && "cause" in error ? error.cause : undefined;

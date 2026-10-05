@@ -2,6 +2,7 @@ import { ConnectorError, type CapabilityKey, type OAuthProviderAdapter, type OAu
 import type { ConnectorDefinition } from "../registry.ts";
 import type { ProviderFetch } from "./http.ts";
 import { readBoundedText, requestJson } from "./http.ts";
+import { compileEmailMime } from "../platform-email.ts";
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
 const AUTHORITY = "https://login.microsoftonline.com";
@@ -261,9 +262,11 @@ export function createMicrosoft365ConnectorDefinition(config: Microsoft365Config
           if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to) || !subject || subject.length > 998 || !body.trim() || body.length > 100_000 || !input.idempotencyKey.trim()) {
             throw new ConnectorError("invalid_request", "Enter a valid recipient, subject and message", false);
           }
+          const decorated = Boolean(input.html || input.replyTo || input.unsubscribeUrl);
           await sendAccepted(fetcher, `${GRAPH}/me/sendMail`, {
-            method: "POST", headers: { ...graphHeaders(), "content-type": "application/json" },
-            body: JSON.stringify({ message: { subject, body: { contentType: "Text", content: body }, toRecipients: [{ emailAddress: { address: to } }] }, saveToSentItems: true }),
+            method: "POST", headers: { ...graphHeaders(), "content-type": decorated ? "text/plain" : "application/json" },
+            body: decorated ? (await compileEmailMime(input)).toString("base64")
+              : JSON.stringify({ message: { subject, body: { contentType: "Text", content: body }, toRecipients: [{ emailAddress: { address: to } }] }, saveToSentItems: true }),
           });
           return { status: "sent" as const };
         },

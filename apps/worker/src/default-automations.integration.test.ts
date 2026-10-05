@@ -52,7 +52,7 @@ beforeAll(async () => {
 
   const [organization] = await db.insert(organizations).values({ tenantId, legalName: "Automation Pack Test", displayName: "Automation Pack Test" }).returning({ id: organizations.id });
   organizationId = organization!.id;
-  const [location] = await db.insert(organizationLocations).values({ tenantId, organizationId, name: "Main", code: "MAIN" }).returning({ id: organizationLocations.id });
+  const [location] = await db.insert(organizationLocations).values({ tenantId, organizationId, name: "Main", code: "MAIN", addressLine1: "1 Main Street", city: "Albany", region: "NY", postalCode: "12207" }).returning({ id: organizationLocations.id });
   locationId = location!.id;
   const [role] = await db.insert(roleTemplates).values({ tenantId, key: "owner", name: "Owner" }).returning({ id: roleTemplates.id });
   const ownerUserId = "automation-pack-owner";
