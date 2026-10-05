@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { PgBoss, WipData } from "pg-boss";
 import { jobLoopRunning, startHealthServer } from "./health.js";
 import { QUEUES } from "./queues.js";
@@ -14,6 +14,37 @@ it("requires every actual queue worker to be polling, including after offWork/st
   expect(jobLoopRunning(boss)).toBe(false);
   workers.shift();
   expect(jobLoopRunning(boss)).toBe(false);
+});
+
+it("bounds stalled idle polling and running jobs with a fake clock, then recovers on real progress", () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(1_000_000);
+    const workers = Object.values(QUEUES).map((name) => ({ name, state: "active", count: 0, lastFetchedOn: Date.now(), lastJobStartedOn: null })) as WipData[];
+    const boss: Pick<PgBoss, "getWipData"> = { getWipData: () => workers };
+    const limits = { pollStaleMs: 6_000, jobMaxMs: 20_000 };
+    const first = workers[0]!;
+    const advance = (ms: number) => { vi.setSystemTime(Date.now() + ms); workers.slice(1).forEach((worker) => { worker.lastFetchedOn = Date.now(); }); };
+    expect(jobLoopRunning(boss, limits)).toBe(true);
+    advance(6_000);
+    expect(jobLoopRunning(boss, limits)).toBe(true);
+    advance(1);
+    expect(jobLoopRunning(boss, limits)).toBe(false);
+    first.lastFetchedOn = Date.now();
+    expect(jobLoopRunning(boss, limits)).toBe(true);
+    first.count = 1; first.lastJobStartedOn = Date.now();
+    advance(20_000);
+    expect(jobLoopRunning(boss, limits)).toBe(true); // Long but within the job bound; not the idle bound.
+    advance(1);
+    expect(jobLoopRunning(boss, limits)).toBe(false);
+    // A second healthy consumer must not conceal this hung one.
+    workers.push({ ...first, count: 0, lastFetchedOn: Date.now() });
+    expect(jobLoopRunning(boss, limits)).toBe(false);
+    first.count = 0; first.lastFetchedOn = Date.now();
+    expect(jobLoopRunning(boss, limits)).toBe(true);
+    first.lastFetchedOn = Date.now() + 1;
+    expect(jobLoopRunning(boss, limits)).toBe(false);
+  } finally { vi.useRealTimers(); }
 });
 
 it("serves generic unauthenticated liveness/readiness and stops cleanly", async () => {

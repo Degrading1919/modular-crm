@@ -46,6 +46,7 @@ This repository is the source of truth. New implementation work should begin her
 ## Build verification
 
 - [V1_BUILD_READINESS.md](./V1_BUILD_READINESS.md)
+- [DEPLOYMENT.md](./DEPLOYMENT.md)
 
 - [V1_ACCEPTANCE_CRITERIA.md](./V1_ACCEPTANCE_CRITERIA.md)
 - [V1_SEED_SCENARIOS.md](./V1_SEED_SCENARIOS.md)

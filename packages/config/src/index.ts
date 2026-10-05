@@ -107,6 +107,8 @@ export type ServerConfig = Readonly<{
   appBaseUrl: string;
   localSmokeTest: boolean;
   workerHealthPort: number;
+  workerPollStaleMs: number;
+  workerJobMaxMs: number;
   smtp: Readonly<{ host: string; port: number; secure: boolean; user?: string; password?: string; from: string }>;
 }>;
 
@@ -166,8 +168,13 @@ export function readServerConfig(env: Record<string, string | undefined>): Serve
   if (Boolean(env.SMTP_USER) !== Boolean(env.SMTP_PASSWORD)) problems.push("SMTP_USER and SMTP_PASSWORD must be supplied together");
   const workerHealthPort = Number(env.WORKER_HEALTH_PORT || 3001);
   if (!Number.isInteger(workerHealthPort) || workerHealthPort < 1 || workerHealthPort > 65535) problems.push("WORKER_HEALTH_PORT must be a valid port");
+  const workerPollStaleMs = Number(env.WORKER_POLL_STALE_MS || 60_000);
+  const workerJobMaxMs = Number(env.WORKER_JOB_MAX_MS || 300_000);
+  for (const [key, value] of [["WORKER_POLL_STALE_MS", workerPollStaleMs], ["WORKER_JOB_MAX_MS", workerJobMaxMs]] as const) {
+    if (!Number.isSafeInteger(value) || value < 1_000 || value > 86_400_000) problems.push(`${key} must be an integer from 1000 to 86400000`);
+  }
   if (problems.length) throw new Error(`Invalid server configuration: ${problems.join("; ")}.`);
-  return Object.freeze({ environment, databaseUrl, mockConnectors, publicBaseUrl, authBaseUrl, appBaseUrl, localSmokeTest, workerHealthPort,
+  return Object.freeze({ environment, databaseUrl, mockConnectors, publicBaseUrl, authBaseUrl, appBaseUrl, localSmokeTest, workerHealthPort, workerPollStaleMs, workerJobMaxMs,
     smtp: Object.freeze({ host, port, secure, user: env.SMTP_USER, password: env.SMTP_PASSWORD, from }),
     storageEndpoint: env.STORAGE_ENDPOINT?.trim() || undefined, storageBucket: env.STORAGE_BUCKET?.trim() || "modular-crm" });
 }
