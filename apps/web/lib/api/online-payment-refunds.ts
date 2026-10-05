@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { invoices, onlinePaymentAccounts, paymentAllocations, payments, refunds } from "@modular-crm/db";
 import { ConnectorError, signMockPaymentEvent } from "@modular-crm/connectors";
 import { DomainError, requirePermission } from "@modular-crm/domain";
@@ -42,12 +42,14 @@ export async function handleOnlinePaymentRefund(request: Request, path: string[]
       if (prior.paymentId !== payment.id || prior.amountMinor !== BigInt(body.amountCents) || (prior.reason ?? "") !== (body.reason ?? "")) throw new DomainError("IDEMPOTENCY_CONFLICT", "This refund retry key was used for a different request.", 409);
       return prior;
     }
-    const reserved = await tx.select().from(refunds).where(and(eq(refunds.tenantId, actor.tenantId), eq(refunds.paymentId, payment.id), inArray(refunds.status, ["pending", "succeeded"])));
+    const refundRows = await tx.select().from(refunds).where(and(eq(refunds.tenantId, actor.tenantId), eq(refunds.paymentId, payment.id)));
+    if (refundRows.some((row) => row.reviewReason)) throw new DomainError("CONFLICT", "This payment has a refund that needs review. Check the payment service before starting another refund.", 409);
+    const reserved = refundRows.filter((row) => ["pending", "succeeded"].includes(row.status));
     if (BigInt(body.amountCents) > payment.amountMinor - reserved.reduce((sum, row) => sum + row.amountMinor, 0n)) throw new DomainError("VALIDATION_ERROR", "Refund exceeds the amount available after completed and pending refunds.", 422);
     const [created] = await tx.insert(refunds).values({ id, tenantId: actor.tenantId, paymentId: payment.id, connectorInstallationId: account.installationId, amountMinor: BigInt(body.amountCents), currency: payment.currency, status: "pending", reason: body.reason || null }).returning();
     return created!;
   });
-  if (pending.status === "pending" && !pending.providerReference) {
+  if (!pending.reviewReason && pending.status === "pending" && !pending.providerReference) {
     if (pending.createdAt.getTime() < Date.now() - 23 * 60 * 60 * 1000) throw new DomainError("CONFLICT", "This refund needs a payment-service review before it can be retried. Do not start another refund for the same amount.", 409);
     let reference: string;
     try { reference = (await online.requestRefund({ paymentReference: payment.providerReference, amountMinor: body.amountCents, idempotencyKey: `refund:${id}`, requestReference: id })).reference; }
@@ -57,7 +59,7 @@ export async function handleOnlinePaymentRefund(request: Request, path: string[]
     }
     await getDb().update(refunds).set({ providerReference: reference }).where(and(eq(refunds.id, id), eq(refunds.tenantId, actor.tenantId), eq(refunds.status, "pending")));
   }
-  if (pending.status === "pending" && account.provider === "mock-payments") {
+  if (!pending.reviewReason && pending.status === "pending" && account.provider === "mock-payments") {
       const [saved] = await getDb().select().from(refunds).where(and(eq(refunds.id, id), eq(refunds.tenantId, actor.tenantId))).limit(1);
       const reference = saved!.providerReference!;
       const status = await online.accountStatus();
@@ -67,5 +69,5 @@ export async function handleOnlinePaymentRefund(request: Request, path: string[]
   }
   const [current] = await getDb().select().from(invoices).where(and(eq(invoices.id, invoice.id), eq(invoices.tenantId, actor.tenantId))).limit(1);
   const [result] = await getDb().select().from(refunds).where(and(eq(refunds.id, id), eq(refunds.tenantId, actor.tenantId))).limit(1);
-  return json({ item: normalized({ id, paymentId: payment.id, amountMinor: result!.amountMinor, currency: result!.currency, status: result!.status }), invoice: { id: invoice.id, balanceCents: Number(current!.balanceMinor) } }, 202);
+  return json({ item: normalized({ id, paymentId: payment.id, amountMinor: result!.amountMinor, currency: result!.currency, status: result!.reviewReason ? "needs_review" : result!.status, reviewReason: result!.reviewReason }), invoice: { id: invoice.id, balanceCents: Number(current!.balanceMinor) } }, 202);
 }

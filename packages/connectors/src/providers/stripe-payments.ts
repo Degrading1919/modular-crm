@@ -64,10 +64,12 @@ export function createStripeOnlinePayments(input: { secretKey: string; webhookSe
       const result = await call("checkout/sessions", { mode: "payment", "payment_method_types[0]": "card",
         "line_items[0][price_data][currency]": value.currency.toLowerCase(), "line_items[0][price_data][unit_amount]": String(value.amountMinor),
         "line_items[0][price_data][product_data][name]": `Invoice ${value.invoiceReference}`, "line_items[0][quantity]": "1",
-        success_url: value.returnUrl, cancel_url: value.cancelUrl, expires_at: String(value.expiresAt),
+        // Use Stripe's 24-hour default: an absolute deadline becomes invalid on a
+        // response-lost retry, but changing parameters under the same key is invalid too.
+        success_url: value.returnUrl, cancel_url: value.cancelUrl,
         ...(value.requestReference ? { client_reference_id: reference(value.requestReference), "payment_intent_data[metadata][crm_checkout_request]": reference(value.requestReference) } : {}),
       }, value.idempotencyKey);
-      return { reference: reference(result.id), url: stripeUrl(result.url, "checkout.stripe.com") };
+      return { reference: reference(result.id), url: stripeUrl(result.url, "checkout.stripe.com"), ...(Number.isSafeInteger(result.expires_at) ? { expiresAt: Number(result.expires_at) } : {}) };
     },
     async expireHostedPage(value) { await call(`checkout/sessions/${encodeURIComponent(reference(value))}/expire`, {}); },
     verifyWebhook(value) {
@@ -77,6 +79,12 @@ export function createStripeOnlinePayments(input: { secretKey: string; webhookSe
       if (typeof event.account !== "string") return null;
       const data = object(object(event.data).object);
       const common = { id: reference(event.id), accountReference: reference(event.account) };
+      if (event.type === "account.updated") {
+        if (reference(data.id) !== common.accountReference) throw new ConnectorError("invalid_request", "Payment account does not match", false);
+        const requirements = data.requirements ? object(data.requirements) : {};
+        return { ...common, type: "account.updated", chargesEnabled: data.charges_enabled === true,
+          detailsNeeded: data.details_submitted !== true || (Array.isArray(requirements.currently_due) && requirements.currently_due.length > 0) };
+      }
       if (event.type === "payment_intent.payment_failed") {
         const requestReference = data.metadata && object(data.metadata).crm_checkout_request;
         if (typeof requestReference !== "string") return null;

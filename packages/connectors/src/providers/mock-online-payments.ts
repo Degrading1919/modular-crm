@@ -24,6 +24,10 @@ export function createMockOnlinePayments(tenantId: string, ensureAvailable: () =
     async expireHostedPage() { ensureAvailable(); },
     verifyWebhook(input) {
       const event = verifyPaymentSignature(input.rawBody, input.signature, MOCK_PAYMENT_WEBHOOK_SECRET, input.now) as OnlinePaymentEvent;
+      if (event?.type === "account.updated") {
+        if (typeof event.id !== "string" || event.id.length > 255 || typeof event.accountReference !== "string" || typeof event.chargesEnabled !== "boolean" || typeof event.detailsNeeded !== "boolean") throw new ConnectorError("invalid_request", "Payment notification is invalid", false);
+        return event;
+      }
       if (!event || typeof event.id !== "string" || event.id.length > 255 || typeof event.accountReference !== "string"
         || typeof event.paymentReference !== "string" || !["payment.succeeded", "payment.failed", "payment.refunded", "refund.failed"].includes(event.type)
         || !Number.isSafeInteger(event.amountMinor) || event.amountMinor <= 0 || !/^[A-Z]{3}$/.test(event.currency)

@@ -41,6 +41,6 @@ CMD ["node", "dist/migrate/index.js"]
 FROM worker-runtime AS worker
 ENV WORKER_HEALTH_PORT=3001
 EXPOSE 3001
-# Worker readiness includes bounded idle and running-job staleness.
-HEALTHCHECK --interval=15s --timeout=3s --start-period=30s --retries=3 CMD ["node", "containers/probe.mjs", "ready", "worker"]
+# Database failover affects readiness, not process liveness/restart.
+HEALTHCHECK --interval=15s --timeout=3s --start-period=30s --retries=3 CMD ["node", "containers/probe.mjs", "live", "worker"]
 CMD ["node", "dist/index.js"]

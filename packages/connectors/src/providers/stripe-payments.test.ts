@@ -14,6 +14,20 @@ function signed(value: unknown, timestamp = Math.floor(now.getTime() / 1000)) {
 function completed(overrides = {}) { return { id: "evt_paid", account: "acct_a", livemode: false, type: "checkout.session.completed", data: { object: { id: "cs_a", payment_intent: "pi_a", payment_status: "paid", amount_total: 1200, currency: "usd", ...overrides } } }; }
 
 describe("Stripe hosted payments (fixtures only)", () => {
+  it("maps account health notifications without inventing a money event", () => {
+    const stripe = createStripeOnlinePayments({ secretKey, webhookSecret });
+    expect(stripe.verifyWebhook(signed({ id: "evt_health", account: "acct_a", livemode: false, type: "account.updated", data: { object: { id: "acct_a", charges_enabled: false, details_submitted: true, requirements: { currently_due: ["identity"] } } } }))).toEqual({ id: "evt_health", accountReference: "acct_a", type: "account.updated", chargesEnabled: false, detailsNeeded: true });
+  });
+  it("uses the provider's default deadline on delayed retries with identical idempotent parameters", async () => {
+    const expiresAt = Math.floor(now.getTime() / 1000) + 86400;
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => Response.json({ id: "cs_a", url: "https://checkout.stripe.com/c/pay/example", expires_at: expiresAt }));
+    const stripe = createStripeOnlinePayments({ secretKey, webhookSecret, accountReference: "acct_a", fetcher });
+    const input = { invoiceReference: "INV-1", amountMinor: 1200, currency: "USD", idempotencyKey: "delayed", returnUrl: "https://crm.example", cancelUrl: "https://crm.example", expiresAt: Math.floor(now.getTime() / 1000) + 60 };
+    expect(await stripe.createHostedPage(input)).toMatchObject({ expiresAt });
+    await stripe.createHostedPage(input);
+    expect(new URLSearchParams(String(fetcher.mock.calls[0]![1]?.body)).has("expires_at")).toBe(false);
+    expect(String(fetcher.mock.calls[0]![1]?.body)).toBe(String(fetcher.mock.calls[1]![1]?.body));
+  });
   it("verifies the raw signature, account, currency and actually-paid state", () => {
     const stripe = createStripeOnlinePayments({ secretKey, webhookSecret });
     expect(stripe.verifyWebhook(signed(completed()))).toEqual({ id: "evt_paid", accountReference: "acct_a", type: "payment.succeeded", paymentReference: "pi_a", sessionReference: "cs_a", amountMinor: 1200, currency: "USD" });

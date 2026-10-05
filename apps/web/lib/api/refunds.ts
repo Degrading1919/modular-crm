@@ -11,6 +11,7 @@ import { recordEvent } from "./events";
 import { json, readBody } from "./http";
 import { normalized } from "./sql";
 import { z } from "zod";
+import { invoiceOverpayment } from "./read-facts";
 
 const refundRequest = z.object({
   paymentId: z.uuid(),
@@ -42,7 +43,7 @@ export async function handleInvoiceRefund(request: Request, path: string[], acto
     requireStaff(actor);
     requirePermission(actor, "invoices.read");
     const db = getDb();
-    const [invoice] = await db.select({ id: invoices.id, organizationLocationId: invoices.organizationLocationId })
+    const [invoice] = await db.select({ id: invoices.id, organizationLocationId: invoices.organizationLocationId, overpayment: invoiceOverpayment("invoices") })
       .from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, actor.tenantId))).limit(1);
     if (!invoice || (!actor.allLocations && (!invoice.organizationLocationId || !actor.locationIds.has(invoice.organizationLocationId)))) {
       throw new DomainError("NOT_FOUND", "Invoice not found.", 404);
@@ -53,12 +54,13 @@ export async function handleInvoiceRefund(request: Request, path: string[], acto
       .where(and(eq(paymentAllocations.tenantId, actor.tenantId), eq(paymentAllocations.invoiceId, invoiceId)));
     const ids = allocated.map(({ payment }) => payment.id);
     const refundRows = ids.length
-      ? await db.select({ paymentId: refunds.paymentId, amountMinor: refunds.amountMinor, status: refunds.status }).from(refunds)
-        .where(and(eq(refunds.tenantId, actor.tenantId), inArray(refunds.status, ["succeeded", "pending"]), inArray(refunds.paymentId, ids)))
+      ? await db.select({ paymentId: refunds.paymentId, amountMinor: refunds.amountMinor, status: refunds.status, reviewReason: refunds.reviewReason }).from(refunds)
+        .where(and(eq(refunds.tenantId, actor.tenantId), inArray(refunds.paymentId, ids)))
       : [];
     const refundedByPayment = new Map<string, bigint>();
     const pendingByPayment = new Map<string, bigint>();
     for (const refund of refundRows) {
+      if (!["pending", "succeeded"].includes(refund.status)) continue;
       const amounts = refund.status === "pending" ? pendingByPayment : refundedByPayment;
       amounts.set(refund.paymentId, (amounts.get(refund.paymentId) ?? 0n) + refund.amountMinor);
     }
@@ -67,6 +69,8 @@ export async function handleInvoiceRefund(request: Request, path: string[], acto
       amountCents: allocation.amountMinor,
       refundedCents: refundedByPayment.get(payment.id) ?? 0n,
       pendingRefundCents: pendingByPayment.get(payment.id) ?? 0n,
+      overpaymentCents: invoice.overpayment,
+      refundReviews: actor.role === "owner" ? refundRows.filter((row) => row.paymentId === payment.id && row.reviewReason).map((row) => ({ status: "needs_review", message: row.reviewReason })) : undefined,
       status: payment.status,
       sourceType: payment.sourceType,
       method: payment.recordedMethod ?? payment.sourceType,

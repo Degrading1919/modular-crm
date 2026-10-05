@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, eq, isNull, or, sql } from "drizzle-orm";
-import { auditEvents, domainEvents, invoices, onlinePaymentAccounts, onlinePaymentEvents, onlinePaymentSessions, paymentAllocations, payments, refunds } from "@modular-crm/db";
+import { auditEvents, connectorInstallations, domainEvents, invoices, onlinePaymentAccounts, onlinePaymentEvents, onlinePaymentSessions, paymentAllocations, payments, refunds } from "@modular-crm/db";
 import { ConnectorError, createMockOnlinePayments, type OnlinePaymentEvent } from "@modular-crm/connectors";
 import { DomainError } from "@modular-crm/domain";
 import { getRegistry } from "../connectors";
@@ -8,8 +8,9 @@ import { getDb } from "../db";
 import { onlineProviderConfigured, paymentAccountHash } from "./online-payment-accounts";
 import { updateInvoiceFinancialPosition, type PaymentTransaction } from "./invoice-payment-ledger";
 import { json } from "./http";
+import { expireExcessHostedPages } from "./hosted-page-expiry";
 
-async function eventHistory(tx: PaymentTransaction, invoice: typeof invoices.$inferSelect, installationId: string, event: OnlinePaymentEvent, entityId: string) {
+async function eventHistory(tx: PaymentTransaction, invoice: typeof invoices.$inferSelect, installationId: string, event: Extract<OnlinePaymentEvent, { paymentReference: string }>, entityId: string) {
   await tx.insert(domainEvents).values({ tenantId: invoice.tenantId, organizationId: invoice.organizationId, locationId: invoice.organizationLocationId,
     actorType: "connector", actorId: installationId, eventType: event.type, entityType: ["payment.refunded", "refund.failed"].includes(event.type) ? "refund" : "payment", entityId,
     payload: { invoiceId: invoice.id, customerId: invoice.customerId, amountCents: event.amountMinor, currency: invoice.currency, method: "card" } });
@@ -21,14 +22,19 @@ export async function processOnlinePaymentEvent(provider: string, event: OnlineP
   const db = getDb();
   const [account] = await db.select().from(onlinePaymentAccounts).where(and(eq(onlinePaymentAccounts.provider, provider), eq(onlinePaymentAccounts.accountHash, paymentAccountHash(event.accountReference)))).limit(1);
   if (!account) return { duplicate: false, ignored: true }; // Another platform's connected account is not ours.
-  return db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     await tx.execute(sql`select id from online_payment_accounts where tenant_id=${account.tenantId} and id=${account.id} for update`);
     const [priorEvent] = await tx.select().from(onlinePaymentEvents).where(and(eq(onlinePaymentEvents.accountId, account.id), eq(onlinePaymentEvents.providerEventId, event.id))).limit(1);
     if (priorEvent) {
       if (priorEvent.payloadHash !== payloadHash) throw new DomainError("CONFLICT", "Payment notification changed after processing.", 409);
       return { duplicate: true };
     }
-    if (event.type === "payment.refunded" || event.type === "refund.failed") {
+    if (event.type === "account.updated") {
+      const [installation] = await tx.select().from(connectorInstallations).where(and(eq(connectorInstallations.tenantId, account.tenantId), eq(connectorInstallations.id, account.installationId))).limit(1);
+      // Health notifications must not reconnect an owner-disconnected account.
+      await tx.update(onlinePaymentAccounts).set({ chargesEnabled: installation?.status !== "not_connected" && event.chargesEnabled, detailsNeeded: event.detailsNeeded }).where(eq(onlinePaymentAccounts.id, account.id));
+      if (installation?.status !== "not_connected") await tx.update(connectorInstallations).set({ status: event.chargesEnabled ? "connected" : "needs_attention", healthCheckedAt: new Date() }).where(and(eq(connectorInstallations.tenantId, account.tenantId), eq(connectorInstallations.id, account.installationId)));
+    } else if (event.type === "payment.refunded" || event.type === "refund.failed") {
       const [payment] = await tx.select().from(payments).where(and(eq(payments.tenantId, account.tenantId), eq(payments.connectorInstallationId, account.installationId), eq(payments.providerReference, event.paymentReference))).limit(1);
       if (!payment || !event.refundReference) throw new DomainError("CONFLICT", "Payment confirmation has not arrived yet. Deliver this notification again.", 409);
       const [allocation] = await tx.select().from(paymentAllocations).where(and(eq(paymentAllocations.tenantId, account.tenantId), eq(paymentAllocations.paymentId, payment.id))).limit(1);
@@ -39,7 +45,13 @@ export async function processOnlinePaymentEvent(provider: string, event: OnlineP
       const refundRows = await tx.select().from(refunds).where(and(eq(refunds.tenantId, account.tenantId), eq(refunds.paymentId, payment.id)));
       const prior = refundRows.find((row) => row.providerReference === event.refundReference || (row.id === event.refundRequestReference && row.status === "pending"));
       if (prior && prior.amountMinor !== BigInt(event.amountMinor)) throw new DomainError("CONFLICT", "Refund notification does not match the requested amount.", 409);
-      if (event.type === "refund.failed") {
+      if (prior?.reviewReason) {
+        // Reconciliation has a durable end state; repeated notifications cannot change money.
+      } else if (event.type === "refund.failed") {
+        if (prior?.status === "succeeded") {
+          await tx.update(refunds).set({ reviewReason: "A previously confirmed refund later failed. Check the payment service before changing or refunding this payment again." }).where(eq(refunds.id, prior.id));
+          await eventHistory(tx, invoice, account.installationId, event, prior.id);
+        }
         // Release only an unconfirmed reservation. A late failure never undoes refunded money.
         if (prior && prior.status !== "succeeded" && prior.status !== "failed") {
           await tx.update(refunds).set({ status: "failed", providerReference: event.refundReference, completedAt: new Date() }).where(and(eq(refunds.id, prior.id), eq(refunds.tenantId, account.tenantId)));
@@ -47,7 +59,22 @@ export async function processOnlinePaymentEvent(provider: string, event: OnlineP
         }
       } else if (prior?.status !== "succeeded") {
         const total = refundRows.filter((row) => row.status === "succeeded").reduce((sum, row) => sum + row.amountMinor, 0n) + BigInt(event.amountMinor);
-        if (total > payment.amountMinor) throw new DomainError("CONFLICT", "Refund exceeds the collected payment.", 409);
+        if (total > payment.amountMinor) {
+          const reviewReason = "The confirmed refund exceeds the recorded payment after other refunds. Check the payment service before refunding again.";
+          let reviewId = prior?.id;
+          if (prior) await tx.update(refunds).set({ providerReference: event.refundReference, reviewReason, completedAt: new Date() }).where(eq(refunds.id, prior.id));
+          else {
+            const [review] = await tx.insert(refunds).values({ tenantId: account.tenantId, paymentId: payment.id, connectorInstallationId: account.installationId, providerReference: event.refundReference,
+              amountMinor: BigInt(event.amountMinor), currency: event.currency, status: "pending", reviewReason, completedAt: new Date() }).returning();
+            reviewId = review!.id;
+          }
+          // Review is not a successful refund and must not trigger refund receipt automations.
+          await tx.insert(domainEvents).values({ tenantId: invoice.tenantId, organizationId: invoice.organizationId, locationId: invoice.organizationLocationId,
+            actorType: "connector", actorId: account.installationId, eventType: "payment.refund_needs_review", entityType: "refund", entityId: reviewId!, payload: { invoiceId: invoice.id, amountCents: event.amountMinor, currency: invoice.currency } });
+          await tx.insert(auditEvents).values({ tenantId: invoice.tenantId, actorType: "connector", actorId: account.installationId, action: "payment.refund_needs_review", entityType: "invoice", entityId: invoice.id, afterData: { amountCents: event.amountMinor, reviewReason } });
+          await tx.insert(onlinePaymentEvents).values({ tenantId: account.tenantId, accountId: account.id, providerEventId: event.id, payloadHash });
+          return { duplicate: false };
+        }
         let refundId = prior?.id;
         if (prior) await tx.update(refunds).set({ status: "succeeded", providerReference: event.refundReference, completedAt: new Date() }).where(and(eq(refunds.id, prior.id), eq(refunds.tenantId, account.tenantId)));
         else {
@@ -85,13 +112,18 @@ export async function processOnlinePaymentEvent(provider: string, event: OnlineP
           recordedByActorType: "connector", recordedByActorId: account.installationId }).returning();
         await tx.insert(paymentAllocations).values({ tenantId: account.tenantId, paymentId: payment!.id, invoiceId: invoice.id, amountMinor: BigInt(event.amountMinor) });
         await updateInvoiceFinancialPosition(tx, invoice, invoice.paidMinor + BigInt(event.amountMinor));
-        await tx.update(onlinePaymentSessions).set({ status: "succeeded", paymentReference: event.paymentReference, failureMessage: event.amountMinor > Number(invoice.balanceMinor) ? "Payment received after the balance changed. Review the payment history before collecting anything else." : null }).where(eq(onlinePaymentSessions.id, session.id));
+        await tx.update(onlinePaymentSessions).set({ status: "succeeded", paymentReference: event.paymentReference, failureMessage: null }).where(eq(onlinePaymentSessions.id, session.id));
         await eventHistory(tx, invoice, account.installationId, event, payment!.id);
       }
     }
     await tx.insert(onlinePaymentEvents).values({ tenantId: account.tenantId, accountId: account.id, providerEventId: event.id, payloadHash });
     return { duplicate: false };
   });
+  if (event.type === "payment.succeeded") {
+    const [session] = await db.select({ invoiceId: onlinePaymentSessions.invoiceId }).from(onlinePaymentSessions).where(and(eq(onlinePaymentSessions.tenantId, account.tenantId), eq(onlinePaymentSessions.accountId, account.id), eq(onlinePaymentSessions.paymentReference, event.paymentReference))).limit(1);
+    if (session) await expireExcessHostedPages(account.tenantId, session.invoiceId);
+  }
+  return result;
 }
 
 export async function handleOnlinePaymentWebhook(request: Request, path: string[]): Promise<Response | null> {

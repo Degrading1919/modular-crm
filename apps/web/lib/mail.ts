@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { loadEmailBusiness, memberships, outboundMessages, portalAccess, sealAccountEmail, type Database } from "@modular-crm/db";
+import { loadEmailBusiness, memberships, outboundMessages, portalAccess, reserveAccountEmail, sealAccountEmail, type Database } from "@modular-crm/db";
 import { createPlatformEmailSender, customerEmailParts, type EmailBusiness } from "@modular-crm/connectors";
 import { getServerConfig } from "./server-config";
 import { getDb } from "./db";
@@ -10,13 +10,15 @@ export async function sendPlatformEmail(to: string, subject: string, text: strin
   if (process.env.NODE_ENV === "test") return;
   const { smtp, environment, platformName } = getServerConfig();
   if (business.tenantId) {
-    // Tenant-bound account mail uses the same durable outbox and limits as worker sends.
+    // Account mail uses its own recipient cap, not the operational tenant counters.
     await getDb().insert(outboundMessages).values({ tenantId: business.tenantId, customerId: business.customerId,
       channel: "email", category: "account", recipient: to, renderedSubject: subject,
       renderedBody: sealAccountEmail(text, authSigningSecret()), status: "queued", idempotencyKey: randomUUID() });
     return;
   }
-  // A pre-tenant signup has no tenant counter; Better Auth's rate limiter protects that entry point.
+  // Pre-tenant mail shares the global recipient guard, plus the auth entry-point limit.
+  const reservation = await reserveAccountEmail(getDb(), to);
+  if (!reservation.allowed) return;
   await createPlatformEmailSender(smtp, environment === "production", business, platformName).sendEmail({ to, subject,
     ...customerEmailParts(text, business), idempotencyKey: randomUUID() });
 }

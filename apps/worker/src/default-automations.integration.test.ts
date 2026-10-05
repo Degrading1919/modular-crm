@@ -115,7 +115,8 @@ async function installPackRecipes() {
 async function createJob(customer: typeof customerOne, status: string) {
   const [job] = await db.insert(jobs).values({
     tenantId, organizationId, organizationLocationId: locationId, customerId: customer.id,
-    serviceLocationId: customer.serviceLocationId, serviceId, status, scheduledDate: "2026-09-25",
+    // This test proves eligible reminder delivery, not delivery of a past visit.
+    serviceLocationId: customer.serviceLocationId, serviceId, status, scheduledDate: new Date(Date.now() + 86_400_000).toISOString().slice(0, 10),
   }).returning({ id: jobs.id });
   return job!.id;
 }

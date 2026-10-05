@@ -9,3 +9,4 @@ export * from "./email-business.ts";
 export * from "./email-unsubscribe.ts";
 export * from "./platform-email-limits.ts";
 export * from "./account-email.ts";
+export * from "./message-expiry.ts";

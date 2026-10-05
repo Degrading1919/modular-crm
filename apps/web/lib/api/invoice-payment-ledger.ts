@@ -1,5 +1,5 @@
-import { and, eq, inArray } from "drizzle-orm";
-import { creditAllocations, invoices, paymentAllocations, refunds } from "@modular-crm/db";
+import { and, eq, gt, inArray } from "drizzle-orm";
+import { creditAllocations, invoices, onlinePaymentSessions, paymentAllocations, refunds } from "@modular-crm/db";
 import { invoiceFinancialPosition } from "@modular-crm/domain";
 import type { getDb } from "../db";
 
@@ -18,5 +18,12 @@ export async function updateInvoiceFinancialPosition(tx: PaymentTransaction, inv
   await tx.update(invoices).set({ paidMinor, balanceMinor: BigInt(position.balanceCents),
     status: ["void", "written_off"].includes(invoice.status) ? invoice.status : position.status, updatedAt: new Date() })
     .where(and(eq(invoices.id, invoice.id), eq(invoices.tenantId, invoice.tenantId)));
+  // This local invalidation shares the financial transaction. Network expiry is
+  // performed only after commit; a lost processor response stays visibly pending.
+  const collectible = ["void", "written_off"].includes(invoice.status) || invoice.voidedAt || invoice.writtenOffAt ? 0n : BigInt(position.balanceCents);
+  await tx.update(onlinePaymentSessions).set({ status: "expire_pending" }).where(and(
+    eq(onlinePaymentSessions.tenantId, invoice.tenantId), eq(onlinePaymentSessions.invoiceId, invoice.id),
+    inArray(onlinePaymentSessions.status, ["creating", "open", "failed"]), gt(onlinePaymentSessions.amountMinor, collectible),
+  ));
   return position.balanceCents;
 }

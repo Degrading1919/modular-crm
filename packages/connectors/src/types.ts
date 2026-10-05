@@ -106,11 +106,11 @@ export type OnlinePaymentEvent = Readonly<{
   amountMinor: number;
   currency: string;
   feeMinor?: number;
-}>;
+}> | Readonly<{ id: string; accountReference: string; type: "account.updated"; chargesEnabled: boolean; detailsNeeded: boolean }>;
 export interface OnlinePaymentCapability {
   startOnboarding(input: { returnUrl: string; refreshUrl: string; idempotencyKey: string; saveAccount?: (reference: string) => Promise<void> }): Promise<{ accountReference: string; url: string }>;
   accountStatus(): Promise<{ accountReference: string; chargesEnabled: boolean; detailsNeeded: boolean }>;
-  createHostedPage(input: { invoiceReference: string; requestReference?: string; amountMinor: number; currency: string; idempotencyKey: string; returnUrl: string; cancelUrl: string; expiresAt: number }): Promise<{ reference: string; url: string }>;
+  createHostedPage(input: { invoiceReference: string; requestReference?: string; amountMinor: number; currency: string; idempotencyKey: string; returnUrl: string; cancelUrl: string; expiresAt: number }): Promise<{ reference: string; url: string; expiresAt?: number }>;
   expireHostedPage(reference: string): Promise<void>;
   verifyWebhook(input: { rawBody: string; signature: string; now?: Date }): OnlinePaymentEvent | null;
   requestRefund(input: { paymentReference: string; amountMinor: number; idempotencyKey: string; requestReference: string }): Promise<{ reference: string; status: "pending" }>;

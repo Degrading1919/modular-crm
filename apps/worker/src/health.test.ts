@@ -64,6 +64,7 @@ it("serves generic unauthenticated liveness/readiness and stops cleanly", async 
     running = true;
     expect((await get("/api/health/ready")).status).toBe(200);
     databaseReady = false;
+    expect((await get("/api/health/live")).status).toBe(200);
     const unavailable = await get("/api/health/ready");
     expect(unavailable.status).toBe(503);
     expect(await unavailable.json()).toEqual({ status: "unavailable" });
@@ -81,5 +82,6 @@ it("returns 503 over HTTP when PostgreSQL is unreachable", async () => {
     const response = await fetch(`http://127.0.0.1:${health.port}/api/health/ready`);
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ status: "unavailable" });
+    expect((await fetch(`http://127.0.0.1:${health.port}/api/health/live`)).status).toBe(200);
   } finally { await health.stop(); }
 });
