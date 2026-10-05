@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { allowedTransitions } from "@modular-crm/domain";
 import { ApiError } from "../components/api";
-import { blockedBy, discardGroup, drainQueue, fieldActions, fieldErrorText, projectedJobState, projectedShiftState, withQueueLock, type OfflineOperation } from "../components/field-queue";
+import { blockedBy, discardGroup, drainQueue, fieldActions, fieldErrorText, projectedJobState, projectedShiftState, resumeAuthenticatedQueue, withQueueLock, type OfflineOperation } from "../components/field-queue";
 
 const operation = (id: string, job = "one", next = "in_progress", from = "dispatched"): OfflineOperation => ({
   id, path: `/jobs/${job}/transition`, entityId: job, expectedPriorState: from, payload: { status: next, expectedPriorState: from }, createdAt: "2026-10-04T12:00:00Z", status: "pending",
@@ -12,6 +12,21 @@ function store(items: OfflineOperation[]) {
 }
 
 describe("field action and causal queue contract", () => {
+  it("stops on lapsed sign-in and resumes only authentication failures, preserving IDs, evidence and causal order", async () => {
+    const first = operation("start");
+    const dependent = operation("pause", "one", "paused", "in_progress");
+    const conflict = { ...operation("review", "two"), status: "conflict" as const, error: { status: 409, message: "Review" } };
+    const denied = { ...operation("denied", "three"), status: "failed" as const, error: { status: 403, message: "No access" } };
+    const queue = store([first, dependent, conflict, denied, operation("other", "four")]);
+    const sent: string[] = [];
+    await drainQueue(queue, async (item) => { sent.push(item.id); throw new ApiError("Sign in", 401); });
+    expect(sent).toEqual(["start"]);
+    expect(queue.read()[0]).toMatchObject({ ...first, status: "failed", error: { status: 401 } });
+    queue.write(resumeAuthenticatedQueue(queue.read()));
+    await drainQueue(queue, async (item) => { sent.push(item.id); });
+    expect(sent).toEqual(["start", "start", "pause", "other"]);
+    expect(queue.read()).toEqual([conflict, denied]);
+  });
   it("offers only canonical transitions intersected with granted permissions for every job state", () => {
     for (const state of ["draft", "unscheduled", "scheduled", "dispatched", "en_route", "in_progress", "paused", "completed", "skipped", "missed", "canceled", "needs_return", "unknown"]) {
       const actions = fieldActions(state, ["jobs.start", "jobs.complete", "jobs.skip"]);

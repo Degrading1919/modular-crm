@@ -18,7 +18,11 @@ export async function sendPlatformEmail(to: string, subject: string, text: strin
   }
   // Pre-tenant mail shares the global recipient guard, plus the auth entry-point limit.
   const reservation = await reserveAccountEmail(getDb(), to);
-  if (!reservation.allowed) return;
+  if (!reservation.allowed) {
+    // No recipient, subject, or account link belongs in this operational log.
+    console.warn("Account email suppressed: recipient sending limit reached.");
+    return;
+  }
   await createPlatformEmailSender(smtp, environment === "production", business, platformName).sendEmail({ to, subject,
     ...customerEmailParts(text, business), idempotencyKey: randomUUID() });
 }

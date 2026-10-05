@@ -142,7 +142,13 @@ async function receiptDocument(actor: SessionActor, id: string): Promise<Custome
   const allowed = [] as typeof allocations;
   for (const item of allocations) {
     if (item.invoice.customerId !== row.payment.customerId) notFound();
-    try { await authorizeInvoice(actor, item.invoice.id, row.payment.customerId, item.invoice.organizationLocationId, item.invoice.billingSnapshot); allowed.push(item); } catch { /* Filter location-scoped allocations. */ }
+    try {
+      // Staff manage receipts at the allocated invoice's billing branch;
+      // customers must still have access to every underlying service property.
+      if (actor.kind === "staff") staffLocationAllowed(actor, item.invoice.organizationLocationId);
+      else await authorizeInvoice(actor, item.invoice.id, row.payment.customerId, item.invoice.organizationLocationId, item.invoice.billingSnapshot);
+      allowed.push(item);
+    } catch { /* Filter location-scoped allocations. */ }
   }
   if (allowed.length !== allocations.length) notFound();
   if (!["succeeded", "refunded", "partially_refunded"].includes(row.payment.status)) notFound();

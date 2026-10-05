@@ -25,6 +25,7 @@ import { handleSecureEstimateLink } from "./secure-estimate-links";
 import { handleRecords } from "./records";
 import { handleReporting } from "./reporting";
 import { handleInvoiceRefund } from "./refunds";
+import { handleRefundReview } from "./refund-review";
 import { handlePaymentReads } from "./payment-reads";
 import { handleRoutesField } from "./routes-field";
 import { handleWorkflow } from "./workflows";
@@ -55,6 +56,8 @@ export async function handleV1(request: Request, path: string[]): Promise<Respon
     if (onlineAccount) return onlineAccount;
     const checkout = await handleOnlinePaymentSession(request, path, actor);
     if (checkout) return checkout;
+    const refundReview = await handleRefundReview(request, path, actor);
+    if (refundReview) return refundReview;
     const onlineRefund = await handleOnlinePaymentRefund(request, path, actor);
     if (onlineRefund) return onlineRefund;
     const connectorOAuth = await handleConnectorOAuth(request, path, actor);

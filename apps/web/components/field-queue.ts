@@ -99,6 +99,7 @@ export async function drainQueue(store: { read: () => OfflineOperation[]; write:
       const conflict = error.code === "CONFLICT" || error.code === "IDEMPOTENCY_CONFLICT";
       const transient = !(issue instanceof ApiError) || [408, 425, 429].includes(issue.status) || issue.status >= 500;
       store.write(store.read().map((item) => item.id === operation.id ? { ...item, status: conflict ? "conflict" : transient ? "pending" : "failed", error } : item));
+      if (error.status === 401) return; // Authentication affects every request, not one work item.
       continue;
     }
     // Persistence failure is not an API failure; stop and retain the original ID
@@ -118,6 +119,12 @@ export function projectedJobState(serverState: string, jobId: string, queue: Off
     state = next;
   }
   return state;
+}
+
+/** Call only after /auth/me confirms the user whose scoped queue is being read. */
+export function resumeAuthenticatedQueue(queue: OfflineOperation[]): OfflineOperation[] {
+  return queue.map((item) => item.status === "failed" && item.error?.status === 401
+    ? { ...item, status: "pending", error: undefined } : item);
 }
 
 export function fieldActions(state: string, permissions: readonly string[]) {

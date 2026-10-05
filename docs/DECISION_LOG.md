@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-05 — Close checked-outcome and field recovery dead ends
+
+- **Status:** Accepted
+- **Area:** Connectors / Product / Architecture
+- **Decision:** Let the Owner audit and resolve a refund review from the checked processor outcome without sending another refund or fabricating collection. Rescheduling suppresses old reminders and queues only enabled replacement reminder effects; staff receipts follow invoice-branch scope while customer property grants remain enforced. First publication retains canceled stops without reactivation, reauthentication resumes only the same identity's auth-failed queue work, and local PGlite owns complete wire cycles/transactions rather than individual packets.
+- **Rationale:** Existing permanent review states, stale reminder plans and packet-level emulator interleaving prevented safe recovery or contradicted real financial/work state. No authentication weakening, test retries or new payment collection behavior is permitted.
+- **Authoritative doc:** `docs/CONNECTOR_SYSTEM.md`, `docs/PRODUCT_SCOPE.md`, `docs/ARCHITECTURE.md`
+
 ## 2026-10-05 — Payment reconciliation and essential-mail headroom
 
 - **Status:** Accepted

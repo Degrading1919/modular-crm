@@ -17,6 +17,7 @@ import { calculateServicePlanPrice, servicePlanFrequencyKey, type PlanScheduleVe
 import { reviseEstimate } from "./estimate-revisions";
 import { fieldTicketScope } from "./ticket-scope";
 import { invoiceOverpayment, openInvoiceBalance, upcomingJob } from "./read-facts";
+import { recordJobReschedule } from "./job-reschedule";
 
 type RecordResource = "leads" | "customers" | "jobs" | "estimates" | "invoices" | "service-plans" | "tickets" | "services";
 const resources = new Set<RecordResource>(["leads", "customers", "jobs", "estimates", "invoices", "service-plans", "tickets", "services"]);
@@ -478,6 +479,9 @@ async function patchResource(resource: RecordResource, id: string, request: Requ
     const [before] = (await tx.execute(sql`select * from ${table} where id = ${id} and tenant_id = ${actor.tenantId} and ${locationScope} limit 1 for update`)).rows;
     if (!before) throw new DomainError("NOT_FOUND", "Record not found.", 404);
     const changes = Object.fromEntries(entries.map(([key, value]) => [config.fields[key]!, value]));
+    const rescheduled = resource === "jobs" && body.scheduledDate !== undefined && body.scheduledDate !== before.scheduled_date;
+    // A date-only edit cannot truthfully retain a window on the previous date.
+    if (rescheduled) { changes.service_window_start = null; changes.service_window_end = null; }
     const assignments = sql.join(Object.entries(changes).map(([column, value]) => {
       const encoded = value !== null && typeof value === "object" && !(value instanceof Date)
         ? sql`${JSON.stringify(value)}::jsonb`
@@ -486,6 +490,7 @@ async function patchResource(resource: RecordResource, id: string, request: Requ
     }), sql`, `);
     const [after] = (await tx.execute(sql`update ${table} set ${assignments}, updated_at = now() where id = ${id} and tenant_id = ${actor.tenantId} and ${locationScope} returning *`)).rows;
     if (!after) throw new DomainError("NOT_FOUND", "Record not found.", 404);
+    if (rescheduled) await recordJobReschedule(tx, actor, { id, customerId: String(before.customer_id), organizationLocationId: before.organization_location_id as string | null, scheduledDate: before.scheduled_date as string | null }, body.scheduledDate as string | null);
     await recordEvent(actor, { type: `${resource.replace(/s$/, "")}.updated`, entityType: resource.replace(/s$/, ""), entityId: id, auditAction: `${resource}.update`, before, after }, tx);
     return after;
   });

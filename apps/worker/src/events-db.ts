@@ -1,7 +1,7 @@
 import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
 import {
   type Database, automationRules, automationRuns, domainEvents, hasUsableFeature, loadTenantCapabilities,
-  webhookDeliveries, webhookSubscriptions,
+  webhookDeliveries, webhookSubscriptions, REMINDER_KEYS,
 } from "@modular-crm/db";
 import { automationRunKey, planAutomationRun, type AutomationAction, type AutomationRule, type DomainEvent } from "@modular-crm/automations";
 import type { PgBoss } from "pg-boss";
@@ -180,6 +180,15 @@ export async function processDomainEvent(db: Database, boss: PgBoss, input: { te
     let plan: ReturnType<typeof planAutomationRun>;
     try {
       rule = normalizeAutomationRule(ruleRow);
+      if (event.eventType === "job.rescheduled" && event.entityType === "job" && event.payload.scheduledDate) {
+        // Rescheduling repeats only enabled visit-reminder actions, never the
+        // unrelated effects of a dispatch rule or a disabled pack recipe.
+        if (rule.trigger.event === "job.dispatched") {
+          const actions = rule.actions.filter((action) => action.purpose === "service" && ["send_email", "send_sms"].includes(action.actionType) && REMINDER_KEYS.includes(String(action.configuration.templateKey ?? "")));
+          if (!actions.length) continue;
+          rule = { ...rule, trigger: { ...rule.trigger, event: "job.rescheduled" }, actions };
+        }
+      }
       if (ruleRow.activeFrom && ruleRow.activeFrom > row.occurredAt) continue;
       plan = planAutomationRun(rule, event);
     } catch (error) {
