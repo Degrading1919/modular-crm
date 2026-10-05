@@ -29,3 +29,14 @@ export function openInvoiceBalance(alias = "i"): SQL {
     and ${i}.issued_at is not null and ${i}.voided_at is null and ${i}.written_off_at is null
     then ${i}.balance_minor else 0 end`;
 }
+
+/** Net received funds plus applied credits beyond the invoice's collectible value. */
+export function invoiceOverpayment(alias = "i"): SQL {
+  if (!/^[a-z][a-z0-9_]*$/.test(alias)) throw new Error("Invalid invoice alias.");
+  const i = sql.raw(alias);
+  return sql`greatest(${i}.paid_minor
+    - coalesce((select sum(r.amount_minor) from refunds r join payment_allocations pa on pa.tenant_id=r.tenant_id and pa.payment_id=r.payment_id
+        where pa.tenant_id=${i}.tenant_id and pa.invoice_id=${i}.id and r.status='succeeded'),0)
+    - greatest((case when ${i}.status in ('void','written_off') or ${i}.voided_at is not null or ${i}.written_off_at is not null then 0 else ${i}.total_minor end)
+        - coalesce((select sum(ca.amount_minor) from credit_allocations ca where ca.tenant_id=${i}.tenant_id and ca.invoice_id=${i}.id),0),0),0)`;
+}

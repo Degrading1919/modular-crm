@@ -72,6 +72,7 @@ export const outboundMessages = pgTable("outbound_messages", {
   renderedSubject: text("rendered_subject"), renderedBody: text("rendered_body").notNull(), status: status(),
   category: text("category").notNull().default("service"),
   nextSendAt: timestamp("next_send_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
   connectorInstallationId: uuid("connector_installation_id"), providerReference: text("provider_reference"),
   idempotencyKey: text("idempotency_key").notNull(), queuedAt: timestamp("queued_at", { withTimezone: true }).notNull().defaultNow(),
   sentAt: timestamp("sent_at", { withTimezone: true }), deliveredAt: timestamp("delivered_at", { withTimezone: true }),
@@ -92,6 +93,19 @@ export const platformEmailUsage = pgTable("platform_email_usage", {
   dayStart: timestamp("day_start", { withTimezone: true }).notNull(),
   hourlyCount: integer("hourly_count").notNull().default(0),
   dailyCount: integer("daily_count").notNull().default(0),
+});
+
+/** Operator-only per-tenant overrides; no tenant UI/API mutates sender safety policy. */
+export const platformEmailPolicies = pgTable("platform_email_policies", {
+  tenantId: uuid("tenant_id").primaryKey().references(() => tenants.id),
+  hourly: integer("hourly").notNull(), daily: integer("daily").notNull(),
+  firstWeekHourly: integer("first_week_hourly").notNull(), firstWeekDaily: integer("first_week_daily").notNull(),
+});
+/** Global across businesses, hashed normalized recipient; account mail has its own 5/hour cap. */
+export const accountEmailUsage = pgTable("account_email_usage", {
+  recipientHash: text("recipient_hash").primaryKey(),
+  hourStart: timestamp("hour_start", { withTimezone: true }).notNull(),
+  hourlyCount: integer("hourly_count").notNull().default(0),
 });
 
 export const communicationEvents = pgTable("communication_events", {

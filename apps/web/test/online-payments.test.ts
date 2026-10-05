@@ -4,8 +4,8 @@ import { createHash } from "node:crypto";
 import { PGlite } from "../../../packages/db/node_modules/@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
-import { and, eq } from "drizzle-orm";
-import { connectorInstallations, domainEvents, invoices, onlinePaymentAccounts, onlinePaymentEvents, onlinePaymentSessions, paymentAllocations, payments, refunds, schema, seedDevelopment, seedIds, type Database } from "@modular-crm/db";
+import { and, eq, sql } from "drizzle-orm";
+import { connectorInstallations, creditAllocations, customerCredits, domainEvents, invoices, onlinePaymentAccounts, onlinePaymentEvents, onlinePaymentSessions, paymentAllocations, payments, refunds, schema, seedDevelopment, seedIds, type Database } from "@modular-crm/db";
 import { createMockConnectorRegistry, signMockPaymentEvent, type OnlinePaymentEvent } from "@modular-crm/connectors";
 import { permissionsForRole } from "@modular-crm/domain";
 import type { SessionActor } from "../lib/api/actor.ts";
@@ -23,6 +23,10 @@ const { handleOnlinePaymentSession } = await import("../lib/api/online-payment-s
 const { handleOnlinePaymentWebhook, processOnlinePaymentEvent } = await import("../lib/api/online-payment-webhooks.ts");
 const { handleOnlinePaymentRefund } = await import("../lib/api/online-payment-refunds.ts");
 const { handleMockHostedPayment } = await import("../lib/api/mock-hosted-payments.ts");
+const { handleWorkflow } = await import("../lib/api/workflows.ts");
+const { expireExcessHostedPages } = await import("../lib/api/hosted-page-expiry.ts");
+const { handleReporting } = await import("../lib/api/reporting.ts");
+const { updateInvoiceFinancialPosition } = await import("../lib/api/invoice-payment-ledger.ts");
 const { openConnectorCredentials } = await import("../lib/api/connector-secrets.ts");
 const { refundId } = await import("../lib/api/refunds.ts");
 let pglite: PGlite;
@@ -38,7 +42,7 @@ async function fixture() {
 async function checkout(invoice: typeof invoices.$inferSelect, data: Record<string, unknown> = {}, actor = customer) {
   return handleOnlinePaymentSession(request(`portal/invoices/${invoice.id}/checkout`, { idempotencyKey: crypto.randomUUID(), ...data }), ["portal", "invoices", invoice.id, "checkout"], actor);
 }
-async function eventFor(invoice: typeof invoices.$inferSelect, extra: Partial<OnlinePaymentEvent> = {}) {
+async function eventFor(invoice: typeof invoices.$inferSelect, extra: Partial<Extract<OnlinePaymentEvent, { paymentReference: string }>> = {}) {
   await checkout(invoice);
   const [session] = await db.select().from(onlinePaymentSessions).where(eq(onlinePaymentSessions.invoiceId, invoice.id)).limit(1);
   const status = await (await onlineForAccount(account)).accountStatus();
@@ -62,6 +66,131 @@ beforeAll(async () => {
 afterAll(async () => { await pglite?.close(); vi.unstubAllEnvs(); });
 
 describe("account-bound online invoice payments", () => {
+  it("invalidates an excessive page atomically with a real applied-credit ledger update", async () => {
+    const invoice = await fixture(); await checkout(invoice);
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`select id from invoices where tenant_id=${owner.tenantId} and id=${invoice.id} for update`);
+      const [credit] = await tx.insert(customerCredits).values({ tenantId: owner.tenantId, customerId: invoice.customerId!, sourceType: "manual", originalAmountMinor: 400n, remainingAmountMinor: 0n, currency: "USD", status: "applied" }).returning();
+      await tx.insert(creditAllocations).values({ tenantId: owner.tenantId, customerCreditId: credit!.id, invoiceId: invoice.id, amountMinor: 400n });
+      expect(await updateInvoiceFinancialPosition(tx, invoice)).toBe(800);
+      expect((await tx.select().from(onlinePaymentSessions).where(eq(onlinePaymentSessions.invoiceId, invoice.id)))[0]!.status).toBe("expire_pending");
+    });
+    await expireExcessHostedPages(owner.tenantId, invoice.id);
+    expect((await db.select().from(onlinePaymentSessions).where(eq(onlinePaymentSessions.invoiceId, invoice.id)))[0]!.status).toBe("expired");
+    expect((await current(invoice.id)).balanceMinor).toBe(800n);
+  });
+  it("closes pages after credit, void or write-off facts without touching another invoice or tenant", async () => {
+    const untouched = await fixture(); await checkout(untouched);
+    for (const mutation of [{ balanceMinor: 800n }, { status: "void", voidedAt: new Date() }, { status: "written_off", writtenOffAt: new Date() }]) {
+      const invoice = await fixture(); await checkout(invoice);
+      await db.update(invoices).set(mutation).where(eq(invoices.id, invoice.id));
+      await expireExcessHostedPages(seedIds.cleanTenant, invoice.id);
+      expect((await db.select().from(onlinePaymentSessions).where(eq(onlinePaymentSessions.invoiceId, invoice.id)))[0]!.status).toBe("open");
+      await expireExcessHostedPages(owner.tenantId, invoice.id);
+      expect((await db.select().from(onlinePaymentSessions).where(eq(onlinePaymentSessions.invoiceId, invoice.id)))[0]!.status).toBe("expired");
+    }
+    expect((await db.select().from(onlinePaymentSessions).where(eq(onlinePaymentSessions.invoiceId, untouched.id)))[0]!.status).toBe("open");
+  });
+  it("keeps a manual payment committed when remote expiry fails, then recovers the pending closure", async () => {
+    const invoice = await fixture(); await checkout(invoice);
+    const online = await onlineForAccount(account);
+    const spy = vi.spyOn(accountApi, "onlineForAccount").mockResolvedValue({ ...online, expireHostedPage: async () => { throw new Error("offline"); } });
+    try {
+      await handleWorkflow(request(`invoices/${invoice.id}/pay`, { amountCents: 400, method: "cash", idempotencyKey: crypto.randomUUID() }), ["invoices", invoice.id, "pay"], owner);
+      expect(await current(invoice.id)).toMatchObject({ paidMinor: 400n, balanceMinor: 800n });
+      expect((await db.select().from(onlinePaymentSessions).where(eq(onlinePaymentSessions.invoiceId, invoice.id)))[0]!.status).toBe("expire_pending");
+      await expect(checkout(invoice)).rejects.toMatchObject({ status: 409 });
+    } finally { spy.mockRestore(); }
+    await expireExcessHostedPages(owner.tenantId, invoice.id);
+    expect((await db.select().from(onlinePaymentSessions).where(eq(onlinePaymentSessions.invoiceId, invoice.id)))[0]!.status).toBe("expired");
+    expect((await (await checkout(invoice))!.json()).item.amountCents).toBe(800);
+  });
+  it("closes a response-lost page created while staff collect, and never returns its obsolete URL", async () => {
+    const invoice = await fixture(); const online = await onlineForAccount(account);
+    const expire = vi.fn(async () => {});
+    const spy = vi.spyOn(accountApi, "onlineForAccount").mockResolvedValue({ ...online, expireHostedPage: expire,
+      createHostedPage: async (input) => {
+        await handleWorkflow(request(`invoices/${invoice.id}/pay`, { amountCents: 1200, method: "cash", idempotencyKey: crypto.randomUUID() }), ["invoices", invoice.id, "pay"], owner);
+        return online.createHostedPage(input);
+      },
+    });
+    try {
+      await expect(checkout(invoice)).rejects.toMatchObject({ status: 409 });
+      expect(expire).toHaveBeenCalledOnce();
+      expect((await db.select().from(onlinePaymentSessions).where(eq(onlinePaymentSessions.invoiceId, invoice.id)))[0]).toMatchObject({ status: "expired", providerReference: expect.any(String) });
+      expect((await current(invoice.id)).paidMinor).toBe(1200n);
+    } finally { spy.mockRestore(); }
+  });
+  it("refreshes signed account health idempotently without reconnecting an owner-disconnected account", async () => {
+    const event = { id: crypto.randomUUID(), type: "account.updated" as const, accountReference: `mock_acct_${account.id}`, chargesEnabled: false, detailsNeeded: true };
+    expect(await apply(event)).toEqual({ duplicate: false }); expect(await apply(event)).toEqual({ duplicate: true });
+    await expect(checkout(await fixture())).rejects.toMatchObject({ status: 503 });
+    await db.update(connectorInstallations).set({ status: "not_connected" }).where(eq(connectorInstallations.id, account.installationId));
+    await apply({ ...event, id: crypto.randomUUID(), chargesEnabled: true, detailsNeeded: false });
+    expect((await db.select().from(onlinePaymentAccounts).where(eq(onlinePaymentAccounts.id, account.id)))[0]!.chargesEnabled).toBe(false);
+    expect((await db.select().from(connectorInstallations).where(eq(connectorInstallations.id, account.installationId)))[0]!.status).toBe("not_connected");
+    // Restore the fixture through the real owner setup, not a hidden health bypass.
+    await handleOnlinePaymentAccounts(request("connections/mock-payments/online-payments"), ["connections", "mock-payments", "online-payments"], owner);
+    await handleOnlinePaymentAccounts(request("connections/mock-payments/online-payments", {}, "GET"), ["connections", "mock-payments", "online-payments"], owner);
+  });
+  it("shows a plain owner health prompt for the bound business, but not for staff or disconnected accounts", async () => {
+    await db.update(onlinePaymentAccounts).set({ provider: "stripe-online-payments", chargesEnabled: false, detailsNeeded: true }).where(eq(onlinePaymentAccounts.id, account.id));
+    try {
+      const dashboard = async (actor: SessionActor) => (await (await handleReporting(request("dashboard", {}, "GET"), ["dashboard"], actor))!.json()).item.attention as { title: string; href: string }[];
+      expect(await dashboard(owner)).toContainEqual(expect.objectContaining({ title: "Stripe needs attention", href: "/app/connections" }));
+      expect((await dashboard({ ...owner, role: "office" })).some((item) => item.title === "Stripe needs attention")).toBe(false);
+      await db.update(connectorInstallations).set({ status: "not_connected" }).where(eq(connectorInstallations.id, account.installationId));
+      expect((await dashboard(owner)).some((item) => item.title === "Stripe needs attention")).toBe(false);
+    } finally {
+      await db.update(onlinePaymentAccounts).set({ provider: "mock-payments", chargesEnabled: true, detailsNeeded: false }).where(eq(onlinePaymentAccounts.id, account.id));
+      await db.update(connectorInstallations).set({ status: "connected" }).where(eq(connectorInstallations.id, account.installationId));
+    }
+  });
+  it("expires an open hosted page after a manual payment, outside the invoice transaction", async () => {
+    const invoice = await fixture(); await checkout(invoice);
+    const [session] = await db.select().from(onlinePaymentSessions).where(eq(onlinePaymentSessions.invoiceId, invoice.id));
+    const online = await onlineForAccount(account);
+    const expire = vi.fn(async () => {
+      // A nested database operation would deadlock the single-connection fixture if still inside the invoice transaction.
+      expect((await current(invoice.id)).balanceMinor).toBe(0n);
+    });
+    const spy = vi.spyOn(accountApi, "onlineForAccount").mockResolvedValue({ ...online, expireHostedPage: expire });
+    try {
+      await handleWorkflow(request(`invoices/${invoice.id}/pay`, { amountCents: 1200, method: "cash", idempotencyKey: "manual_while_open" }), ["invoices", invoice.id, "pay"], owner);
+      expect(expire).toHaveBeenCalledWith(session!.providerReference);
+      expect((await db.select().from(onlinePaymentSessions).where(eq(onlinePaymentSessions.id, session!.id)))[0]!.status).toBe("expired");
+      await expect(handleMockHostedPayment(request(`payments/test-checkout/${session!.providerReference}`, { outcome: "succeeded" }), ["payments", "test-checkout", session!.providerReference!], customer)).rejects.toMatchObject({ status: 409 });
+    } finally { spy.mockRestore(); }
+  });
+  it("acknowledges an excessive refund confirmation for owner review without fabricating a ledger refund", async () => {
+    const invoice = await fixture(); const event = await eventFor(invoice); await apply(event);
+    await apply({ ...event, id: "dashboard_refund", type: "payment.refunded", amountMinor: 900, refundReference: "dashboard_re" });
+    const excess = { ...event, id: "excess_confirmation", type: "payment.refunded" as const, amountMinor: 400, refundReference: "crm_re" };
+    expect(await apply(excess)).toMatchObject({ duplicate: false });
+    expect(await apply(excess)).toMatchObject({ duplicate: true });
+    expect((await current(invoice.id)).balanceMinor).toBe(900n);
+    expect((await db.select().from(refunds).where(eq(refunds.providerReference, "crm_re")))[0]).toMatchObject({ reviewReason: expect.stringContaining("exceeds"), status: "pending" });
+  });
+  it("ends a CRM refund raced by a dashboard refund in review, acknowledging retries without another refund request", async () => {
+    const invoice = await fixture(); const event = await eventFor(invoice); await apply(event);
+    const [allocation] = await db.select().from(paymentAllocations).where(eq(paymentAllocations.invoiceId, invoice.id));
+    const key = crypto.randomUUID(); const id = refundId(owner.tenantId, invoice.id, key);
+    await db.insert(refunds).values({ id, tenantId: owner.tenantId, paymentId: allocation!.paymentId, connectorInstallationId: account.installationId, status: "pending", amountMinor: 400n, currency: "USD" });
+    await apply({ ...event, id: crypto.randomUUID(), type: "payment.refunded", amountMinor: 900, refundReference: crypto.randomUUID() });
+    const confirmation = { ...event, id: crypto.randomUUID(), type: "payment.refunded" as const, amountMinor: 400, refundReference: crypto.randomUUID(), refundRequestReference: id };
+    expect(await apply(confirmation)).toEqual({ duplicate: false }); expect(await apply(confirmation)).toEqual({ duplicate: true });
+    const online = await onlineForAccount(account); const requestRefund = vi.fn(online.requestRefund);
+    const spy = vi.spyOn(accountApi, "onlineForAccount").mockResolvedValue({ ...online, requestRefund });
+    try {
+      const path = ["invoices", invoice.id, "refunds"];
+      const response = await handleOnlinePaymentRefund(request(path.join("/"), { paymentId: allocation!.paymentId, amountCents: 400, idempotencyKey: key }), path, owner);
+      expect(response!.status).toBe(202); expect((await response!.json()).item.status).toBe("needs_review");
+      expect(requestRefund).not.toHaveBeenCalled();
+      await expect(handleOnlinePaymentRefund(request(path.join("/"), { paymentId: allocation!.paymentId, amountCents: 100, idempotencyKey: crypto.randomUUID() }), path, owner)).rejects.toMatchObject({ status: 409 });
+      expect((await current(invoice.id)).balanceMinor).toBe(900n);
+      expect((await db.select().from(domainEvents).where(and(eq(domainEvents.entityId, id), eq(domainEvents.eventType, "payment.refund_needs_review"))))).toHaveLength(1);
+    } finally { spy.mockRestore(); }
+  });
   it("saves account identifiers only in bound encryption and verifies readiness from the capability", async () => {
     const [installation] = await db.select().from(connectorInstallations).where(eq(connectorInstallations.id, account.installationId));
     const credentials = openConnectorCredentials(installation!.credentialReference!, { tenantId: owner.tenantId, installationId: account.installationId, connectorKey: account.provider });
@@ -180,7 +309,11 @@ describe("account-bound online invoice payments", () => {
     expect(await current(invoice.id)).toMatchObject({ paidMinor: 1200n, balanceMinor: 400n, status: "partially_paid" });
     await apply({ ...refund, id: "rest_" + refund.id, refundReference: "rest_" + refund.refundReference, amountMinor: 800 });
     expect(await current(invoice.id)).toMatchObject({ paidMinor: 1200n, balanceMinor: 1200n, status: "issued" });
-    await expect(apply({ ...refund, id: "excess_" + refund.id, refundReference: "excess_" + refund.refundReference, amountMinor: 1 })).rejects.toMatchObject({ status: 409 });
+    const excess = { ...refund, id: "excess_" + refund.id, refundReference: "excess_" + refund.refundReference, amountMinor: 1 };
+    expect(await apply(excess)).toMatchObject({ duplicate: false });
+    expect(await apply(excess)).toMatchObject({ duplicate: true });
+    expect((await db.select().from(refunds).where(eq(refunds.providerReference, excess.refundReference!)))[0]).toMatchObject({ reviewReason: expect.stringContaining("exceeds"), status: "pending" });
+    expect((await current(invoice.id)).balanceMinor).toBe(1200n);
   });
   it("owner refunds go through the capability and signed mock confirmation; retries and permission denial are safe", async () => {
     const invoice = await fixture();
@@ -218,7 +351,7 @@ describe("account-bound online invoice payments", () => {
     await apply({ ...failed, id: `refund_success_${pending!.id}`, type: "payment.refunded" });
     await apply({ ...failed, id: `late_failure_${pending!.id}` });
     expect((await current(invoice.id)).balanceMinor).toBe(400n);
-    expect((await db.select().from(refunds).where(eq(refunds.id, pending!.id)))[0]!.status).toBe("succeeded");
+    expect((await db.select().from(refunds).where(eq(refunds.id, pending!.id)))[0]).toMatchObject({ status: "succeeded", reviewReason: expect.stringContaining("later failed") });
   });
   it("known second-tenant account cannot bind to another tenant's checkout reference or request ID", async () => {
     const otherOwner = { ...owner, tenantId: seedIds.cleanTenant, organizationId: seedIds.cleanOrganization };

@@ -14,3 +14,10 @@ it("registers durable queues and sends tenant-scoped payloads", async () => {
   await enqueueRecurringGeneration(boss, { tenantId: "tenant-a", planId: "plan-1" });
   expect(send).toHaveBeenCalledTimes(3);
 });
+
+it("prioritizes account and service sends over already queued promotions", async () => {
+  const send = vi.fn<(queue: string, payload: unknown, options: { priority: number }) => Promise<string>>(async () => "queued"); const boss = { send } as unknown as PgBoss;
+  for (const purpose of ["marketing", "service", "account"]) await enqueueOutboundMessage(boss, { tenantId: "tenant-a", messageId: purpose }, purpose);
+  expect(send.mock.calls.map((call) => (call[2] as { priority: number }).priority)).toEqual([0, 10, 20]);
+  expect(send.mock.calls.map((call) => call[1])).toEqual(["marketing", "service", "account"].map((messageId) => ({ tenantId: "tenant-a", messageId })));
+});

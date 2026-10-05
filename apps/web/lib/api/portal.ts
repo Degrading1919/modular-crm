@@ -8,7 +8,7 @@ import { recordEvent } from "./events";
 import { json, readBody } from "./http";
 import { normalized, rows, uuidArray } from "./sql";
 import { estimateAction, invoiceAction } from "./workflows";
-import { businessTimeZone, openInvoiceBalance, upcomingJob } from "./read-facts";
+import { businessTimeZone, invoiceOverpayment, openInvoiceBalance, upcomingJob } from "./read-facts";
 import { balanceTotals } from "../presentation";
 import { readServerConfig } from "@modular-crm/config";
 
@@ -164,7 +164,7 @@ async function portalList(actor: SessionActor, resource: string): Promise<Respon
       where e.tenant_id=${actor.tenantId} and ${customerLocationPredicate(actor, "e.customer_id", "e.service_location_id")} and e.status<>'draft'
       order by e.created_at desc`); break;
     case "invoices": items = await rows(sql`select i.*,i.invoice_number as number,i.total_minor as total_cents,i.paid_minor as paid_cents,
-      i.balance_minor as balance_cents,${openInvoiceBalance()} as open_balance_cents,i.due_at as due_date,
+      i.balance_minor as balance_cents,${openInvoiceBalance()} as open_balance_cents,${invoiceOverpayment()} as overpayment_cents,i.due_at as due_date,
       (opa.charges_enabled=true and ci.status='connected' and
         ((opa.provider='mock-payments' and ${readServerConfig(process.env).mockConnectors}) or
          (opa.provider='stripe-online-payments' and ${Boolean(readServerConfig(process.env).stripePayments)}))) as online_payment_available,

@@ -1,7 +1,8 @@
-import { and, desc, eq, inArray, isNull, lt, lte, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import {
   type Database, communicationEvents, consentRecords, hasUsableFeature, loadTenantCapabilities,
   notificationPreferences, outboundMessages, loadEmailBusiness, emailUnsubscribeToken, reservePlatformEmail, openAccountEmail,
+  reserveAccountEmail, REMINDER_KEYS, reminderDeadline,
 } from "@modular-crm/db";
 import { ConnectorError, type ConnectorRegistry, createPlatformEmailSender, customerEmailParts, type EmailInput } from "@modular-crm/connectors";
 import { readServerConfig, DEVELOPMENT_AUTH_SECRET, messagePurpose, type ServerConfig } from "@modular-crm/config";
@@ -48,10 +49,18 @@ export async function sendThroughMessagingCapability(registry: ConnectorRegistry
 
 export async function processOutboundMessage(db: Database, registry: ConnectorRegistry, input: { tenantId: string; messageId: string }, now = new Date(), config: ServerConfig = readServerConfig(process.env)): Promise<"sent" | "suppressed" | "failed" | "skipped" | "queued"> {
   const [message] = await db.update(outboundMessages).set({ status: "sending", updatedAt: now })
-    .where(and(eq(outboundMessages.id, input.messageId), eq(outboundMessages.tenantId, input.tenantId), inArray(outboundMessages.status, ["queued", "retry"]), or(isNull(outboundMessages.nextSendAt), lte(outboundMessages.nextSendAt, now))))
+    .where(and(eq(outboundMessages.id, input.messageId), eq(outboundMessages.tenantId, input.tenantId), inArray(outboundMessages.status, ["queued", "retry"]), or(isNull(outboundMessages.nextSendAt), lte(outboundMessages.nextSendAt, now), lte(outboundMessages.expiresAt, now))))
     .returning();
   if (!message) return "skipped";
   const purpose = messagePurpose(message.category);
+  const deadline = purpose === "service" && REMINDER_KEYS.includes(message.templateKey ?? "") && message.jobId ? await reminderDeadline(db, input.tenantId, message.jobId) : undefined;
+  if ((message.expiresAt && message.expiresAt <= now) || (deadline && (!deadline.active || !deadline.expiresAt || deadline.expiresAt <= now || (message.expiresAt && message.expiresAt.getTime() !== deadline.expiresAt.getTime())))) {
+    await db.transaction(async (tx) => {
+      await tx.update(outboundMessages).set({ status: "suppressed", failureCode: "reminder_expired", failureMessage: "This reminder was not sent because the visit has started, ended, or changed.", nextSendAt: null, updatedAt: now }).where(and(eq(outboundMessages.tenantId, input.tenantId), eq(outboundMessages.id, message.id)));
+      await tx.insert(communicationEvents).values({ tenantId: input.tenantId, outboundMessageId: message.id, eventType: "suppressed", occurredAt: now, payload: { reason: "reminder_expired" } });
+    });
+    return "suppressed";
+  }
   const capabilityState = await loadTenantCapabilities(db, input.tenantId, now);
   if (purpose !== "account" && !hasUsableFeature(capabilityState, "customer_notifications")) {
     await db.transaction(async (tx) => {
@@ -90,7 +99,7 @@ export async function processOutboundMessage(db: Database, registry: ConnectorRe
     const parts = business ? customerEmailParts(renderedBody, business, unsubscribeUrl) : { body: renderedBody };
     const request = { tenantId: input.tenantId, channel, recipient: message.recipient, subject: message.renderedSubject ?? "Service update", idempotencyKey: message.idempotencyKey, ...parts };
     if (selected.mode === "platform") {
-      const reservation = await reservePlatformEmail(db, input.tenantId, config.platformEmailLimits, now);
+      const reservation = purpose === "account" ? await reserveAccountEmail(db, message.recipient, now) : await reservePlatformEmail(db, input.tenantId, config.platformEmailLimits, now, purpose);
       if (!reservation.allowed) {
         await db.update(outboundMessages).set({ status: "queued", nextSendAt: reservation.nextSendAt, failureCode: reservation.code, failureMessage: reservation.note, updatedAt: now })
           .where(and(eq(outboundMessages.id, message.id), eq(outboundMessages.tenantId, input.tenantId)));
@@ -122,7 +131,8 @@ export async function processOutboundMessage(db: Database, registry: ConnectorRe
 /** Recover a worker crash after a message was claimed, and requeue durable retry records. */
 export async function enqueuePendingMessages(db: Database, boss: PgBoss, now = new Date()): Promise<number> {
   await db.update(outboundMessages).set({ status: "retry", updatedAt: now }).where(and(eq(outboundMessages.status, "sending"), lt(outboundMessages.updatedAt, new Date(now.getTime() - 15 * 60000))));
-  const pending = await db.select({ id: outboundMessages.id, tenantId: outboundMessages.tenantId }).from(outboundMessages).where(and(inArray(outboundMessages.status, ["queued", "retry"]), or(isNull(outboundMessages.nextSendAt), lte(outboundMessages.nextSendAt, now)))).limit(100);
-  for (const item of pending) await enqueueOutboundMessage(boss, { tenantId: item.tenantId, messageId: item.id });
+  const pending = await db.select({ id: outboundMessages.id, tenantId: outboundMessages.tenantId, category: outboundMessages.category }).from(outboundMessages).where(and(inArray(outboundMessages.status, ["queued", "retry"]), or(isNull(outboundMessages.nextSendAt), lte(outboundMessages.nextSendAt, now), lte(outboundMessages.expiresAt, now))))
+    .orderBy(sql`case when ${outboundMessages.category}='account' then 0 when ${outboundMessages.category} in ('service','transactional') then 1 else 2 end`, outboundMessages.queuedAt, outboundMessages.id).limit(100);
+  for (const item of pending) await enqueueOutboundMessage(boss, { tenantId: item.tenantId, messageId: item.id }, item.category);
   return pending.length;
 }

@@ -52,6 +52,8 @@ try {
   docker(["run", "--rm", "--network", prefix, "-e", "DATABASE_URL", images.migrate]); // Applied journal is safe to replay.
   docker(["run", "-d", "--name", names.worker, "--network", prefix, "-p", "127.0.0.1::3001", ...options, images.worker]);
   const worker = url(names.worker, 3001);
+  const workerHealthcheck = JSON.parse(docker(["image", "inspect", images.worker, "--format", "{{json .Config.Healthcheck.Test}}"]).stdout);
+  assert.deepEqual(workerHealthcheck, ["CMD", "node", "containers/probe.mjs", "live", "worker"], "worker restart probe must use liveness, not database readiness");
   for (const [name, base] of [["web", web], ["worker", worker]]) {
     await until(async () => (await status(`${base}/api/health/ready`)) === 200, `${name} readiness`);
     for (const probe of ["live", "ready"]) assert.equal(await status(`${base}/api/health/${probe}`), 200);

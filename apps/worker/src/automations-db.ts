@@ -3,7 +3,7 @@ import { and, eq, inArray, isNull, lt, or } from "drizzle-orm";
 import {
   type Database, automationRuns, customerContacts, customers, hasUsableFeature, internalNotifications, invoices,
   jobs, loadTenantCapabilities, memberships, messageTemplates, notes, outboundMessages, roleTemplates, sealAccountEmail,
-  ticketStatusDefinitions, ticketTypeDefinitions, tickets,
+  ticketStatusDefinitions, ticketTypeDefinitions, tickets, REMINDER_KEYS, reminderDeadline,
 } from "@modular-crm/db";
 import { evaluateAutomationRule, renderActionConfiguration, type AutomationAction, type AutomationPlan, type AutomationRule, type DomainEvent } from "@modular-crm/automations";
 import type { PgBoss } from "pg-boss";
@@ -68,9 +68,10 @@ async function executeAction(db: Database, boss: PgBoss, snapshot: RunSnapshot, 
       const link = await invoicePaymentEmailLink(db, tenantId, event.entityId, customerId, recipient);
       if (link) body += `\n\nPay now: ${link}`;
     }
-    const [inserted] = await db.insert(outboundMessages).values({ tenantId, customerId, jobId: event.entityType === "job" ? event.entityId : undefined, invoiceId: event.entityType === "invoice" ? event.entityId : undefined, channel, category, templateKey, templateVersion: template?.version, recipient, renderedSubject: channel === "email" ? subject : null, renderedBody: category === "account" ? sealAccountEmail(body, process.env.BETTER_AUTH_SECRET ?? DEVELOPMENT_AUTH_SECRET) : body, status: "queued", idempotencyKey: executionKey, queuedAt: now }).onConflictDoNothing({ target: [outboundMessages.tenantId, outboundMessages.idempotencyKey] }).returning({ id: outboundMessages.id });
+    const deadline = category === "service" && REMINDER_KEYS.includes(templateKey ?? "") && event.entityType === "job" ? await reminderDeadline(db, tenantId, event.entityId) : undefined;
+    const [inserted] = await db.insert(outboundMessages).values({ tenantId, customerId, jobId: event.entityType === "job" ? event.entityId : undefined, invoiceId: event.entityType === "invoice" ? event.entityId : undefined, channel, category, templateKey, templateVersion: template?.version, recipient, renderedSubject: channel === "email" ? subject : null, renderedBody: category === "account" ? sealAccountEmail(body, process.env.BETTER_AUTH_SECRET ?? DEVELOPMENT_AUTH_SECRET) : body, expiresAt: deadline?.expiresAt, status: "queued", idempotencyKey: executionKey, queuedAt: now }).onConflictDoNothing({ target: [outboundMessages.tenantId, outboundMessages.idempotencyKey] }).returning({ id: outboundMessages.id });
     const messageId = inserted?.id ?? (await db.select({ id: outboundMessages.id }).from(outboundMessages).where(and(eq(outboundMessages.tenantId, tenantId), eq(outboundMessages.idempotencyKey, executionKey))).limit(1))[0]?.id;
-    if (messageId) await enqueueOutboundMessage(boss, { tenantId, messageId });
+    if (messageId) await enqueueOutboundMessage(boss, { tenantId, messageId }, category);
     return;
   }
   if (action.actionType === "notify_staff") {

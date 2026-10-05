@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import { and, eq, sql } from "drizzle-orm";
 import { automationRules, automationRuns, communicationEvents, connectorInstallations, consentRecords, emailUnsubscribeTarget, emailUnsubscribeToken, messageTemplates,
-  loadEmailBusiness, organizationLocations, outboundMessages, platformEmailUsage, readEmailUnsubscribeToken, reservePlatformEmail, schema, seedDevelopment, seedIds, unsubscribeEmail, tenants, sealAccountEmail, type Database } from "@modular-crm/db";
+  loadEmailBusiness, organizationLocations, outboundMessages, platformEmailUsage, platformEmailPolicies, accountEmailUsage, reserveAccountEmail, jobs, readEmailUnsubscribeToken, reservePlatformEmail, schema, seedDevelopment, seedIds, unsubscribeEmail, tenants, sealAccountEmail, type Database } from "@modular-crm/db";
 import { ConnectorRegistry, createConnectorRegistry } from "@modular-crm/connectors";
 import { createGoogleWorkspaceConnector } from "../../../packages/connectors/src/providers/google-workspace.ts";
 import { readServerConfig } from "@modular-crm/config";
@@ -39,6 +39,43 @@ async function message(category = "automation", tenantId = seedIds.happyTenant, 
 async function deliver(id: string, tenantId = seedIds.happyTenant) {
   return processOutboundMessage(db, createConnectorRegistry({ includePlannedProviders: true }), { tenantId, messageId: id }, new Date(), config);
 }
+it("reserves service headroom against a marketing burst and applies an operator override only to its tenant", async () => {
+  const now = new Date("2026-10-06T09:00:00Z");
+  const [tenant] = await db.insert(tenants).values({ name: "Burst", slug: crypto.randomUUID(), status: "active", createdAt: new Date("2026-01-01") }).returning();
+  const limits = { hourly: 5, daily: 10, firstWeekHourly: 2, firstWeekDaily: 3 };
+  for (let i=0; i<4; i++) expect(await reservePlatformEmail(db, tenant!.id, limits, now, "marketing")).toEqual({ allowed: true });
+  expect(await reservePlatformEmail(db, tenant!.id, limits, now, "marketing")).toMatchObject({ allowed: false });
+  expect(await reservePlatformEmail(db, tenant!.id, limits, now, "service")).toEqual({ allowed: true });
+  expect(await reservePlatformEmail(db, tenant!.id, limits, now, "service")).toMatchObject({ allowed: false });
+  await db.insert(platformEmailPolicies).values({ tenantId: tenant!.id, hourly: 10, daily: 20, firstWeekHourly: 5, firstWeekDaily: 10 });
+  expect(await reservePlatformEmail(db, tenant!.id, limits, now, "service")).toEqual({ allowed: true });
+});
+it("account mail bypasses exhausted tenant caps but has a global case-insensitive recipient limit", async () => {
+  const now = new Date("2026-10-06T12:30:00Z");
+  await db.delete(platformEmailUsage).where(eq(platformEmailUsage.tenantId, seedIds.happyTenant));
+  const limited = { ...config, platformEmailLimits: { hourly: 1, daily: 1, firstWeekHourly: 1, firstWeekDaily: 1 } };
+  expect(await reservePlatformEmail(db, seedIds.happyTenant, limited.platformEmailLimits, now)).toEqual({ allowed: true });
+  const [row] = await db.insert(outboundMessages).values({ tenantId: seedIds.happyTenant, category: "account", channel: "email", recipient: "account-limit@example.test", renderedBody: sealAccountEmail("Account link", secret), status: "queued", idempotencyKey: crypto.randomUUID() }).returning();
+  expect(await processOutboundMessage(db, createConnectorRegistry(), { tenantId: row!.tenantId, messageId: row!.id }, now, limited)).toBe("sent");
+  for (let i=0; i<4; i++) expect(await reserveAccountEmail(db, "ACCOUNT-LIMIT@example.test", now)).toEqual({ allowed: true });
+  expect(await reserveAccountEmail(db, "account-limit@example.test", now)).toMatchObject({ allowed: false });
+  expect(await reserveAccountEmail(db, "other-recipient@example.test", now)).toEqual({ allowed: true });
+  expect(await reserveAccountEmail(db, "account-limit@example.test", new Date("2026-10-06T13:00:00Z"))).toEqual({ allowed: true });
+  expect((await db.select().from(platformEmailUsage).where(eq(platformEmailUsage.tenantId, seedIds.happyTenant)))[0]).toMatchObject({ dailyCount: 1, hourlyCount: 1 });
+  expect(JSON.stringify(await db.select().from(accountEmailUsage))).not.toContain("example.test");
+  await db.delete(platformEmailUsage).where(eq(platformEmailUsage.tenantId, seedIds.happyTenant));
+});
+it("expires a delayed reminder before transport when the real visit deadline has passed", async () => {
+  const [job] = await db.select().from(jobs).where(eq(jobs.tenantId, seedIds.happyTenant)).limit(1);
+  const previous = { status: job!.status, serviceWindowStart: job!.serviceWindowStart };
+  await db.update(jobs).set({ status: "dispatched", serviceWindowStart: new Date("2026-10-06T10:00:00Z") }).where(eq(jobs.id, job!.id));
+  try {
+    const [row] = await db.insert(outboundMessages).values({ tenantId: job!.tenantId, customerId: job!.customerId, jobId: job!.id, category: "service", templateKey: "appointment-reminder", channel: "email", recipient: "expiry@example.test", renderedBody: "Your visit", status: "queued", expiresAt: new Date("2026-10-06T10:00:00Z"), nextSendAt: new Date("2026-10-07T00:00:00Z"), idempotencyKey: crypto.randomUUID() }).returning();
+    expect(await processOutboundMessage(db, createConnectorRegistry(), { tenantId: row!.tenantId, messageId: row!.id }, new Date("2026-10-06T10:01:00Z"), config)).toBe("suppressed");
+    expect(sendMail).not.toHaveBeenCalled();
+    expect((await db.select().from(outboundMessages).where(eq(outboundMessages.id, row!.id)))[0]).toMatchObject({ failureCode: "reminder_expired" });
+  } finally { await db.update(jobs).set(previous).where(eq(jobs.id, job!.id)); }
+});
 it("uses platform mail without a connector and records acceptance; replay cannot duplicate a completed send", async () => {
   const row = await message();
   await expect(deliver(row.id, seedIds.cleanTenant)).resolves.toBe("skipped");

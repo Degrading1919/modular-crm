@@ -4,6 +4,15 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-05 — Payment reconciliation and essential-mail headroom
+
+- **Status:** Accepted
+- **Area:** Connectors / Architecture / Implementation
+- **Decision:** Invalidate excessive hosted payment pages after committed balance changes, preserve late collected money, and expose owner recovery separately from customer receipt language. Signed account health disables collection promptly; immutable checkout retries use the provider default deadline, and irreconcilable refunds become durable owner-review records without changing confirmed money. Reserve service-email capacity and queue priority ahead of marketing, expire stale visit reminders, and protect tenant-exempt account mail with its own global recipient limit; container restart checks use liveness while readiness remains operational.
+- **Rationale:** External acceptance, delayed notifications and shared-sender bursts must not fabricate financial facts, block account access, send obsolete reminders or restart healthy processes during database failover.
+- **Authoritative doc:** `docs/CONNECTOR_SYSTEM.md`, `docs/ARCHITECTURE.md`, `docs/DEPLOYMENT.md`
+- **Supersedes:** Tenant-bound account-mail caps and worker-image readiness checks in the preceding email/health decisions.
+
 ## 2026-10-05 — Hosted invoice payments are account-bound and webhook-confirmed
 
 - **Status:** Accepted

@@ -8,6 +8,7 @@ import {
 } from "@modular-crm/db";
 import { assertTransition, DomainError, manualPaymentMethods, requirePermission, type Permission } from "@modular-crm/domain";
 import { updateInvoiceFinancialPosition } from "./invoice-payment-ledger";
+import { expireExcessHostedPages } from "./hosted-page-expiry";
 import { getCapability } from "../connectors";
 import { getDb } from "../db";
 import type { Database } from "@modular-crm/db";
@@ -431,6 +432,7 @@ async function invoiceAction(request: Request, actor: SessionActor, invoiceId: s
     await recordEvent(actor, { type: status === "succeeded" ? "payment.succeeded" : "payment.failed", entityType: "payment", entityId: payment.id, payload: { invoiceId, customerId: current.customerId, amountCents: body.amountCents, method: recordedMethod, reference }, auditAction: `payment.${status}`, locationId: current.organizationLocationId }, tx);
     return { payment, duplicate: false, balanceCents };
   });
+  if (outcome.payment.status === "succeeded") await expireExcessHostedPages(actor.tenantId, invoiceId);
   return json({ item: normalized(outcome.payment), duplicate: outcome.duplicate, invoice: { id: invoiceId, balanceCents: outcome.balanceCents } });
 }
 
