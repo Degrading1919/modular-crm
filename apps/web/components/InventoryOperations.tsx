@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, body, friendly, money, unwrapItems } from "./api";
 import { Badge, Empty, Loading, Notice } from "./ui";
+const NO_PERMISSIONS: readonly string[] = [];
 
 type StockAtLocation = { locationId: string; locationName: string; quantity: string | number; reorderThreshold: string | number | null };
 type InventoryItem = {
@@ -88,7 +89,7 @@ function remaining(line: PurchaseOrderLine) {
   return Math.max(0, Number(line.quantityOrdered) - Number(line.quantityReceived));
 }
 
-export default function InventoryOperations() {
+export default function InventoryOperations({ permissions = NO_PERMISSIONS }: { permissions?: readonly string[] }) {
   const [data, setData] = useState<DataState>(emptyData);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -111,9 +112,9 @@ export default function InventoryOperations() {
     setLoadError("");
     Promise.allSettled([
       api<{ items?: InventoryItem[] }>("/inventory"),
-      api<{ items?: BusinessLocation[] }>("/organization/locations"),
-      api<{ items?: StaffMember[] }>("/staff"),
-      api<{ items?: Job[] }>("/jobs"),
+      permissions.includes("organization.read") ? api<{ items?: BusinessLocation[] }>("/organization/locations") : Promise.resolve({ items: [] }),
+      permissions.includes("staff.read") ? api<{ items?: StaffMember[] }>("/staff") : Promise.resolve({ items: [] }),
+      permissions.includes("jobs.read") ? api<{ items?: Job[] }>("/jobs") : Promise.resolve({ items: [] }),
       api<{ items?: Vendor[] }>("/vendors"),
       api<{ items?: PurchaseOrder[] }>("/purchase-orders"),
     ]).then((results) => {
@@ -137,7 +138,7 @@ export default function InventoryOperations() {
       if (failed.length) setLoadError(`Some supporting lists could not be loaded: ${failed.join(" ")}`);
     }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [reloadKey]);
+  }, [reloadKey, permissions]);
 
   const activeItems = useMemo(() => data.items.filter((item) => item.active !== false && item.status !== "inactive"), [data.items]);
   const activeLocations = useMemo(() => data.locations.filter((location) => location.status !== "inactive"), [data.locations]);
@@ -232,7 +233,7 @@ export default function InventoryOperations() {
     {notice && <Notice kind="success" text={notice} onClose={() => setNotice("")}/>}
 
     <section className="card card-pad" aria-labelledby="inventory-stock-title">
-      <div className="card-heading"><div><div className="eyebrow">Supplies</div><h2 id="inventory-stock-title">Stock on hand</h2></div><button className="btn btn-primary btn-sm" type="button" onClick={() => setNewItem((open) => !open)}>{newItem ? "Close" : "Add inventory item"}</button></div>
+      <div className="card-heading"><div><div className="eyebrow">Supplies</div><h2 id="inventory-stock-title">Stock on hand</h2></div>{permissions.includes("inventory.manage_catalog") && permissions.includes("organization.read") && <button className="btn btn-primary btn-sm" type="button" onClick={() => setNewItem((open) => !open)}>{newItem ? "Close" : "Add inventory item"}</button>}</div>
       <p className="subtle" style={{ fontSize: ".86rem", marginTop: 0 }}>Track supplies across your branches and team vehicles. Receipts, transfers, and job usage keep the balances current.</p>
       {newItem && <form className="card card-pad" style={{ marginBottom: 16 }} onSubmit={createItem}>
         <h3 style={{ marginTop: 0 }}>Add an item</h3>
@@ -241,8 +242,8 @@ export default function InventoryOperations() {
           <div className="field"><label htmlFor="inventory-sku">SKU</label><input id="inventory-sku" name="sku" maxLength={100}/></div>
           <div className="field"><label htmlFor="inventory-unit">How it is counted</label><input id="inventory-unit" name="unit" defaultValue="unit" maxLength={40} required/><small>For example: bag, bottle, or roll.</small></div>
           <div className="field"><label htmlFor="inventory-location">Starting branch</label><select id="inventory-location" name="locationId" required disabled={!activeLocations.length}><option value="">Choose a branch</option>{activeLocations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}</select></div>
-          <div className="field"><label htmlFor="inventory-quantity">Starting quantity</label><input id="inventory-quantity" name="quantity" type="number" min="0" step="0.0001" defaultValue="0"/><small>Use zero if you will receive stock later.</small></div>
-          <div className="field"><label htmlFor="inventory-reorder">Low-stock reminder at</label><input id="inventory-reorder" name="reorderThreshold" type="number" min="0" step="0.0001" placeholder="Optional"/></div>
+          <div className="field"><label htmlFor="inventory-quantity">Starting quantity</label><input id="inventory-quantity" disabled={!permissions.includes("inventory.receive")} name="quantity" type="number" min="0" step="0.0001" defaultValue="0"/><small>Use zero if you will receive stock later.</small></div>
+          <div className="field"><label htmlFor="inventory-reorder">Low-stock reminder at</label><input id="inventory-reorder" disabled={!permissions.includes("inventory.reorder_manage")} name="reorderThreshold" type="number" min="0" step="0.0001" placeholder="Optional"/></div>
           <div className="field"><label htmlFor="inventory-cost">Unit cost</label><input id="inventory-cost" name="unitCost" type="number" min="0" step="0.01" placeholder="Optional"/></div>
         </div>
         {!activeLocations.length && <Notice kind="error" text="No active branch is available to hold stock."/>}
@@ -253,7 +254,7 @@ export default function InventoryOperations() {
         <td>{Number(item.quantity).toLocaleString()} {item.unit || "unit"}<div className="table-secondary">{(item.locations ?? []).map((stock) => `${stock.locationName}: ${stock.quantity}`).join(" · ") || "No stock locations yet"}</div></td>
         <td>{item.locations?.some((stock) => stock.reorderThreshold != null) ? item.locations.filter((stock) => stock.reorderThreshold != null).map((stock) => `${stock.locationName}: ${stock.reorderThreshold}`).join(" · ") : "Not set"}</td>
         <td><Badge status={item.status}/></td>
-        <td><div className="inline-actions"><button className="btn btn-secondary btn-sm" type="button" onClick={() => { setReceiveItem(item.id); setTransferItem(""); setConsumeItem(""); }}>Receive</button><button className="btn btn-secondary btn-sm" type="button" onClick={() => { setTransferItem(item.id); setReceiveItem(""); setConsumeItem(""); }}>Transfer</button><button className="btn btn-secondary btn-sm" type="button" onClick={() => { setConsumeItem(item.id); setReceiveItem(""); setTransferItem(""); }}>Use on job</button></div></td>
+        <td><div className="inline-actions">{permissions.includes("inventory.receive") && permissions.includes("organization.read") && <button className="btn btn-secondary btn-sm" type="button" onClick={() => { setReceiveItem(item.id); setTransferItem(""); setConsumeItem(""); }}>Receive</button>}{permissions.includes("inventory.transfer") && permissions.includes("organization.read") && <button className="btn btn-secondary btn-sm" type="button" onClick={() => { setTransferItem(item.id); setReceiveItem(""); setConsumeItem(""); }}>Transfer</button>}{permissions.includes("inventory.consume") && permissions.includes("jobs.read") && <button className="btn btn-secondary btn-sm" type="button" onClick={() => { setConsumeItem(item.id); setReceiveItem(""); setTransferItem(""); }}>Use on job</button>}</div></td>
       </tr>)}</tbody></table></div> : <Empty title="No inventory items yet" description="Add your first supply to start tracking stock by branch and team vehicle."/>}
     </section>
 
@@ -263,7 +264,7 @@ export default function InventoryOperations() {
 
     <section className="two-col">
       <section className="card card-pad" aria-labelledby="inventory-vendors-title">
-        <div className="card-heading"><div><div className="eyebrow">Suppliers</div><h2 id="inventory-vendors-title">Vendors</h2></div><button className="btn btn-secondary btn-sm" type="button" onClick={() => setNewVendor((open) => !open)}>{newVendor ? "Close" : "Add vendor"}</button></div>
+        <div className="card-heading"><div><div className="eyebrow">Suppliers</div><h2 id="inventory-vendors-title">Vendors</h2></div>{permissions.includes("inventory.reorder_manage") && <button className="btn btn-secondary btn-sm" type="button" onClick={() => setNewVendor((open) => !open)}>{newVendor ? "Close" : "Add vendor"}</button>}</div>
         {newVendor && <form className="stack" style={{ marginBottom: 16 }} onSubmit={createVendor}><div className="form-grid">
           <div className="field"><label htmlFor="vendor-name">Vendor name</label><input id="vendor-name" name="name" minLength={2} maxLength={160} required/></div>
           <div className="field"><label htmlFor="vendor-contact">Contact name</label><input id="vendor-contact" name="contactName" maxLength={120}/></div>
@@ -277,10 +278,10 @@ export default function InventoryOperations() {
       </section>
 
       <section className="card card-pad" aria-labelledby="inventory-po-title">
-        <div className="card-heading"><div><div className="eyebrow">Ordering</div><h2 id="inventory-po-title">Purchase orders</h2></div><button className="btn btn-primary btn-sm" type="button" onClick={() => setNewOrder((open) => !open)} disabled={!data.vendors.length || !activeItems.length || !activeLocations.length}>{newOrder ? "Close" : "New order"}</button></div>
+        <div className="card-heading"><div><div className="eyebrow">Ordering</div><h2 id="inventory-po-title">Purchase orders</h2></div>{permissions.includes("inventory.reorder_manage") && permissions.includes("organization.read") && <button className="btn btn-primary btn-sm" type="button" onClick={() => setNewOrder((open) => !open)} disabled={!data.vendors.length || !activeItems.length || !activeLocations.length}>{newOrder ? "Close" : "New order"}</button>}</div>
         {(!data.vendors.length || !activeItems.length || !activeLocations.length) && <p className="subtle" style={{ fontSize: ".83rem" }}>Add a vendor, inventory item, and active branch before creating an order.</p>}
         {newOrder && <PurchaseOrderEditor vendors={data.vendors.filter((vendor) => vendor.status !== "inactive")} items={activeItems} locations={activeLocations} saving={saving === "order"} onCancel={() => setNewOrder(false)} onSubmit={createOrder}/>}
-        {openOrders.length ? <div className="stack" style={{ marginTop: 14 }}>{openOrders.map((order) => <PurchaseOrderCard key={order.id} order={order} saving={saving === `receive-order-${order.id}`} onReceive={(event) => receiveOrder(event, order)}/>)}</div> : <p className="subtle" style={{ fontSize: ".86rem" }}>Open orders will appear here. Fully received orders remain available in order history.</p>}
+        {openOrders.length ? <div className="stack" style={{ marginTop: 14 }}>{openOrders.map((order) => <PurchaseOrderCard key={order.id} order={order} saving={saving === `receive-order-${order.id}`} mayReceive={permissions.includes("inventory.receive")} onReceive={(event) => receiveOrder(event, order)}/>)}</div> : <p className="subtle" style={{ fontSize: ".86rem" }}>Open orders will appear here. Fully received orders remain available in order history.</p>}
         {data.orders.filter((order) => !["ordered", "partially_received"].includes(order.status)).length > 0 && <details style={{ marginTop: 12 }}><summary className="link">Show completed and draft orders</summary><div className="stack" style={{ marginTop: 12 }}>{data.orders.filter((order) => !["ordered", "partially_received"].includes(order.status)).map((order) => <div className="action-item" key={order.id}><div><strong>{order.orderNumber} · {order.vendorName}</strong><p>{order.locationName} · {inputDate(order.expectedAt)}</p></div><Badge status={order.status}/><strong>{money(Number(order.totalMinor), order.currency || "USD")}</strong></div>)}</div></details>}
       </section>
     </section>
@@ -377,13 +378,13 @@ function PurchaseOrderEditor({ vendors, items, locations, saving, onCancel, onSu
   </form>;
 }
 
-function PurchaseOrderCard({ order, saving, onReceive }: { order: PurchaseOrder; saving: boolean; onReceive: (event: React.FormEvent<HTMLFormElement>) => Promise<boolean> }) {
+function PurchaseOrderCard({ order, saving, onReceive, mayReceive }: { order: PurchaseOrder; saving: boolean; mayReceive: boolean; onReceive: (event: React.FormEvent<HTMLFormElement>) => Promise<boolean> }) {
   const [formError, setFormError] = useState("");
   const [receiving, setReceiving] = useState(false);
   return <article className="card card-pad">
     <div className="card-heading"><div><strong>{order.orderNumber}</strong><p className="subtle" style={{ margin: "4px 0 0", fontSize: ".83rem" }}>{order.vendorName} · {order.locationName} · expected {inputDate(order.expectedAt)}</p></div><div style={{ textAlign: "right" }}><Badge status={order.status}/><div style={{ marginTop: 6 }}><strong>{money(Number(order.totalMinor), order.currency || "USD")}</strong></div></div></div>
     <div className="stack" style={{ gap: 4 }}>{order.items.map((line) => <div className="action-item" key={line.id}><div style={{ flex: 1 }}><strong>{line.inventoryItemName}</strong><p>Ordered {line.quantityOrdered} · received {line.quantityReceived} · {money(Number(line.unitCostMinor), order.currency || "USD")} each</p></div><span>{remaining(line)} remaining</span></div>)}</div>
-    <button className="btn btn-secondary btn-sm" style={{ marginTop: 12 }} type="button" onClick={() => setReceiving((open) => !open)}>{receiving ? "Close receipt" : "Receive items"}</button>
+    {mayReceive && <button className="btn btn-secondary btn-sm" style={{ marginTop: 12 }} type="button" onClick={() => setReceiving((open) => !open)}>{receiving ? "Close receipt" : "Receive items"}</button>}
     {receiving && <form className="stack" style={{ marginTop: 14 }} onSubmit={(event) => { event.preventDefault(); setFormError(""); onReceive(event).then((succeeded) => { if (succeeded) setReceiving(false); }).catch((issue) => setFormError(errorText(issue))); }}>
       <p className="subtle" style={{ fontSize: ".84rem", margin: 0 }}>Enter what arrived in this delivery. Leave lines blank when none arrived; received amounts cannot exceed the order.</p>
       {order.items.filter((line) => remaining(line) > 0).map((line) => <div className="form-grid" key={line.id}><div><strong>{line.inventoryItemName}</strong><p className="table-secondary">{remaining(line)} remaining</p></div><div className="field"><label htmlFor={`receive-${line.id}`}>Quantity received</label><input id={`receive-${line.id}`} name={`receive-${line.id}`} type="number" min="0.0001" max={remaining(line)} step="0.0001" placeholder="Not received"/></div></div>)}

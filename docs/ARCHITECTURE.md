@@ -56,6 +56,12 @@ Authorization should be tenant-aware and permission-based.
 
 Role permission checks and commercial capability checks answer different questions and must both be enforced for an action that belongs to a subscribable capability.
 
+Business workspace presentation uses `apps/web/lib/workspace-access.ts`: each surface pairs its required usable tenant feature with its existing API read permissions; hub alternatives pair each child feature with that child's permissions rather than combining unrelated any-of sets. Sidebar prominence is an additional presentation filter, not authority. Direct routes, workspace links, hub cards, and dashboard actions use the same decision; write buttons additionally require the relevant mutation permission. Permission-denied and capability-unavailable states remain distinct. Historical document/API reads retain their existing read/export contracts.
+
+Authenticated staff can read effective capability feature state without `tenant.read`. Staff without `tenant.billing_manage` receive only feature state and an empty management-module list, not onboarding answers or management recommendations. Setup, recommendation, and enablement mutations still require `tenant.billing_manage`; customers cannot read the staff catalog. This read boundary grants no permissions. Seeded Office / Manager defaults derive from `permissionsForRole("office")`, including repair of older category-whitelist overrides when reseeded; deliberate technician fixture restrictions remain separate.
+
+The existing Payments workspace reads `GET /api/v1/payments`. This collection requires staff access and `payments.read`, returns only the workspace view model, and scopes every query to the current tenant. Non-owner location scope is compatible with the invoice-list location model: every allocated invoice's business location must be in scope, or an unallocated payment must belong to an in-scope customer owning location. It does not apply the receipt document's additional job/service-plan object checks; those remain enforced at the document boundary. Owner all-location access is preserved. This endpoint adds no payment creation, collection, refund, connector, detail, or other mutation behavior.
+
 Internal users belong to one or more tenants through memberships. A membership receives a role template, and the role template resolves to granular permissions.
 
 Initial role templates:

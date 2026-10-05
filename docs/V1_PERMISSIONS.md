@@ -10,6 +10,7 @@ Permissions are server-enforced capability keys. Role names are convenience temp
 - Customer portal authorization is separate and not represented by staff permissions.
 - Location scope further limits a permission; having `jobs.read` does not imply access to jobs outside the user's organization/location scope.
 - Any permission may be overridden by a custom role later without changing service code.
+- Workspace access intersects these permissions with usable tenant product capabilities; neither grants the other. Authenticated staff can read effective tool state without `tenant.read`, while capability setup/recommendation/enablement mutations retain `tenant.billing_manage`. The seeded Office / Manager uses the canonical domain role template rather than a separate category whitelist.
 
 ## Permission catalog
 
@@ -37,7 +38,7 @@ Default:
 
 Default:
 - Owner/Admin: all
-- Office/Manager: read, location operational read as needed
+- Office/Manager: `organization.read` only by default; `organization.update` and `organization.locations_manage` require explicit grants
 - Field Technician: read assigned/basic location info only through scoped view models
 
 ### Staff and access

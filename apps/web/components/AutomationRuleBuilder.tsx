@@ -19,6 +19,7 @@ export type AutomationRuleBuilderRule = {
 };
 
 export type AutomationRuleBuilderProps = {
+  canActivate?: boolean;
   initialRule?: AutomationRuleBuilderRule;
   endpoint?: string;
   onSaved?: (rule: AutomationRuleBuilderRule) => void;
@@ -91,7 +92,7 @@ export function buildAutomationRulePayload(input: {
   };
 }
 
-export default function AutomationRuleBuilder({ initialRule, endpoint = "/automations", onSaved, onCancel }: AutomationRuleBuilderProps) {
+export default function AutomationRuleBuilder({ canActivate = true, initialRule, endpoint = "/automations", onSaved, onCancel }: AutomationRuleBuilderProps) {
   const initialEvent = initialRule?.triggerConfig?.event ?? initialRule?.trigger ?? TRIGGERS[0]!.event;
   const initialAction = ACTIONS.some((option) => option.value === initialRule?.actions?.[0]?.actionType)
     ? initialRule!.actions![0]!.actionType as AutomationActionType : "send_email";
@@ -188,7 +189,7 @@ export default function AutomationRuleBuilder({ initialRule, endpoint = "/automa
     <div className="inline-actions">
       {onCancel && <button type="button" className="btn btn-secondary" onClick={onCancel} disabled={saving}>Cancel</button>}
       <button type="submit" className="btn btn-secondary" disabled={saving}>{saving ? "Saving…" : "Save draft"}</button>
-      <button type="button" className="btn btn-primary" disabled={saving} onClick={(event) => { const form = event.currentTarget.form; if (form?.reportValidity()) void save("active"); }}>Turn on rule</button>
+      {canActivate && <button type="button" className="btn btn-primary" disabled={saving} onClick={(event) => { const form = event.currentTarget.form; if (form?.reportValidity()) void save("active"); }}>Turn on rule</button>}
     </div>
   </form>;
 }

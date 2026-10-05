@@ -5,6 +5,8 @@ import { useEffect, useMemo, useState } from "react";
 import { api, body, date, friendly, money, patch, unwrapItem, unwrapItems } from "./api";
 import { Badge, Empty, Icon, Loading, Modal, Notice } from "./ui";
 
+const NO_PERMISSIONS: readonly string[] = [];
+
 export type PayrollAppMode = "auto" | "manager" | "statements";
 
 type PayrollPeriod = {
@@ -214,7 +216,7 @@ function shortHours(minutes: unknown) {
   return Number.isFinite(parsed) ? `${(parsed / 60).toFixed(2)} hrs` : "—";
 }
 
-export default function PayrollApp({ mode = "auto", canManageProfiles }: { mode?: PayrollAppMode; canManageProfiles?: boolean }) {
+export default function PayrollApp({ mode = "auto", canManageProfiles, permissions = NO_PERMISSIONS }: { mode?: PayrollAppMode; canManageProfiles?: boolean; permissions?: readonly string[] }) {
   const [view, setView] = useState<"loading" | "manager" | "statements" | "blocked">("loading");
   const [tab, setTab] = useState<"periods" | "profiles">("periods");
   const [periods, setPeriods] = useState<PayrollPeriod[]>([]);
@@ -269,8 +271,8 @@ export default function PayrollApp({ mode = "auto", canManageProfiles }: { mode?
         setSelectedPeriodId((current) => nextPeriods.some((item) => item.id === current) ? current : nextPeriods[0]?.id ?? "");
         setView("manager");
         const [profilesResult, staffResult, identityResult] = await Promise.allSettled([
-          api<{ items?: PayrollProfile[] }>("/payroll/profiles"),
-          api<{ items?: StaffMember[] }>("/staff"),
+          permissions.includes("compensation.read") ? api<{ items?: PayrollProfile[] }>("/payroll/profiles") : Promise.resolve({ items: [] }),
+          permissions.includes("staff.read") ? api<{ items?: StaffMember[] }>("/staff") : Promise.resolve({ items: [] }),
           api<{ user?: { role?: string } }>("/auth/me"),
         ]);
         if (!active) return;
@@ -299,7 +301,7 @@ export default function PayrollApp({ mode = "auto", canManageProfiles }: { mode?
     };
     void load();
     return () => { active = false; };
-  }, [mode, reloadKey]);
+  }, [mode, reloadKey, permissions]);
 
   const selectedPeriod = periods.find((period) => period.id === selectedPeriodId) ?? periods[0] ?? null;
 
@@ -430,7 +432,7 @@ export default function PayrollApp({ mode = "auto", canManageProfiles }: { mode?
 
   return <>
     <PayrollHeader title="Payroll" subtitle="Review pay inputs, confirm gross pay, and export an approved period.">
-      {tab === "periods" && !denied.has("create period") && <button type="button" className="btn btn-primary" onClick={() => setPeriodModalOpen(true)}><Icon name="plus" size={16}/> New pay period</button>}
+      {tab === "periods" && permissions.includes("payroll.calculate") && !denied.has("create period") && <button type="button" className="btn btn-primary" onClick={() => setPeriodModalOpen(true)}><Icon name="plus" size={16}/> New pay period</button>}
       {tab === "profiles" && profileManagementAllowed && !denied.has("profiles") && <button type="button" className="btn btn-primary" disabled={!!profileAccessError || !staff.length} onClick={() => setProfileTarget(null)}><Icon name="plus" size={16}/> Add pay profile</button>}
     </PayrollHeader>
 
@@ -440,7 +442,7 @@ export default function PayrollApp({ mode = "auto", canManageProfiles }: { mode?
 
     <div className="report-tabs" role="tablist" aria-label="Payroll areas" style={{ marginBottom: 22 }}>
       <button type="button" role="tab" aria-selected={tab === "periods"} className={tab === "periods" ? "active" : ""} onClick={() => setTab("periods")}><Icon name="calendar" size={16}/> Pay periods</button>
-      <button type="button" role="tab" aria-selected={tab === "profiles"} className={tab === "profiles" ? "active" : ""} onClick={() => setTab("profiles")}><Icon name="person" size={16}/> Compensation</button>
+      {permissions.includes("compensation.read") && <button type="button" role="tab" aria-selected={tab === "profiles"} className={tab === "profiles" ? "active" : ""} onClick={() => setTab("profiles")}><Icon name="person" size={16}/> Compensation</button>}
     </div>
 
     {tab === "profiles" ? <ProfilesPanel profiles={profiles} staff={staff} loading={loading} accessError={profileAccessError} canManage={profileManagementAllowed && !denied.has("profiles")} onEdit={(profile) => setProfileTarget(profile)}/>
@@ -452,7 +454,7 @@ export default function PayrollApp({ mode = "auto", canManageProfiles }: { mode?
           <PayrollMetric icon="receipt" label="Period status" value={friendly(selectedPeriod?.status)} hint="Review before approval"/>
         </div>
 
-        {!periods.length ? <div className="card"><Empty title="No pay periods yet" description="Create a date range, then calculate gross pay from approved time, job, mileage, and tip inputs." action={!denied.has("create period") ? <button type="button" className="btn btn-primary btn-sm" onClick={() => setPeriodModalOpen(true)}>Create pay period</button> : undefined}/></div> : <div className="two-col" style={{ gridTemplateColumns: "minmax(230px,.8fr) minmax(0,1.8fr)", alignItems: "start" }}>
+        {!periods.length ? <div className="card"><Empty title="No pay periods yet" description="Create a date range, then calculate gross pay from approved time, job, mileage, and tip inputs." action={permissions.includes("payroll.calculate") && !denied.has("create period") ? <button type="button" className="btn btn-primary btn-sm" onClick={() => setPeriodModalOpen(true)}>Create pay period</button> : undefined}/></div> : <div className="two-col" style={{ gridTemplateColumns: "minmax(230px,.8fr) minmax(0,1.8fr)", alignItems: "start" }}>
           <div className="card card-pad">
             <div className="card-heading"><h2>Pay periods</h2><span className="muted-label">{periods.length} total</span></div>
             <div className="stack" style={{ gap: 8 }}>
@@ -463,17 +465,17 @@ export default function PayrollApp({ mode = "auto", canManageProfiles }: { mode?
             {!selectedPeriod ? <Empty title="Choose a pay period" description="Select a period to review its calculation and actions."/> : <>
               <div className="card-heading" style={{ alignItems: "flex-start" }}><div><div className="eyebrow">Selected pay period</div><h2 style={{ margin: "4px 0 5px" }}>{periodLabel(selectedPeriod)}</h2><div className="inline-actions"><Badge status={selectedPeriod.status}/><span className="subtle" style={{ fontSize: ".8rem" }}>Gross pay only</span></div></div>
                 <div className="inline-actions">
-                  {isOpenPeriod(selectedPeriod.status) && !denied.has("calculate pay") && <button type="button" className="btn btn-secondary btn-sm" disabled={!!busy} onClick={() => void periodAction("calculate")}><Icon name="refresh" size={15}/>{latest.length ? "Recalculate" : "Calculate pay"}</button>}
-                  {isOpenPeriod(selectedPeriod.status) && latest.length > 0 && !denied.has("send for review") && <button type="button" className="btn btn-primary btn-sm" disabled={!!busy} onClick={() => void periodAction("review")}><Icon name="check" size={15}/> Send for review</button>}
-                  {selectedPeriod.status === "reviewed" && !denied.has("approve payroll") && <button type="button" className="btn btn-primary btn-sm" disabled={!!busy} onClick={() => void periodAction("approve")}><Icon name="check" size={15}/> Approve</button>}
-                  {(selectedPeriod.status === "reviewed" || selectedPeriod.status === "approved") && !denied.has("reopen the period") && <button type="button" className="btn btn-secondary btn-sm" disabled={!!busy} onClick={() => void periodAction("reopen")}>Reopen</button>}
-                  {(selectedPeriod.status === "approved" || selectedPeriod.status === "exported") && !denied.has("export CSV") && <button type="button" className="btn btn-secondary btn-sm" disabled={!!busy} onClick={() => void exportCsv()}><Icon name="download" size={15}/> Export CSV</button>}
+                  {isOpenPeriod(selectedPeriod.status) && permissions.includes("payroll.calculate") && !denied.has("calculate pay") && <button type="button" className="btn btn-secondary btn-sm" disabled={!!busy} onClick={() => void periodAction("calculate")}><Icon name="refresh" size={15}/>{latest.length ? "Recalculate" : "Calculate pay"}</button>}
+                  {isOpenPeriod(selectedPeriod.status) && latest.length > 0 && permissions.includes("payroll.review") && !denied.has("send for review") && <button type="button" className="btn btn-primary btn-sm" disabled={!!busy} onClick={() => void periodAction("review")}><Icon name="check" size={15}/> Send for review</button>}
+                  {selectedPeriod.status === "reviewed" && permissions.includes("payroll.approve") && !denied.has("approve payroll") && <button type="button" className="btn btn-primary btn-sm" disabled={!!busy} onClick={() => void periodAction("approve")}><Icon name="check" size={15}/> Approve</button>}
+                  {(selectedPeriod.status === "reviewed" || selectedPeriod.status === "approved") && permissions.includes("payroll.review") && !denied.has("reopen the period") && <button type="button" className="btn btn-secondary btn-sm" disabled={!!busy} onClick={() => void periodAction("reopen")}>Reopen</button>}
+                  {(selectedPeriod.status === "approved" || selectedPeriod.status === "exported") && permissions.includes("payroll.export") && !denied.has("export CSV") && <button type="button" className="btn btn-secondary btn-sm" disabled={!!busy} onClick={() => void exportCsv()}><Icon name="download" size={15}/> Export CSV</button>}
                 </div>
               </div>
               <Notice text="The calculation uses approved time, completed jobs, mileage, and recorded tips for these dates. The CSV contains gross pay amounts; it does not file taxes or send payments."/>
               {detailLoading ? <Loading label="Loading calculation details…"/> : detail ? <>
                 {latest.length ? <div className="payroll-staff-list" style={{ marginTop: 17 }}>
-                  {latest.map((calculation) => <CalculationCard key={calculation.membershipId} calculation={calculation} history={detail.calculations.filter((item) => item.membershipId === calculation.membershipId)} canCorrect={isOpenPeriod(selectedPeriod.status)} disabled={!!busy || denied.has("corrections")} onCorrect={() => setCorrectionTarget(calculation)}/>)}
+                  {latest.map((calculation) => <CalculationCard key={calculation.membershipId} calculation={calculation} history={detail.calculations.filter((item) => item.membershipId === calculation.membershipId)} canCorrect={permissions.includes("payroll.review") && isOpenPeriod(selectedPeriod.status)} disabled={!!busy || denied.has("corrections")} onCorrect={() => setCorrectionTarget(calculation)}/>)}
                 </div> : <Empty title="No gross pay calculated" description="Calculate this period to gather approved time, completed work, mileage, and tips into a reviewable gross pay total."/>}
               </> : <Notice kind="error" text="We couldn’t load the calculation details. Refresh the page or choose this period again."/>}
             </>}

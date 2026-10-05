@@ -4,6 +4,24 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-04 — Office location access is read-only by default; Payments links use receipts
+
+- **Status:** Accepted
+- **Area:** UX / Implementation
+- **Decision:** Deny `organization.update` and `organization.locations_manage` in the canonical Office template, retaining scoped organization reads, operational permissions, Owner authority, and explicit custom-role grants. Payments must not link to nonexistent generic detail routes; receipt-capable states use the existing receipt surface and other states remain non-linked in tables and cards. Describe payment collection scope as invoice-list-compatible location scope, not receipt-equivalent object access.
+- **Rationale:** PR #5 review exposed default location-write authority contrary to the documented Office policy, and populated payment rows exposed an unimplemented detail destination. The read-only collection authorization is unchanged; receipt documents apply their own stricter object checks.
+- **Authoritative doc:** `docs/V1_PERMISSIONS.md`, `docs/PRODUCT_SCOPE.md`, `docs/ARCHITECTURE.md`
+
+## 2026-10-04 — Workspace tools require both capability and staff permission
+
+- **Status:** Accepted
+- **Area:** Core platform / UX
+- **Decision:** Use one effective workspace surface decision across sidebar, direct routes, hub cards, and dashboard links/actions: a usable tenant capability plus the relevant existing staff permissions. Allow authenticated staff to read operational capability state without granting capability-management authority. Derive the seeded Office / Manager defaults from the canonical role template, retaining deliberate technician fixture restrictions.
+- **Rationale:** Morgan's seeded category whitelist removed `tenant.read`, preventing capability discovery even for permitted operational tools; separate UI gating also offered predictable unauthorized destinations and actions. Read discovery and management authority must remain separate.
+- **Authoritative doc:** `docs/ARCHITECTURE.md`, `docs/PRODUCT_SCOPE.md`, `docs/V1_PERMISSIONS.md`
+
+- **Implementation boundary:** Complete the existing V1 Payments collection with a staff-only, `payments.read`-protected, tenant/location-scoped GET endpoint. This closes the implementation gap found while verifying permitted billing destinations; it does not authorize new payment mutations or a Payments redesign.
+
 ## 2026-10-04 — Calendar dates remain timezone-independent
 
 - **Status:** Accepted

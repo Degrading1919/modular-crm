@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { api, body, date, friendly, patch, unwrapItems } from "./api";
 import AutomationRuleBuilder, { type AutomationRuleBuilderRule } from "./AutomationRuleBuilder";
 
+const NO_PERMISSIONS: readonly string[] = [];
+
 type AutomationRule = AutomationRuleBuilderRule & {
   source?: string;
   version?: number;
@@ -30,6 +32,7 @@ export type AutomationRun = {
 };
 
 export type AutomationManagerProps = {
+  permissions?: readonly string[];
   rulesEndpoint?: string;
   runsEndpoint?: (ruleId?: string) => string;
   /** POST endpoint factory; defaults to `/automations/runs/:runId/retry` and expects an item/run response. */
@@ -75,6 +78,7 @@ export default function AutomationManager({
   runsEndpoint = (ruleId) => ruleId ? `/automations/${encodeURIComponent(ruleId)}/runs?limit=100` : "/automations/runs?limit=100",
   retryEndpoint = (runId) => `/automations/runs/${encodeURIComponent(runId)}/retry`,
   onChanged,
+  permissions = NO_PERMISSIONS,
 }: AutomationManagerProps) {
   const [rules, setRules] = useState<AutomationRule[]>([]);
   const [runs, setRuns] = useState<AutomationRun[]>([]);
@@ -101,6 +105,7 @@ export default function AutomationManager({
   }, [rulesEndpoint]);
 
   const loadRuns = useCallback(async (ruleId: string) => {
+    if (!permissions.includes("automations.runs_read")) { setRuns([]); setLoadingRuns(false); return; }
     setLoadingRuns(true);
     try {
       const result = await api<{ items?: AutomationRun[] }>(runsEndpoint(ruleId || undefined));
@@ -111,7 +116,7 @@ export default function AutomationManager({
     } finally {
       setLoadingRuns(false);
     }
-  }, [runsEndpoint]);
+  }, [runsEndpoint, permissions]);
 
   useEffect(() => { void loadRules(); }, [loadRules]);
   useEffect(() => { void loadRuns(selectedRuleId); }, [loadRuns, selectedRuleId]);
@@ -169,7 +174,7 @@ export default function AutomationManager({
           <h2 id="automation-rules-heading">Automation rules</h2>
           <p className="subtle">Review what happens automatically and when each rule last ran.</p>
         </div>
-        <button type="button" className="btn btn-primary" onClick={() => { setEditingRule(null); setCreating(true); }}>Create a rule</button>
+        {permissions.includes("automations.create") && <button type="button" className="btn btn-primary" onClick={() => { setEditingRule(null); setCreating(true); }}>Create a rule</button>}
       </div>
       {loadingRules ? <p role="status" className="subtle">Loading automations…</p> : rules.length === 0 ?
         <div className="empty"><h3>No automation rules yet</h3><p>Create a rule to send a follow-up or remind your team when something happens.</p></div> :
@@ -185,11 +190,11 @@ export default function AutomationManager({
             </div>
             <span className={statusClass(rule.status)}>{statusLabel(rule.status)}</span>
             <div className="inline-actions">
-              <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setCreating(false); setEditingRule(rule); }}>Edit</button>
-              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setSelectedRuleId(rule.id)} aria-label={`View history for ${rule.name}`}>History</button>
-              <button type="button" className="btn btn-secondary btn-sm" onClick={() => void changeStatus(rule)} disabled={busyRuleId === rule.id}>
+              {permissions.includes("automations.update") && <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setCreating(false); setEditingRule(rule); }}>Edit</button>}
+              {permissions.includes("automations.runs_read") && <button type="button" className="btn btn-secondary btn-sm" onClick={() => setSelectedRuleId(rule.id)} aria-label={`View history for ${rule.name}`}>History</button>}
+              {permissions.includes(rule.status === "active" ? "automations.update" : "automations.activate") && <button type="button" className="btn btn-secondary btn-sm" onClick={() => void changeStatus(rule)} disabled={busyRuleId === rule.id}>
                 {busyRuleId === rule.id ? "Saving…" : rule.status === "active" ? "Pause" : "Turn on"}
-              </button>
+              </button>}
             </div>
           </article>)}
         </div>}
@@ -200,7 +205,7 @@ export default function AutomationManager({
         <div><p className="eyebrow">Automation setup</p><h2 id="automation-builder-heading">{editingRule ? `Edit ${editingRule.name}` : "Create an automation rule"}</h2></div>
         <button type="button" className="btn btn-secondary" onClick={closeBuilder}>Close</button>
       </div>
-      <AutomationRuleBuilder key={editingRule?.id ?? "new"} initialRule={editingRule ?? undefined} endpoint={rulesEndpoint} onCancel={closeBuilder} onSaved={() => void saved()} />
+      <AutomationRuleBuilder canActivate={permissions.includes("automations.activate")} key={editingRule?.id ?? "new"} initialRule={editingRule ?? undefined} endpoint={rulesEndpoint} onCancel={closeBuilder} onSaved={() => void saved()} />
     </section>}
 
     <section className="card card-pad stack" aria-labelledby="automation-history-heading">
@@ -232,7 +237,7 @@ export default function AutomationManager({
                 </p>
               </div>
               <span className={statusClass(run.status)}>{statusLabel(run.status)}</span>
-              {isAutomationRunRetryable(run) && <button type="button" className="btn btn-secondary btn-sm" disabled={busyRunId === run.id} onClick={() => void retryRun(run)}>
+              {permissions.includes("automations.runs_retry") && isAutomationRunRetryable(run) && <button type="button" className="btn btn-secondary btn-sm" disabled={busyRunId === run.id} onClick={() => void retryRun(run)}>
                 {busyRunId === run.id ? "Queuing…" : "Retry now"}
               </button>}
             </article>;

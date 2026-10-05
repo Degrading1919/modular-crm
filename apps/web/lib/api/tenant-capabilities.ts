@@ -231,8 +231,10 @@ export async function handleTenantCapabilities(request: Request, path: string[],
   if (path[0] !== "capabilities") return null;
   requireStaff(actor);
   if (path.length === 1 && request.method === "GET") {
-    requirePermission(actor, "tenant.read");
     const { state, modules, dependencies, tenant } = await catalog(actor);
+    // Operational staff need effective tool state, not business setup answers
+    // or management authority. Mutations still require tenant.billing_manage.
+    if (!actor.permissions.has("tenant.billing_manage")) return json({ item: { features: state.features, modules: [] } });
     return json({ item: presentCatalog(state, modules, dependencies, tenant.industryPackKey, answersFromSettings(tenant.settings), tenant.settings.capabilitySetupComplete === true) });
   }
   if (path.length === 2 && path[1] === "recommendations" && request.method === "POST") {

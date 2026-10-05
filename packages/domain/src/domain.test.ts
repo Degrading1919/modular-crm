@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { assertTransition } from "./states.ts";
-import { canReadResource, permissionsForRole, type StaffActor } from "./permissions.ts";
+import { canReadResource, permissionsForRole, requirePermission, type StaffActor } from "./permissions.ts";
 
 import { generateOccurrences } from "./recurrence.ts";
 import { invoiceFinancialPosition, makeInvoiceSnapshot, invoiceBalance, settledPaymentStatuses } from "./billing.ts";
@@ -17,6 +17,20 @@ it("keeps payroll and compensation access away from office managers by default",
 });
 
 describe("authorization", () => {
+  it("keeps Office organization access read-only by default and preserves operational permissions", () => {
+    const office = permissionsForRole("office");
+    expect(office.has("organization.read")).toBe(true);
+    expect(office.has("organization.update")).toBe(false);
+    expect(office.has("organization.locations_manage")).toBe(false);
+    for (const key of ["schedule.read", "jobs.create", "routes.publish", "invoices.issue", "payments.read", "payments.collect"] as const) expect(office.has(key), key).toBe(true);
+  });
+  it("preserves Owner authority and explicit custom-role organization grants", () => {
+    const owner = permissionsForRole("owner");
+    for (const key of ["organization.read", "organization.update", "organization.locations_manage"] as const) expect(owner.has(key), key).toBe(true);
+    const custom: StaffActor = { kind: "staff", userId: "custom-office", tenantId: "tenant-a", role: "office", permissions: new Set([...permissionsForRole("office"), "organization.update", "organization.locations_manage"]), locationIds: new Set(["branch-a"]), allLocations: false };
+    expect(() => requirePermission(custom, "organization.update")).not.toThrow();
+    expect(() => requirePermission(custom, "organization.locations_manage")).not.toThrow();
+  });
   const actor: StaffActor = { kind: "staff", userId: "tech-a", tenantId: "tenant-a", role: "technician", permissions: permissionsForRole("technician"), locationIds: new Set(["branch-a"]), allLocations: false };
   it("requires tenant and assignment for a technician", () => {
     expect(canReadResource(actor, { tenantId: "tenant-a", locationId: "branch-a", assignedUserIds: ["tech-a"] }, "jobs.read")).toBe(true);

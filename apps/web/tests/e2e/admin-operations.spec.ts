@@ -88,7 +88,10 @@ test("owner can manage scoped staff, locations, stock movements, and partial pur
   await signIn(officePage, "manager@happyyards.test");
   await expect(officePage).toHaveURL(/\/app\/dashboard$/);
   const outsideScope = await officePage.request.get(`/api/v1/organization/${branch.id}`);
-  expect(outsideScope.status()).toBe(403);
+  // Office has organization.read, but this branch remains outside Morgan's
+  // location scope. The scoped read must not reveal that the branch exists.
+  expect(outsideScope.status()).toBe(404);
+  expect(await outsideScope.json()).toMatchObject({ error: { code: "NOT_FOUND" } });
   const managerItemResponse = await officePage.request.get(`/api/v1/inventory/${item.id}`);
   expect(managerItemResponse.status()).toBe(200);
   const managerItem = (await managerItemResponse.json()).item;

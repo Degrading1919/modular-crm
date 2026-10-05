@@ -25,6 +25,7 @@ import { handleSecureEstimateLink } from "./secure-estimate-links";
 import { handleRecords } from "./records";
 import { handleReporting } from "./reporting";
 import { handleInvoiceRefund } from "./refunds";
+import { handlePaymentReads } from "./payment-reads";
 import { handleRoutesField } from "./routes-field";
 import { handleWorkflow } from "./workflows";
 
@@ -55,6 +56,8 @@ export async function handleV1(request: Request, path: string[]): Promise<Respon
     if (document) return document;
     const refund = await handleInvoiceRefund(request, path, actor);
     if (refund) return refund;
+    const paymentReads = await handlePaymentReads(request, path, actor);
+    if (paymentReads) return paymentReads;
     const file = await handleFiles(request, path, actor);
     if (file) return file;
     const operations = await handleAdminOperations(request, path, actor);
