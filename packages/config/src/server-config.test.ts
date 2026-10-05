@@ -54,6 +54,13 @@ describe("production startup configuration", () => {
     expect(readServerConfig({}).smtp).toMatchObject({ host: "localhost", port: 1025 });
     expect(readServerConfig({ NODE_ENV: "test" }).mockConnectors).toBe(true);
   });
+  it("uses bounded worker readiness defaults and configurable limits", () => {
+    expect(readServerConfig({})).toMatchObject({ workerPollStaleMs: 60_000, workerJobMaxMs: 300_000 });
+    expect(readServerConfig({ WORKER_POLL_STALE_MS: "10000", WORKER_JOB_MAX_MS: "60000" })).toMatchObject({ workerPollStaleMs: 10_000, workerJobMaxMs: 60_000 });
+  });
+  it.each(["0", "NaN", "1000.5", "86400001", "Infinity"])("rejects unbounded readiness limit %s", (value) => {
+    for (const key of ["WORKER_POLL_STALE_MS", "WORKER_JOB_MAX_MS"]) expect(() => readServerConfig({ [key]: value })).toThrow(key);
+  });
   it.each([["MOCK_CONNECTORS", "yes"], ["LOCAL_SMOKE_TEST", "yes"], ["SMTP_PORT", "bad"], ["SMTP_SECURE", "yes"], ["WORKER_HEALTH_PORT", "0"], ["SMTP_USER", "user"]])("rejects malformed %s", (key, value) => {
     expect(() => readServerConfig({ ...healthy, [key]: value })).toThrow(key);
   });

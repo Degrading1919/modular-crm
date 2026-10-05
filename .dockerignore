@@ -1,0 +1,27 @@
+# Allow only build inputs; local secrets and unknown/untracked files stay out.
+*
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.base.json
+!apps/
+!apps/**
+!packages/
+!packages/**
+!containers/
+!containers/**
+**/node_modules
+**/.next
+**/dist
+**/coverage
+**/playwright-report
+**/test-results
+**/.local-data
+**/.git
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.tsbuildinfo
+**/env
+**/.npmrc

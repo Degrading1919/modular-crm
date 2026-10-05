@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-05 — Portable images, explicit migration release step and bounded worker progress
+
+- **Status:** Accepted
+- **Area:** Architecture / Implementation
+- **Decision:** Package web, compiled worker and one-shot application/queue migrations as non-root provider-neutral OCI image targets; supply secrets only at runtime and migrate before rolling out services. Production worker boot does not upgrade schemas, and readiness bounds idle polling and in-flight job age. Build and smoke-test images in CI without publishing or deploying them.
+- **Rationale:** A typecheck-only worker build and absent image/release artifacts prevented portable production packaging; an active polling flag alone concealed stalled consumers.
+- **Authoritative doc:** `docs/ARCHITECTURE.md`, `docs/DEPLOYMENT.md`
+
 ## 2026-10-05 — Client loading follows selection and explicit refresh, not render identity
 
 - **Status:** Accepted

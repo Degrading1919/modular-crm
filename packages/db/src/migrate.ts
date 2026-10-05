@@ -10,8 +10,3 @@ export async function migrateDatabase(connectionString: string): Promise<void> {
     await closeDatabase(db);
   }
 }
-
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  await migrateDatabase(process.env.DATABASE_URL ?? "postgresql://modular:modular@localhost:5432/modular_crm");
-  console.info("Database migrations applied");
-}

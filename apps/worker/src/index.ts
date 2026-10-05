@@ -66,7 +66,7 @@ export async function startWorker(env: Record<string, string | undefined> = proc
   const connectionString = config.databaseUrl;
   if (!connectionString) throw new Error("DATABASE_URL is required for the background worker");
   const db = createDatabase(connectionString);
-  const boss = new PgBoss({ connectionString });
+  const boss = new PgBoss({ connectionString, migrate: config.environment !== "production", createSchema: config.environment !== "production" });
   let stopping = false;
   let health: Awaited<ReturnType<typeof startHealthServer>> | undefined;
   boss.on("error", (error) => log("queue.error", { message: error.message }));
@@ -78,7 +78,8 @@ export async function startWorker(env: Record<string, string | undefined> = proc
     await boss.schedule(QUEUES.recurringGeneration, "0 3 * * *", {}, { tz: "UTC" });
     await boss.send(QUEUES.publishOutbox, {});
     await boss.send(QUEUES.recurringGeneration, {});
-    health = await startHealthServer({ port: config.workerHealthPort, connectionString, isRunning: () => !stopping && jobLoopRunning(boss) });
+    health = await startHealthServer({ port: config.workerHealthPort, connectionString, isRunning: () => !stopping && jobLoopRunning(boss,
+      { pollStaleMs: config.workerPollStaleMs, jobMaxMs: config.workerJobMaxMs }) });
     const outboxSweep = setInterval(() => {
       void boss.send(QUEUES.publishOutbox, {}).catch(() => log("outbox.enqueue_failed"));
     }, 15_000);
