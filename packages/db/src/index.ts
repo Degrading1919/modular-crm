@@ -7,3 +7,5 @@ export * from "./initial-capability-catalog.ts";
 export * from "./health.ts";
 export * from "./email-business.ts";
 export * from "./email-unsubscribe.ts";
+export * from "./platform-email-limits.ts";
+export * from "./account-email.ts";

@@ -107,7 +107,7 @@ async function installPackRecipes() {
     version: 1,
     triggerConfig: { event: recipe.event, ...(recipe.filters ? { filters: recipe.filters } : {}) },
     conditions: {},
-    actions: recipe.actions.map((action) => ({ actionType: action.actionType, configuration: action.configuration })),
+    actions: recipe.actions.map((action) => ({ actionType: action.actionType, configuration: action.configuration, ...(action.purpose ? { purpose: action.purpose } : {}) })),
     createdByMembershipId: ownerMembershipId,
   })));
 }
@@ -194,7 +194,7 @@ it("matches and executes default pack automation recipes against emitted event c
     type: "job.dispatched", entityType: "job", entityId: secondJobId,
     payload: { customerId: customerTwo.id, jobId: secondJobId, routeId: crypto.randomUUID() },
   });
-  expect(dispatchedOne.messages).toMatchObject([{ customerId: customerOne.id, jobId: firstJobId, recipient: customerOne.phone, channel: "sms", templateKey: "service-day-reminder", status: "queued" }]);
+  expect(dispatchedOne.messages).toMatchObject([{ customerId: customerOne.id, jobId: firstJobId, recipient: customerOne.phone, channel: "sms", category: "service", templateKey: "service-day-reminder", status: "queued" }]);
   expect(dispatchedTwo.messages).toMatchObject([{ customerId: customerTwo.id, jobId: secondJobId, recipient: customerTwo.phone, channel: "sms", templateKey: "service-day-reminder", status: "queued" }]);
   expect(queueSend.mock.calls.filter(([name]) => name === QUEUES.automationRun).length).toBeGreaterThanOrEqual(4);
   expect(queueSend.mock.calls.filter(([name]) => name === QUEUES.outboundMessage).length).toBe(3);
@@ -203,14 +203,14 @@ it("matches and executes default pack automation recipes against emitted event c
     type: "job.completed", entityType: "job", entityId: firstJobId,
     payload: { customerId: customerOne.id, from: "in_progress", to: "completed" },
   });
-  expect(completion.messages).toMatchObject([{ customerId: customerOne.id, jobId: firstJobId, recipient: customerOne.phone, channel: "sms", templateKey: "cleanup-completed", status: "queued" }]);
+  expect(completion.messages).toMatchObject([{ customerId: customerOne.id, jobId: firstJobId, recipient: customerOne.phone, channel: "sms", category: "service", templateKey: "cleanup-completed", status: "queued" }]);
 
   const failedPayment = await createInvoiceAndPayment(customerOne, "failed");
   const failed = await triggerEvent({
     type: "payment.failed", entityType: "payment", entityId: failedPayment.paymentId,
     payload: { invoiceId: failedPayment.invoiceId, customerId: customerOne.id, amountCents: 2_500 },
   });
-  expect(failed.messages).toMatchObject([{ customerId: customerOne.id, recipient: customerOne.email, channel: "email", templateKey: "payment-failed", status: "queued" }]);
+  expect(failed.messages).toMatchObject([{ customerId: customerOne.id, recipient: customerOne.email, channel: "email", category: "service", templateKey: "payment-failed", status: "queued" }]);
   const failedNotifications = await db.select().from(internalNotifications).where(and(
     eq(internalNotifications.tenantId, tenantId), eq(internalNotifications.entityId, failedPayment.paymentId),
   ));

@@ -439,7 +439,7 @@ export async function seedDevelopment(db: Database, actorIds: Partial<Record<See
     ]).onConflictDoNothing();
 
     await tx.insert(automationRules).values([
-      { id: uuid(800), tenantId: seedIds.happyTenant, name: "Completion thank-you", source: "industry_pack", sourceKey: "completion-thank-you", status: "active", version: 1, triggerConfig: { event: "job.completed" }, conditions: { field: "job.status", operator: "equals", value: "completed" }, actions: [{ actionType: "send_email", configuration: { templateKey: "completion" } }], activeFrom: at(-30) },
+      { id: uuid(800), tenantId: seedIds.happyTenant, name: "Completion thank-you", source: "industry_pack", sourceKey: "completion-thank-you", status: "active", version: 1, triggerConfig: { event: "job.completed" }, conditions: { field: "job.status", operator: "equals", value: "completed" }, actions: [{ actionType: "send_email", purpose: "service", configuration: { templateKey: "completion" } }], activeFrom: at(-30) },
     ]).onConflictDoNothing();
     await tx.insert(domainEvents).values([
       { id: uuid(801), tenantId: seedIds.happyTenant, eventType: "job.completed", eventVersion: 1, actorType: "staff", actorId: seedIds.terryMembership, entityType: "job", entityId: seedIds.completedJob, organizationId: seedIds.happyOrganization, locationId: seedIds.augusta, payload: { customerId: seedIds.carter }, occurredAt: at(-7, 15), publishedAt: at(-7, 15) },

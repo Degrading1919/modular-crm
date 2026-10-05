@@ -1,20 +1,27 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, hkdfSync, timingSafeEqual } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
 import { type Database } from "./client.ts";
 import { consentRecords, customers, outboundMessages } from "./schema/index.ts";
 
 type Target = { tenantId: string; customerId: string; messageId: string };
+function unsubscribeKey(secret: string) {
+  return Buffer.from(hkdfSync("sha256", secret, "modular-crm", "email-unsubscribe-signing-v1", 32));
+}
 export function emailUnsubscribeToken(target: Target, secret: string): string {
   const payload = Buffer.from(JSON.stringify({ v: 1, ...target })).toString("base64url");
-  return `${payload}.${createHmac("sha256", secret).update(`email-unsubscribe:${payload}`).digest("base64url")}`;
+  return `${payload}.${createHmac("sha256", unsubscribeKey(secret)).update(`email-unsubscribe:${payload}`).digest("base64url")}`;
 }
 export function readEmailUnsubscribeToken(token: string, secret: string): Target | undefined {
   if (token.length > 1024) return;
   const [payload, signature, extra] = token.split(".");
   if (!payload || !signature || extra) return;
-  const expected = createHmac("sha256", secret).update(`email-unsubscribe:${payload}`).digest();
   const actual = Buffer.from(signature, "base64url");
-  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return;
+  // One-release bridge for links signed before key separation; not a bridge across root-secret rotations.
+  const valid = [unsubscribeKey(secret), secret].some((key) => {
+    const expected = createHmac("sha256", key).update(`email-unsubscribe:${payload}`).digest();
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+  });
+  if (!valid) return;
   try {
     const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Target & { v: number };
     if (parsed.v !== 1 || ![parsed.tenantId, parsed.customerId, parsed.messageId].every((id) => typeof id === "string" && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id))) return;
@@ -28,7 +35,7 @@ export async function emailUnsubscribeTarget(db: Database, token: string, secret
     eq(outboundMessages.id, target.messageId), eq(outboundMessages.tenantId, target.tenantId),
     eq(outboundMessages.customerId, target.customerId), eq(outboundMessages.channel, "email"),
   )).limit(1);
-  if (!row || row.category === "transactional") return;
+  if (!row || ["service", "account", "transactional"].includes(row.category)) return;
   return target;
 }
 /** Signed authority only permits opting out of this customer's nontransactional email. */

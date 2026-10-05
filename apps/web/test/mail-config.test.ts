@@ -11,7 +11,7 @@ it("uses the validated production mail host, TLS, credentials and sender", async
   createTransport.mockReturnValue({ sendMail }); sendMail.mockResolvedValue({ accepted: ["customer@example.test"], messageId: "mail-1" });
   await sendPlatformEmail("customer@example.test", "Your service", "Service details", { name: "Happy Yards", replyTo: "owner@example.test", address: "42 Real Lane" });
   expect(createTransport).toHaveBeenCalledWith({ host: "smtp.example", port: 587, secure: false, requireTLS: true, connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 30000, auth: { user: "sender", pass: "private-password" } });
-  expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({ from: { name: "Happy Yards", address: "team@example.test" }, replyTo: "owner@example.test", to: "customer@example.test", subject: "Your service", text: "Service details\n\nHappy Yards\n42 Real Lane", html: expect.stringContaining("42 Real Lane") }));
+  expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({ from: { name: "Happy Yards via Modular CRM", address: "team@example.test" }, replyTo: "owner@example.test", to: "customer@example.test", subject: "Your service", text: "Service details\n\nHappy Yards\n42 Real Lane", html: expect.stringContaining("42 Real Lane") }));
   expect(sendMail.mock.calls[0]?.[0].headers).toBeUndefined();
 });
 it("supports implicit TLS without falling back to development transport", async () => {

@@ -28,6 +28,14 @@ Accepted behavior should also be represented in the appropriate authoritative pr
 - **Industry scope:** Core
 - **Dependencies:** Connector system, templates, automation engine
 
+### Email delivery webhooks and recipient suppression
+
+- **State:** Deferred
+- **Problem:** SMTP acceptance does not reveal bounces or complaints, so a shared sender needs recipient-level protection beyond volume limits.
+- **Behavior:** A later delivery-webhooks slice will verify provider event authenticity, bind events to tenant/message, deduplicate events and suppress appropriate recipients after permanent bounces or complaints without fabricating delivery outcomes. This protection is accepted; implementation is deferred, not part of the purpose/limits slice.
+- **Industry scope:** Core
+- **Dependencies:** Connector delivery webhooks, outbound-message identity, communication events, tenant-scoped suppression
+
 ### Automation engine
 
 - **State:** Accepted

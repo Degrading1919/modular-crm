@@ -289,6 +289,19 @@ async function dashboard(actor: ReportingActor): Promise<Response> {
   ]);
 
   const attention: { id: string; title: string; detail: string; href: string }[] = [];
+  if (actor.role === "owner" && actor.permissions.has("tenant.update")) {
+    const [blocked] = await rows(sql`${scope} SELECT l.id, l.name FROM organization_locations l
+      WHERE l.tenant_id=${actor.tenantId} AND l.id IN (SELECT id FROM allowed_locations)
+        AND (l.address_line1 IS NULL OR btrim(l.address_line1)='')
+        AND EXISTS (SELECT 1 FROM outbound_messages m LEFT JOIN customers c ON c.id=m.customer_id AND c.tenant_id=m.tenant_id
+          LEFT JOIN jobs j ON j.id=m.job_id AND j.tenant_id=m.tenant_id
+          WHERE m.tenant_id=l.tenant_id AND m.failure_code='business_details_missing'
+            AND coalesce(j.organization_location_id,c.owning_location_id)=l.id)
+      ORDER BY l.name,l.id LIMIT 1`);
+    if (blocked) attention.push({ id: "marketing-business-address", title: "Add your business address",
+      detail: `Promotional emails for ${String(blocked.name)} need a business address. Service updates can still send.`,
+      href: `/app/settings?locationId=${encodeURIComponent(String(blocked.id))}` });
+  }
   if (number(metrics.unassignedJobs) > 0) attention.push({
     id: "unassigned-jobs", title: "Jobs need assignment",
     detail: `${number(metrics.unassignedJobs)} job${number(metrics.unassignedJobs) === 1 ? "" : "s"} scheduled today do not have a technician assigned.`, href: "/app/jobs",

@@ -96,6 +96,8 @@ export function evaluateConditions(condition: Condition | undefined, context: Co
   }
 }
 
+export * from "./message-purpose.ts";
+
 export type ServerConfig = Readonly<{
   environment: "development" | "test" | "production";
   databaseUrl?: string;
@@ -110,6 +112,8 @@ export type ServerConfig = Readonly<{
   workerPollStaleMs: number;
   workerJobMaxMs: number;
   smtp: Readonly<{ host: string; port: number; secure: boolean; user?: string; password?: string; from: string }>;
+  platformName: string;
+  platformEmailLimits: Readonly<{ hourly: number; daily: number; firstWeekHourly: number; firstWeekDaily: number }>;
 }>;
 
 export const DEVELOPMENT_AUTH_SECRET = "dev-only-replace-before-deploying-0123456789";
@@ -173,8 +177,18 @@ export function readServerConfig(env: Record<string, string | undefined>): Serve
   for (const [key, value] of [["WORKER_POLL_STALE_MS", workerPollStaleMs], ["WORKER_JOB_MAX_MS", workerJobMaxMs]] as const) {
     if (!Number.isSafeInteger(value) || value < 1_000 || value > 86_400_000) problems.push(`${key} must be an integer from 1000 to 86400000`);
   }
+  const platformName = env.PLATFORM_NAME?.trim() || "Modular CRM";
+  if (platformName.length > 100 || /[\r\n]/.test(platformName)) problems.push("PLATFORM_NAME must be a single line of up to 100 characters");
+  const emailLimit = (key: string, fallback: number) => {
+    const value = Number(env[key] || fallback);
+    if (!Number.isSafeInteger(value) || value < 1 || value > 1_000_000) problems.push(`${key} must be an integer from 1 to 1000000`);
+    return value;
+  };
+  const platformEmailLimits = Object.freeze({ hourly: emailLimit("PLATFORM_EMAIL_HOURLY_LIMIT", 100), daily: emailLimit("PLATFORM_EMAIL_DAILY_LIMIT", 500),
+    firstWeekHourly: emailLimit("PLATFORM_EMAIL_FIRST_WEEK_HOURLY_LIMIT", 25), firstWeekDaily: emailLimit("PLATFORM_EMAIL_FIRST_WEEK_DAILY_LIMIT", 100) });
+  if (platformEmailLimits.firstWeekHourly > platformEmailLimits.hourly || platformEmailLimits.firstWeekDaily > platformEmailLimits.daily) problems.push("First-week email limits must not exceed the regular limits");
   if (problems.length) throw new Error(`Invalid server configuration: ${problems.join("; ")}.`);
   return Object.freeze({ environment, databaseUrl, mockConnectors, publicBaseUrl, authBaseUrl, appBaseUrl, localSmokeTest, workerHealthPort, workerPollStaleMs, workerJobMaxMs,
-    smtp: Object.freeze({ host, port, secure, user: env.SMTP_USER, password: env.SMTP_PASSWORD, from }),
+    smtp: Object.freeze({ host, port, secure, user: env.SMTP_USER, password: env.SMTP_PASSWORD, from }), platformName, platformEmailLimits,
     storageEndpoint: env.STORAGE_ENDPOINT?.trim() || undefined, storageBucket: env.STORAGE_BUCKET?.trim() || "modular-crm" });
 }

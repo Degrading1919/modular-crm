@@ -12,13 +12,13 @@ it("sends multipart business mail with platform From, Reply-To, stable identity 
   sendMail.mockResolvedValue({ accepted: ["customer@example.test"], rejected: [], messageId: "accepted-message" });
   const url = "https://crm.example.test/email/unsubscribe?token=signed";
   const parts = customerEmailParts("Visit <confirmed>\nTomorrow", business, url);
-  const sender = createPlatformEmailSender(smtp, true, business);
+  const sender = createPlatformEmailSender(smtp, true, business, "Service Desk");
   const input = { to: "customer@example.test", subject: "Your visit", idempotencyKey: "tenant:message", ...parts };
   await expect(sender.sendEmail(input)).resolves.toEqual({ status: "sent", reference: "accepted-message" });
   await sender.sendEmail(input);
   expect(createTransport).toHaveBeenCalledWith(expect.objectContaining({ requireTLS: true, auth: { user: "relay-user", pass: "relay-secret" } }));
-  expect(sendMail.mock.calls[0]![0]).toMatchObject({ from: { name: business.name, address: "mail@platform.test" }, replyTo: business.replyTo,
-    text: `Visit <confirmed>\nTomorrow\n\nYards & More\n42 Real Street\nStop automated emails: ${url}`,
+  expect(sendMail.mock.calls[0]![0]).toMatchObject({ from: { name: `${business.name} via Service Desk`, address: "mail@platform.test" }, replyTo: business.replyTo,
+    text: `Visit <confirmed>\nTomorrow\n\nYards & More\n42 Real Street\nStop promotional emails: ${url}`,
     html: expect.stringContaining("Visit &lt;confirmed&gt;<br>Tomorrow"), headers: unsubscribeHeaders(url) });
   expect(sendMail.mock.calls[0]![0].messageId).toBe(sendMail.mock.calls[1]![0].messageId);
   expect(parts.html).toContain("Yards &amp; More");

@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 import { and, eq, inArray, isNull, lt, or } from "drizzle-orm";
 import {
   type Database, automationRuns, customerContacts, customers, hasUsableFeature, internalNotifications, invoices,
-  jobs, loadTenantCapabilities, memberships, messageTemplates, notes, outboundMessages, roleTemplates,
+  jobs, loadTenantCapabilities, memberships, messageTemplates, notes, outboundMessages, roleTemplates, sealAccountEmail,
   ticketStatusDefinitions, ticketTypeDefinitions, tickets,
 } from "@modular-crm/db";
 import { evaluateAutomationRule, renderActionConfiguration, type AutomationAction, type AutomationPlan, type AutomationRule, type DomainEvent } from "@modular-crm/automations";
 import type { PgBoss } from "pg-boss";
 import { enqueueAutomationRun, enqueueOutboundMessage } from "./queues.js";
+import { messagePurpose, DEVELOPMENT_AUTH_SECRET } from "@modular-crm/config";
 
 type RunSnapshot = { rule: AutomationRule; event: DomainEvent; plan: AutomationPlan; completedActionKeys: string[] };
 class ActionError extends Error { constructor(readonly code: string, message: string, readonly retryable = false) { super(message); } }
@@ -59,9 +60,9 @@ async function executeAction(db: Database, boss: PgBoss, snapshot: RunSnapshot, 
     const rendered = template ? renderActionConfiguration({ subject: template.subjectTemplate ?? fallback.subject, body: template.bodyTemplate }, event) : configuration;
     const subject = String(rendered.subject ?? fallback.subject);
     const body = String(rendered.body ?? fallback.body);
-    const category = (event.eventType === "payment.succeeded" && templateKey === "payment-receipt")
-      || (event.eventType === "payment.failed" && templateKey === "payment-failed") ? "transactional" : "automation";
-    const [inserted] = await db.insert(outboundMessages).values({ tenantId, customerId, jobId: event.entityType === "job" ? event.entityId : undefined, invoiceId: event.entityType === "invoice" ? event.entityId : undefined, channel, category, templateKey, templateVersion: template?.version, recipient, renderedSubject: channel === "email" ? subject : null, renderedBody: body, status: "queued", idempotencyKey: executionKey, queuedAt: now }).onConflictDoNothing({ target: [outboundMessages.tenantId, outboundMessages.idempotencyKey] }).returning({ id: outboundMessages.id });
+    // Missing action purpose stays promotional. A promotional template cannot be downgraded by an action.
+    const category = template && messagePurpose(template.purpose) === "marketing" ? "marketing" : messagePurpose(action.purpose);
+    const [inserted] = await db.insert(outboundMessages).values({ tenantId, customerId, jobId: event.entityType === "job" ? event.entityId : undefined, invoiceId: event.entityType === "invoice" ? event.entityId : undefined, channel, category, templateKey, templateVersion: template?.version, recipient, renderedSubject: channel === "email" ? subject : null, renderedBody: category === "account" ? sealAccountEmail(body, process.env.BETTER_AUTH_SECRET ?? DEVELOPMENT_AUTH_SECRET) : body, status: "queued", idempotencyKey: executionKey, queuedAt: now }).onConflictDoNothing({ target: [outboundMessages.tenantId, outboundMessages.idempotencyKey] }).returning({ id: outboundMessages.id });
     const messageId = inserted?.id ?? (await db.select({ id: outboundMessages.id }).from(outboundMessages).where(and(eq(outboundMessages.tenantId, tenantId), eq(outboundMessages.idempotencyKey, executionKey))).limit(1))[0]?.id;
     if (messageId) await enqueueOutboundMessage(boss, { tenantId, messageId });
     return;

@@ -6,6 +6,7 @@ import { paymentMethodLabel, type Permission } from "@modular-crm/domain";
 import SearchPicker, { type PickerRecord } from "./SearchPicker";
 import ManualPaymentForm from "./ManualPaymentForm";
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { api, body, date, friendly, money, patch, unwrapItem, unwrapItems } from "./api";
 import { businessDate } from "../lib/dates";
 import { reportColumns, reportValue } from "../lib/presentation";
@@ -566,17 +567,19 @@ function Reports() {
 
 function Settings() {
   const access = useWorkspaceAccess();
-  const result = useResource<{ item: Entity }>("/settings", { item: { id: "" } });
+  const locationId = useSearchParams().get("locationId");
+  const endpoint = locationId ? `/settings?locationId=${encodeURIComponent(locationId)}` : "/settings";
+  const result = useResource<{ item: Entity }>(endpoint, { item: { id: "" } });
   const item = unwrapItem(result.data);
   const [values, setValues] = useState<Record<string, string>>({}); const [error, setError] = useState(""); const [notice, setNotice] = useState(""); const [saving, setSaving] = useState(false);
   useEffect(() => { if (!result.loading && !result.error) setValues({ businessName: item.businessName || "", phone: item.phone || "", email: item.email || "", timezone: item.timezone || "America/New_York", address: item.address || "" }); }, [result.loading, result.error, item.businessName, item.phone, item.email, item.timezone, item.address]);
   async function submit(event: React.FormEvent) {
     event.preventDefault(); setSaving(true); setError("");
-    try { await api("/settings", patch(values)); setNotice("Business settings saved."); result.reload(); }
+    try { await api(endpoint, patch(values)); setNotice("Business settings saved."); result.reload(); }
     catch (issue) { setError((issue as Error).message); }
     finally { setSaving(false); }
   }
-  return <><Header eyebrow="Your workspace" title="Settings" subtitle="Keep the business details your team and customers rely on current."/>{result.error && <Notice kind="error" text={result.error}/>} {error && <Notice kind="error" text={error}/>} {notice && <Notice kind="success" text={notice}/>} {result.loading ? <Loading/> : <div className="detail-grid"><form className="card card-pad" onSubmit={submit}><h2>Business profile</h2><div className="form-grid">{[{ key: "businessName", label: "Business name", type: "text" }, { key: "phone", label: "Phone", type: "tel" }, { key: "email", label: "Email", type: "email" }, { key: "timezone", label: "Time zone", type: "text" }, { key: "address", label: "Business address", type: "text" }].map((field) => <div className="field" key={field.key}><label htmlFor={`settings-${field.key}`}>{field.label}</label><input id={`settings-${field.key}`} type={field.type} disabled={!canUseAction(access, "settings", ["tenant.update"])} value={values[field.key] || ""} onChange={(event) => setValues({ ...values, [field.key]: event.target.value })}/></div>)}</div><div style={{ marginTop: 24 }}>{canUseAction(access, "settings", ["tenant.update"]) && <button className="btn btn-primary" type="submit" disabled={saving}>{saving ? "Saving…" : "Save business profile"}</button>}</div></form><div className="stack"><div className="card card-pad"><h3>Bring your data</h3><p className="subtle" style={{ fontSize: ".85rem" }}>Upload a spreadsheet of customers. We’ll help match columns before importing.</p><Link href="/app/import" className="link">Import customers</Link></div><div className="card card-pad"><h3>Team and access</h3><p className="subtle" style={{ fontSize: ".85rem" }}>Invite staff and choose an owner, office, or technician role.</p><Link href="/app/staff" className="link">Manage staff</Link></div></div></div>}</>;
+  return <><Header eyebrow="Your workspace" title="Settings" subtitle="Keep the business details your team and customers rely on current."/>{result.error && <Notice kind="error" text={result.error}/>} {error && <Notice kind="error" text={error}/>} {notice && <Notice kind="success" text={notice}/>} {result.loading ? <Loading/> : <div className="detail-grid"><form className="card card-pad" onSubmit={submit}><h2>Business profile</h2>{locationId && item.locationName && <p className="subtle">Business address for {item.locationName}</p>}<div className="form-grid">{[{ key: "businessName", label: "Business name", type: "text" }, { key: "phone", label: "Phone", type: "tel" }, { key: "email", label: "Email", type: "email" }, { key: "timezone", label: "Time zone", type: "text" }, { key: "address", label: "Business address", type: "text" }].map((field) => <div className="field" key={field.key}><label htmlFor={`settings-${field.key}`}>{field.label}</label><input id={`settings-${field.key}`} type={field.type} disabled={!canUseAction(access, "settings", ["tenant.update"])} value={values[field.key] || ""} onChange={(event) => setValues({ ...values, [field.key]: event.target.value })}/></div>)}</div><div style={{ marginTop: 24 }}>{canUseAction(access, "settings", ["tenant.update"]) && <button className="btn btn-primary" type="submit" disabled={saving}>{saving ? "Saving…" : "Save business profile"}</button>}</div></form><div className="stack"><div className="card card-pad"><h3>Bring your data</h3><p className="subtle" style={{ fontSize: ".85rem" }}>Upload a spreadsheet of customers. We’ll help match columns before importing.</p><Link href="/app/import" className="link">Import customers</Link></div><div className="card card-pad"><h3>Team and access</h3><p className="subtle" style={{ fontSize: ".85rem" }}>Invite staff and choose an owner, office, or technician role.</p><Link href="/app/staff" className="link">Manage staff</Link></div></div></div>}</>;
 }
 
 function ImportExport() {
