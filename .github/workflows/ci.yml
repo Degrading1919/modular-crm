@@ -99,5 +99,3 @@ jobs:
             apps/web/test-results/
           retention-days: 7
           if-no-files-found: warn
-
-warning: in the working copy of '.github/workflows/ci.yml', LF will be replaced by CRLF the next time Git touches it
