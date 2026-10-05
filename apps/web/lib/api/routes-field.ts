@@ -142,7 +142,9 @@ async function mutateRoute(request: Request, actor: SessionActor, id: string, ac
         const [assignment] = await tx.select({ id: jobAssignments.id }).from(jobAssignments).where(and(
           eq(jobAssignments.tenantId, actor.tenantId), eq(jobAssignments.jobId, job.id), eq(jobAssignments.membershipId, currentRoute.membershipId), isNull(jobAssignments.removedAt),
         )).for("update");
-        const ownPublishedStop = job.assignedRouteId === id && ["dispatched", "en_route", "in_progress", "paused", "completed", "skipped"].includes(job.status);
+        // Keep this route's inactive stops as history; re-publication must neither
+        // reactivate them nor strand the remaining work after optimization.
+        const ownPublishedStop = job.assignedRouteId === id && ["dispatched", "en_route", "in_progress", "paused", "completed", "skipped", "canceled", "missed", "needs_return"].includes(job.status);
         if (!assignment || job.organizationId !== actor.organizationId || job.organizationLocationId !== currentRoute.organizationLocationId ||
           !locationAllowed(actor, job.organizationLocationId) || job.scheduledDate !== currentRoute.routeDate ||
           (job.status !== "scheduled" && !ownPublishedStop)) {

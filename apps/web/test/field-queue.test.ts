@@ -60,13 +60,19 @@ describe("field action and causal queue contract", () => {
     expect(queue.read()).toEqual([]);
   });
 
-  it("keeps shift ordering without blocking mileage or ticket drafts", async () => {
+  it.each([403, 409, 503])("holds mileage behind an unresolved clock-in (%i), but still drains unrelated jobs and tickets", async (status) => {
     const time = (id: string, action: string) => ({ ...operation(id), entityId: undefined, path: "/field/time", payload: { action } });
-    const queue = store([time("in", "clock_in"), time("out", "clock_out"), time("miles", "mileage"), { ...operation("ticket"), path: "/field/tickets", entityId: undefined }]);
+    const queue = store([time("in", "clock_in"), time("miles", "mileage"), time("out", "clock_out"), operation("job"), { ...operation("ticket"), path: "/field/tickets", entityId: undefined }]);
     const sent: string[] = [];
-    await drainQueue(queue, async (item) => { sent.push(item.id); if (item.id === "in") throw new ApiError("denied", 403); });
-    expect(sent).toEqual(["in", "miles", "ticket"]);
-    expect(queue.read().map((item) => item.id)).toEqual(["in", "out"]);
+    await drainQueue(queue, async (item) => { sent.push(item.id); if (item.id === "in") throw new ApiError("unresolved", status, status === 409 ? "CONFLICT" : undefined); });
+    expect(sent).toEqual(["in", "job", "ticket"]);
+    expect(queue.read().map((item) => item.id)).toEqual(["in", "miles", "out"]);
+    expect(blockedBy(queue.read(), queue.read()[1]!)?.id).toBe("in");
+    expect(discardGroup(queue.read(), "in").map((item) => item.id)).toEqual(["in", "miles", "out"]);
+    queue.write(queue.read().map((item) => item.id === "in" ? { ...item, status: "pending", error: undefined } : item));
+    await drainQueue(queue, async (item) => { sent.push(item.id); });
+    expect(sent).toEqual(["in", "job", "ticket", "in", "miles", "out"]);
+    expect(queue.read()).toEqual([]);
   });
 
   it("discard selects only the chosen operation and later same-work dependents, preserving unrelated evidence", () => {
@@ -100,6 +106,9 @@ describe("field action and causal queue contract", () => {
     expect(projectedShiftState("clocked_out", queue.slice(0, 2))).toBe("on_break");
     expect(projectedShiftState("clocked_out", queue.slice(0, 3))).toBe("clocked_in");
     expect(projectedShiftState("clocked_out", queue)).toBe("clocked_out");
+    const mileage = { ...operation("miles"), path: "/field/time", entityId: undefined, payload: { action: "mileage" } };
+    expect(projectedShiftState("clocked_out", [queue[0]!, mileage, queue[1]!])).toBe("on_break");
+    expect(projectedShiftState("clocked_out", [queue[0]!, mileage, ...queue.slice(1)])).toBe("clocked_out");
     expect(projectedShiftState("clocked_out", [{ ...queue[0]!, status: "failed" }, ...queue.slice(1)])).toBe("clocked_out");
   });
 

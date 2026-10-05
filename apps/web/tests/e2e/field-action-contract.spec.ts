@@ -135,3 +135,58 @@ test("legal offline field chains drain independently of a real office conflict, 
     await ownerContext.close();
   }
 });
+
+test("mileage waits for clock-in recovery while an unrelated field ticket still syncs", async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ baseURL });
+  try {
+    const field = await context.newPage();
+    await signIn(field, "casey@happyyards.test");
+    // Casey has no seeded shift; prove the real API's prerequisite before testing the queue.
+    const premature = await field.request.post("/api/v1/field/time", { data: { action: "mileage", miles: 2.5 } });
+    expect(premature.status(), await premature.text()).toBe(409);
+    expect((await premature.json()).error.code).toBe("INVALID_TRANSITION");
+    let clockInUnavailable = true;
+    const sent: string[] = [];
+    await field.route("**/api/v1/field/time", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      const action = route.request().postDataJSON().action;
+      sent.push(action);
+      if (action === "clock_in" && clockInUnavailable) return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: { code: "EXTERNAL_SERVICE_ERROR", message: "Temporarily unavailable" } }) });
+      return route.continue();
+    });
+    await field.goto("/field/time");
+    await field.getByRole("button", { name: "Clock in", exact: true }).click();
+    await expect(field.getByLabel(/Queued update/)).toHaveCount(1);
+    await field.getByLabel("Miles", { exact: true }).fill("2.5");
+    await field.getByRole("button", { name: "Save mileage" }).click();
+    await expect(field.getByLabel(/Queued update/)).toHaveCount(2);
+    await expect(field.getByLabel(/Queued update/).nth(1)).toContainText("Waiting for an earlier update for this work item");
+    expect(sent).not.toContain("mileage");
+
+    await field.goto("/field/tickets");
+    await field.getByRole("button", { name: "New ticket" }).click();
+    const subject = `Shift recovery follow-up ${Date.now()}`;
+    await field.getByLabel("What needs attention?").fill(subject);
+    await field.getByLabel("Details", { exact: true }).fill("Independent work must reach the office while clock-in is unresolved.");
+    await field.getByRole("button", { name: "Send to office" }).click();
+    await expect(field.getByRole("heading", { name: subject })).toBeVisible();
+    await expect(field.getByLabel(/Queued update/)).toHaveCount(2);
+    expect(sent).not.toContain("mileage");
+
+    clockInUnavailable = false;
+    const recoveryStart = sent.length;
+    await field.getByRole("button", { name: "Try syncing now" }).click();
+    await expect(field.getByLabel(/Queued update/)).toHaveCount(0);
+    expect(sent.slice(recoveryStart)).toEqual(["clock_in", "mileage"]);
+    const saved = await field.request.get("/api/v1/field/time");
+    expect(saved.ok(), await saved.text()).toBe(true);
+    const time = (await saved.json()).item;
+    expect(time.shift.status).toBe("clocked_in");
+    expect(time.entries.filter((entry: { miles?: string }) => Number(entry.miles) === 2.5)).toHaveLength(1);
+    await field.goto("/field/time");
+    await field.getByRole("button", { name: "Clock out", exact: true }).click();
+    await expect(field.getByText(/^Clocked out$/i)).toBeVisible();
+  } finally {
+    await context.close();
+  }
+});

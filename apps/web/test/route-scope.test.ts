@@ -129,4 +129,46 @@ describe("route read scope", () => {
     await db.insert(schema.jobAssignments).values({ tenantId: seedIds.happyTenant, jobId, membershipId: seedIds.terryMembership, assignmentRole: "primary" });
     for (const next of ["en_route", "in_progress", "completed"]) await expect(transitionJob(terry, jobId, next, { completedChecklist: true })).rejects.toMatchObject({ code: "INVALID_TRANSITION", status: 409 });
   });
+
+  it.each(["canceled", "missed", "needs_return"])("republishes an optimized route with its own %s stop without resetting progress or history", async (inactiveState) => {
+    const routeId = crypto.randomUUID();
+    const jobIds = [crypto.randomUUID(), crypto.randomUUID()];
+    const routeDate = "2026-10-20";
+    await db.insert(schema.routePlans).values({ id: routeId, tenantId: seedIds.happyTenant, organizationLocationId: seedIds.augusta, membershipId: seedIds.terryMembership, routeDate, status: "draft" });
+    await db.insert(schema.jobs).values(jobIds.map((id) => ({ id, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, serviceId: seedIds.weeklyService, status: "scheduled", scheduledDate: routeDate })));
+    await db.insert(schema.routeStops).values(jobIds.map((jobId, index) => ({ tenantId: seedIds.happyTenant, routePlanId: routeId, jobId, sequence: index + 1, status: "planned" })));
+    await db.insert(schema.jobAssignments).values(jobIds.map((jobId) => ({ tenantId: seedIds.happyTenant, jobId, membershipId: seedIds.terryMembership, assignmentRole: "primary" })));
+    const mutate = (action: string) => handleRoutesField(new Request(`http://localhost/api/v1/routes/${routeId}/${action}`, { method: "POST" }), ["routes", routeId, action], owner);
+    expect((await mutate("publish"))?.status).toBe(200);
+    if (inactiveState === "needs_return") await transitionJob(terry, jobIds[0]!, "in_progress");
+    await transitionJob(owner, jobIds[0]!, inactiveState, { reason: "Office reviewed this stop" });
+    const history = await db.select().from(schema.jobStatusEvents).where(eq(schema.jobStatusEvents.jobId, jobIds[0]!));
+    expect((await mutate("optimize"))?.status).toBe(200);
+    expect((await db.select().from(schema.routePlans).where(eq(schema.routePlans.id, routeId)))[0]?.status).toBe("optimized");
+    await expect(listRoutes(terry, ["routes", routeId])).rejects.toMatchObject({ status: 404 });
+    expect((await mutate("publish"))?.status).toBe(200);
+    const visible = await (await listRoutes(terry, ["routes", routeId])).json();
+    expect(visible.item).toMatchObject({ id: routeId, status: "published" });
+    expect(visible.item.stops).toEqual(expect.arrayContaining([expect.objectContaining({ jobId: jobIds[0], status: inactiveState }), expect.objectContaining({ jobId: jobIds[1], status: "dispatched" })]));
+    expect(await db.select().from(schema.jobStatusEvents).where(eq(schema.jobStatusEvents.jobId, jobIds[0]!))).toEqual(history);
+    expect((await db.select().from(schema.jobStatusEvents).where(eq(schema.jobStatusEvents.jobId, jobIds[1]!))).map((event) => [event.fromStatus, event.toStatus])).toEqual([["scheduled", "dispatched"]]);
+
+    // Inactive stops are retained, not exempted from assignment/date/scope validation.
+    expect((await mutate("optimize"))?.status).toBe(200);
+    const [original] = await db.select().from(schema.jobs).where(eq(schema.jobs.id, jobIds[0]!));
+    for (const change of [{ scheduledDate: "2026-10-21" }, { organizationLocationId: seedIds.northAugusta }, { assignedRouteId: seedIds.happyRoute }]) {
+      await db.update(schema.jobs).set(change).where(eq(schema.jobs.id, jobIds[0]!));
+      await expect(mutate("publish")).rejects.toMatchObject({ code: "CONFLICT", status: 409 });
+      expect((await db.select().from(schema.routePlans).where(eq(schema.routePlans.id, routeId)))[0]?.status).toBe("optimized");
+      await db.update(schema.jobs).set({ scheduledDate: original!.scheduledDate, organizationLocationId: original!.organizationLocationId, organizationId: original!.organizationId, tenantId: original!.tenantId, assignedRouteId: original!.assignedRouteId }).where(eq(schema.jobs.id, jobIds[0]!));
+    }
+    for (const [actor, status] of [[{ ...owner, organizationId: seedIds.cleanOrganization }, 409], [{ ...owner, tenantId: seedIds.cleanTenant }, 404], [{ ...owner, allLocations: false, locationIds: new Set([seedIds.northAugusta]) }, 404]] as const) {
+      await expect(handleRoutesField(new Request(`http://localhost/api/v1/routes/${routeId}/publish`, { method: "POST" }), ["routes", routeId, "publish"], actor)).rejects.toMatchObject({ status });
+      expect((await db.select().from(schema.routePlans).where(eq(schema.routePlans.id, routeId)))[0]?.status).toBe("optimized");
+    }
+    await db.update(schema.jobAssignments).set({ removedAt: new Date() }).where(eq(schema.jobAssignments.jobId, jobIds[0]!));
+    await expect(mutate("publish")).rejects.toMatchObject({ code: "CONFLICT", status: 409 });
+    expect(await db.select().from(schema.jobStatusEvents).where(eq(schema.jobStatusEvents.jobId, jobIds[0]!))).toEqual(history);
+    expect((await db.select().from(schema.domainEvents).where(eq(schema.domainEvents.entityId, routeId))).filter((event) => event.eventType === "route.published")).toHaveLength(2);
+  });
 });

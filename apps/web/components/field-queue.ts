@@ -31,13 +31,13 @@ export function saveQueue(userId: string, tenantId: string, items: OfflineOperat
   } catch { return false; }
 }
 
-// Job notes/proof and transitions share an ordering key. Shift actions share another;
-// mileage and newly created tickets do not depend on those state changes.
+// Job notes/proof and transitions share an ordering key. Time actions, including
+// mileage (which requires an open shift), share another. New tickets are independent.
 export function dependencyKey(operation: OfflineOperation): string {
   const parts = operation.path.split("/");
   const jobId = parts[parts.indexOf("jobs") + 1];
   if (parts.includes("jobs") && jobId) return `job:${jobId}`;
-  if (operation.path === "/field/time" && operation.payload.action !== "mileage") return "shift";
+  if (operation.path === "/field/time") return "shift";
   return `operation:${operation.id}`;
 }
 
@@ -130,6 +130,7 @@ export function projectedShiftState(serverState: string, queue: OfflineOperation
   for (const item of queue.filter((operation) => dependencyKey(operation) === "shift")) {
     if (item.status !== "pending") break;
     const action = item.payload.action;
+    if (action === "mileage") continue; // Ordered with the shift, but does not change its status.
     if (action === "clock_in") state = "clocked_in";
     else if (action === "clock_out") state = "clocked_out";
     else if (action === "break_start" && ["clocked_in", "on_break"].includes(state)) state = "on_break";
