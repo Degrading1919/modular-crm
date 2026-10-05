@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-05 — Export discovery is evaluated once; field tests observe confirmed sync
+
+- **Status:** Accepted
+- **Area:** Architecture / Implementation
+- **Decision:** Evaluate primary-key catalog metadata once per structured business export while retaining its snapshot, pagination, scope and secret exclusions. Browser tests that inspect persisted field state must await the action's sync response or poll that state, never treat a projected offline badge as proof of a committed update. Keep existing browser timeouts, one worker, zero retries and CI app mode.
+- **Rationale:** PostgreSQL 17 EXPLAIN reproduced a repeated catalog join taking minutes independently of Next.js; materializing the same metadata removes the repeated work. Field completion traces prove an immediate read can race the saved device operation.
+- **Authoritative doc:** `docs/ARCHITECTURE.md`, `docs/V1_DEVELOPER_WORKFLOW.md`
+
 ## 2026-10-05 — GitHub quality gates use real PostgreSQL for browser verification
 
 - **Status:** Accepted

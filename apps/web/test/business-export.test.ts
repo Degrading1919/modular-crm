@@ -4,6 +4,7 @@ import { PGlite } from "../../../packages/db/node_modules/@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import { eq } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import {
   apiCredentials, connectorInstallations, creditAllocations, customerCredits, customers, files, jobStatusEvents,
   paymentMethodReferences, schema, seedDevelopment, seedIds, tenants, webhookEvents, type Database,
@@ -67,6 +68,42 @@ beforeAll(async () => {
 afterAll(async () => { await pglite?.close(); });
 
 describe("full business-data export", () => {
+  it("evaluates primary-key catalog metadata once rather than for every exported column", async () => {
+    const dialect = new PgDialect();
+    const transaction = db.transaction.bind(db);
+    let catalogQuery: string | undefined;
+    const transactions = vi.spyOn(db, "transaction").mockImplementation((callback, config) =>
+      transaction(async (tx) => {
+        const queries = vi.spyOn(tx, "execute");
+        try {
+          return await callback(tx);
+        } finally {
+          catalogQuery = queries.mock.calls.map(([statement]) => typeof statement === "string"
+            ? statement : dialect.sqlToQuery(statement.getSQL()).sql)
+            .find((statement) => statement.includes("FROM information_schema.columns"));
+          queries.mockRestore();
+        }
+      }, config),
+    );
+    try {
+      const response = await handleDataPortability(new Request("http://localhost/api/v1/exports/business-data"), ["exports", "business-data"], owner);
+      expect(response?.status).toBe(200);
+    } finally {
+      transactions.mockRestore();
+    }
+    expect(catalogQuery).toBeDefined();
+    type PlanNode = { "Subplan Name"?: string; "Actual Loops"?: number; Plans?: PlanNode[] };
+    const explained = await pglite.query<{ "QUERY PLAN": Array<{ Plan: PlanNode }> }>(
+      `EXPLAIN (ANALYZE, FORMAT JSON) ${catalogQuery}`,
+    );
+    const nodes = (plan: PlanNode): PlanNode[] => [plan, ...(plan.Plans ?? []).flatMap(nodes)];
+    const primaryKeys = nodes(explained.rows[0]!["QUERY PLAN"][0]!.Plan)
+      .find((node) => node["Subplan Name"] === "CTE primary_keys");
+    // Assert work performed, not a machine-dependent wall-clock deadline.
+    expect(primaryKeys).toBeDefined();
+    expect(primaryKeys!["Actual Loops"]).toBe(1);
+  }, 30_000);
+
   it("exports operational and financial history in stable tenant-scoped pages without credential material", async () => {
     const response = await handleDataPortability(new Request("http://localhost/api/v1/exports/business-data"), ["exports", "business-data"], owner);
     expect(response?.status).toBe(200);

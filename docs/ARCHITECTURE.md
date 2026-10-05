@@ -117,6 +117,8 @@ A deterministic two-client protocol check reproduces the collision on both revis
 
 GitHub pull requests (including stacked bases) and pushes to `main` run independent lint, typecheck, unit/integration, production-build and complete browser gates. The browser app/worker use fresh real PostgreSQL 17 and local Mailpit services; PGlite TCP is for local convenience only. Existing in-process unit fixtures remain isolated. CI uses pinned pnpm, Node 22, frozen installs and temporary generated secrets, never deployment credentials, and never merges or deploys. Preserve Playwright's one worker and zero retries; see `docs/V1_DEVELOPER_WORKFLOW.md` for the workflow and failure diagnostics.
 
+Structured business export retains its read-only repeatable-read snapshot, tenant filters, bounded pages and sensitive-field exclusions. Primary-key catalog metadata is evaluated once per export, not repeatedly per discovered column; server-state verification of offline field work observes confirmed sync rather than the device's projected status.
+
 ## Provider boundaries
 
 Business logic should depend on capabilities rather than providers.
