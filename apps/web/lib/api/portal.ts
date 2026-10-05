@@ -8,7 +8,7 @@ import { recordEvent } from "./events";
 import { json, readBody } from "./http";
 import { normalized, rows, uuidArray } from "./sql";
 import { estimateAction, invoiceAction } from "./workflows";
-import { openInvoiceBalance, upcomingJob } from "./read-facts";
+import { businessTimeZone, openInvoiceBalance, upcomingJob } from "./read-facts";
 import { balanceTotals } from "../presentation";
 
 function customerActor(actor: SessionActor): asserts actor is SessionActor & { kind: "customer"; customerIds: Set<string> } {
@@ -157,7 +157,7 @@ async function portalList(actor: SessionActor, resource: string): Promise<Respon
       left join services s on s.id=j.service_id and s.tenant_id=j.tenant_id
       left join service_feedback sf on sf.job_id=j.id and sf.tenant_id=j.tenant_id and sf.customer_id=j.customer_id and sf.source='portal'
       where j.tenant_id=${actor.tenantId} and ${customerLocationPredicate(actor, "j.customer_id", "j.service_location_id")} and j.status='completed'
-      order by coalesce(j.actual_completed_at,j.scheduled_date::timestamptz) desc limit 100`); break;
+      order by coalesce(j.actual_completed_at,j.scheduled_date::timestamp at time zone ${businessTimeZone()}) desc,j.id limit 100`); break;
     case "estimates": items = await rows(sql`select e.*,('EST-' || left(e.id::text,8)) as number,e.total_minor as total_cents,er.snapshot->>'title' as title,er.notes
       from estimates e join estimate_revisions er on er.estimate_id=e.id and er.tenant_id=e.tenant_id and er.revision_number=e.current_revision
       where e.tenant_id=${actor.tenantId} and ${customerLocationPredicate(actor, "e.customer_id", "e.service_location_id")} and e.status<>'draft'

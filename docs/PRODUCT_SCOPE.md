@@ -16,6 +16,8 @@ Balances due mean current unpaid issued invoices, excluding drafts, voids, and w
 
 Missing pricing inputs stay unknown, not zero. Pricing inputs are not invoice revenue, and a summary that cannot represent multiple currencies reliably must show an unknown value rather than add incompatible amounts.
 
+Invoice rows identify their actual business and location, including broader owner-visible businesses that are outside the dashboard's named scope. Report screens and CSV downloads use the same money formatting and plain column names, not internal IDs or minor-unit labels; API numeric fields retain their existing minor-unit contract.
+
 User-facing failures must explain the problem and a useful recovery step in plain language, including authentication, connection, and validation failures. Preserve machine-readable status, codes, conflict details, and offline retry behavior; do not expose internal transitions, provider errors, or HTTP status numbers as user instructions. Preserve useful plain-language recovery copy. Failed reads must not masquerade as zero balances or empty successful summaries.
 
 ## Core customer outcomes

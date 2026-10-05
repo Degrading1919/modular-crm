@@ -84,9 +84,12 @@ function viewQuery(resource: RecordResource, actor: SessionActor, id?: string): 
       where e.tenant_id=${actor.tenantId} and ${locationSql(actor, sql`e.organization_location_id`)} ${byId}
       order by e.created_at desc limit ${limit}`;
     case "invoices": return sql`select i.*, c.display_name as customer_name, i.invoice_number as number,
+      o.display_name as organization_name, case when i.organization_location_id is null then 'Unassigned' else ol.name end as location_name,
       i.total_minor as total_cents, i.paid_minor as paid_cents, i.balance_minor as balance_cents,
       ${openInvoiceBalance()} as open_balance_cents, i.due_at as due_date
       from invoices i join customers c on c.id=i.customer_id and c.tenant_id=i.tenant_id
+      left join organizations o on o.id=i.organization_id and o.tenant_id=i.tenant_id
+      left join organization_locations ol on ol.id=i.organization_location_id and ol.tenant_id=i.tenant_id and ol.organization_id=i.organization_id
       where i.tenant_id=${actor.tenantId} and ${locationSql(actor, sql`i.organization_location_id`)} ${byId}
       order by i.created_at desc limit ${limit}`;
     case "service-plans": return sql`select sp.*, c.display_name as customer_name, s.name as service_name,

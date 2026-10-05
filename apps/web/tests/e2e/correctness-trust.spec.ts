@@ -59,6 +59,10 @@ test("Owner and location-restricted Morgan see scoped, dollar-formatted balances
     await page.goto("/app/reports");
     await page.getByRole("tab", { name: "Money", exact: true }).click();
     const report = (await (await page.request.get("/api/v1/reports?type=financial&range=month")).json()).item;
+    await expect(page.getByRole("columnheader", { name: "Location", exact: true })).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "Invoiced", exact: true })).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "Collected", exact: true })).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: /Cents|Location ID/i })).toHaveCount(0);
     await expect(page.getByText(`Business locations: ${report.scope.label}`, { exact: false })).toBeVisible();
     const outstanding = report.metrics.find((metric: { key: string }) => metric.key === "outstandingCents");
     expect(outstanding.value).toBe(dashboard.metrics.openBalanceCents);
@@ -73,6 +77,17 @@ test("Owner and location-restricted Morgan see scoped, dollar-formatted balances
       expect(report.rows.every((row: { locationName: string }) => row.locationName === "Augusta Branch")).toBe(true);
       await expect(page.getByRole("cell", { name: "North Augusta Branch", exact: true })).toHaveCount(0);
     }
+    const invoices = (await (await page.request.get("/api/v1/invoices")).json()).items;
+    await page.goto("/app/invoices");
+    await expect(page.getByRole("columnheader", { name: "Business", exact: true })).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "Location", exact: true })).toBeVisible();
+    for (const invoice of invoices) {
+      const row = page.locator(`tr[data-record-id="${invoice.id}"]`);
+      await expect(row).toContainText(invoice.organizationName);
+      await expect(row).toContainText(invoice.locationName);
+    }
+    if (email.startsWith("manager")) expect(invoices.every((invoice: { locationName: string }) => invoice.locationName === "Augusta Branch")).toBe(true);
+    else expect(new Set(invoices.map((invoice: { organizationName: string }) => invoice.organizationName)).size).toBeGreaterThan(1);
   }
 });
 

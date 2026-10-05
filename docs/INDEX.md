@@ -58,6 +58,7 @@ This repository is the source of truth. New implementation work should begin her
 
 ## Agent workflow
 
+- [AGENT_REVIEW_LOOP.md](./AGENT_REVIEW_LOOP.md)
 - [../AGENTS.md](../AGENTS.md)
 - [../.agents/skills/modular-crm-decision-sync/SKILL.md](../.agents/skills/modular-crm-decision-sync/SKILL.md)
 - [../.agents/tasks/INITIAL_END_TO_END_BUILD.md](../.agents/tasks/INITIAL_END_TO_END_BUILD.md)

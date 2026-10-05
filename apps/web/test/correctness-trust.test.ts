@@ -108,9 +108,50 @@ describe("truthful scheduling read models", () => {
     const overview = await call(handlePortal, "portal/overview", customer);
     expect(overview.item.recentService).toMatchObject({ id: job.id, summary: "One-time cleanup" });
   });
+
+  it("orders completed calendar-day fallbacks in the job's timezone, not the database timezone", async () => {
+    const older = await addJob("completed", 2);
+    const later = await addJob("completed", 2);
+    const originalZone = (await db.execute(sql`select current_setting('TimeZone') as zone`)).rows[0]!.zone as string;
+    const [originalLocation] = await db.select().from(schema.organizationLocations).where(sql`id=${seedIds.augusta}`);
+    try {
+      // Fixed differing zones keep this regression meaningful in every season.
+      await db.execute(sql`select set_config('TimeZone','Etc/GMT+5',false)`);
+      await db.execute(sql`update organization_locations set timezone='UTC' where id=${seedIds.augusta}`);
+      await db.execute(sql`update jobs set actual_completed_at=(scheduled_date::timestamp+interval '30 minutes') at time zone 'UTC',
+        customer_summary='Later actual completion' where id=${later.id}`);
+      const overview = await call(handlePortal, "portal/overview", customer);
+      expect(overview.item.recentService).toMatchObject({ id: later.id, summary: "Later actual completion" });
+      const visits = await call(handlePortal, "portal/visits", customer);
+      expect(visits.items.slice(0,2).map((visit: { id: string }) => visit.id)).toEqual([later.id,older.id]);
+    } finally {
+      await db.execute(sql`select set_config('TimeZone',${originalZone},false)`);
+      await db.execute(sql`update organization_locations set timezone=${originalLocation!.timezone} where id=${seedIds.augusta}`);
+      await db.execute(sql`update jobs set status='canceled' where id in (${older.id},${later.id})`);
+    }
+  });
 });
 
 describe("financial meaning, currency and scope", () => {
+  it("names each invoice's actual business/location and exports money in readable units", async () => {
+    const ownerInvoices = await call(handleRecords, "invoices", owner);
+    const franchiseInvoice = ownerInvoices.items.find((item: { id: string }) => item.id === seedIds.franchiseEastInvoice);
+    expect(franchiseInvoice.organizationName).toBeTruthy();
+    expect(franchiseInvoice.locationName).toBeTruthy();
+    const [organization] = await db.select().from(schema.organizations).where(sql`id=${franchiseInvoice.organizationId} and tenant_id=${owner.tenantId}`);
+    const [location] = await db.select().from(schema.organizationLocations).where(sql`id=${franchiseInvoice.organizationLocationId} and tenant_id=${owner.tenantId}`);
+    expect(franchiseInvoice.organizationName).toBe(organization!.displayName);
+    expect(franchiseInvoice.locationName).toBe(location!.name);
+    expect((await call(handleRecords, "invoices")).items.every((item: { locationName: string }) => item.locationName === "Augusta Branch")).toBe(true);
+    const response = await handleReporting(request("reports/export?type=financial&range=month"), ["reports", "export"], owner);
+    expect(response?.status).toBe(200);
+    const csv = await response!.text();
+    expect(csv.split("\r\n")[0]).toContain('"Location"');
+    expect(csv.split("\r\n")[0]).toContain('"Invoiced"');
+    expect(csv.split("\r\n")[0]).not.toMatch(/Id|Cents|cents/);
+    expect(csv).toContain("$");
+    expect(csv).not.toContain(seedIds.augusta);
+  });
   it("reconciles current collectible balances across dashboard, report, records and portal", async () => {
     await db.execute(sql`update invoices set status='void' where tenant_id=${seedIds.happyTenant}`);
     const due = await addInvoice(seedIds.augusta, 9500n);

@@ -1,4 +1,5 @@
 import { userError } from "../lib/user-errors";
+import { moneyValue } from "../lib/presentation";
 
 export class ApiError extends Error {
   constructor(
@@ -65,7 +66,7 @@ export function unwrapItems<T>(result: { items?: T[] } | T[]): T[] {
 }
 
 export function money(cents: number | null | undefined, currency = "USD") {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format((Number(cents) || 0) / 100);
+  return moneyValue(Number(cents) || 0, currency);
 }
 
 export function date(value: string | null | undefined, options?: Intl.DateTimeFormatOptions) {

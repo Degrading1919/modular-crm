@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError } from "../components/api";
-import { balanceTotals, reportValue } from "../lib/presentation";
+import { balanceTotals, reportColumns, reportValue } from "../lib/presentation";
 import { apiError } from "../lib/api/http";
 import { z } from "zod";
 import { drainQueue, type OfflineOperation } from "../components/field-queue";
@@ -8,6 +8,12 @@ import { drainQueue, type OfflineOperation } from "../components/field-queue";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("truthful shared presentation", () => {
+  it("uses plain report columns, hides implementation IDs and shares monetary formatting", () => {
+    expect(reportColumns({ locationId: "internal", locationName: "Augusta", currency: "USD", invoicedCents: 3000, collectedCents: 1500, outstandingCents: 1500 }))
+      .toEqual([{ key: "locationName", label: "Location" }, { key: "currency", label: "Currency" },
+        { key: "invoicedCents", label: "Invoiced" }, { key: "collectedCents", label: "Collected" }, { key: "outstandingCents", label: "Open balance" }]);
+    expect(reportValue("invoicedCents", 3000)).toBe("$30.00");
+  });
   it("formats cents consistently in report cards and rows without inventing missing amounts", () => {
     expect(reportValue("collectedCents", 9500)).toBe("$95.00");
     expect(reportValue("collectedCents", null)).toBe("—");

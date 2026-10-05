@@ -4,6 +4,7 @@ import { rows, uuidArray, type DbRow } from "./sql";
 import { requireStaff, type SessionActor } from "./actor";
 import { json } from "./http";
 import { businessTimeZone, jobBusinessDate, openInvoiceBalance, upcomingJob } from "./read-facts";
+import { reportColumns, reportValue } from "../presentation";
 
 export type ReportingActor = SessionActor & { kind: "staff"; organizationId: string; membershipId: string };
 type ReportType = "financial" | "customers" | "jobs" | "routes" | "staff" | "inventory" | "locations";
@@ -768,10 +769,13 @@ async function handleReportRequest(request: Request, actor: SessionActor, isExpo
     scope: await presentationScope(scopedActor, { locationId, rollup: type === "locations" }), timeZone } });
   const rowsForExport = data.rows.slice(0, csvRowLimit);
   const columns = rowsForExport[0]
-    ? Object.keys(rowsForExport[0]).map((key) => ({ key, label: key.replace(/([A-Z])/g, " $1").replace(/^./, (letter) => letter.toUpperCase()) }))
-    : exportColumns[type];
+    ? reportColumns(rowsForExport[0])
+    : exportColumns[type].map((column) => ({ ...column, label: reportColumns({ [column.key]: null })[0]!.label }));
   const truncated = data.rows.length > csvRowLimit;
-  return new Response(reportRowsToCsv(rowsForExport, columns), {
+  const presentedRows = rowsForExport.map((row: DbRow) => Object.fromEntries(columns.map(({ key }) => [key,
+    /Cents$/.test(key) ? row[key] == null ? "" : reportValue(key, row[key], String(row.currency ?? "USD")) : row[key],
+  ])));
+  return new Response(reportRowsToCsv(presentedRows, columns), {
     status: 200,
     headers: {
       "content-type": "text/csv; charset=utf-8",
