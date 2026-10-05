@@ -167,6 +167,8 @@ The technician experience should hide unrelated office functionality by default.
 
 Field job actions must intersect canonical legal transitions with the technician's granted permissions, including an explicit resume action for paused jobs. Device-saved progress must be distinguished from office-synced progress. Failed/conflicted updates retain evidence for review, current-job inspection and deliberate retry; technicians can download saved details before confirming discard of an update and its later dependent updates. Discard must leave unrelated work intact and must explain that it does not undo anything already received by the office.
 
+A stop canceled before the route's first publication is retained as skipped route history, never dispatched or reactivated; valid remaining work can publish. Cancellation does not exempt a stop from tenant, business, branch, assignment, date or other-route ownership checks. A lapsed sign-in stops offline sending without losing evidence. Once the same user and tenant are confirmed signed in again, authentication-failed updates become eligible automatically with unchanged operation IDs and causal ordering; genuine conflicts and permission failures still require review.
+
 ### Customer
 
 Persistent self-service portal plus secure action links.

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { PGlite } from "@electric-sql/pglite";
 import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
 import { releaseDisconnectedSlots } from "./pglite-socket-slots.ts";
+import { isolatePgliteProtocol } from "./pglite-protocol.ts";
 
 const defaultDataDirectory = fileURLToPath(new URL("../../../.local-data/pglite/", import.meta.url));
 const dataDirectory = process.env.PGLITE_DATA_DIR === ":memory:"
@@ -22,6 +23,7 @@ const server = new PGLiteSocketServer({
   port,
   maxConnections,
 });
+const protocol = isolatePgliteProtocol(server);
 
 try {
   await server.start();
@@ -38,6 +40,7 @@ async function close(exitCode = 0) {
   if (closing) return;
   closing = true;
   await server.stop();
+  await protocol.settled();
   await embeddedDatabase.close();
   process.exit(exitCode);
 }

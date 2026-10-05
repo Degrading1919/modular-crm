@@ -159,4 +159,17 @@ describe("authorized customer documents", () => {
   it("enforces staff location scope on invoice documents", async () => {
     await expect(getDocument(augustaOnly, "invoice", seedIds.franchiseEastInvoice)).rejects.toMatchObject({ status: 404 });
   });
+  it("authorizes staff receipts by the allocated invoice branch while retaining customer property scope", async () => {
+    const propertyId = crypto.randomUUID(), jobId = crypto.randomUUID(), invoiceId = crypto.randomUUID(), paymentId = crypto.randomUUID();
+    await db.insert(schema.serviceLocations).values({ id: propertyId, tenantId: seedIds.happyTenant, customerId: seedIds.carter, organizationLocationId: seedIds.northAugusta, name: "Other branch property", addressLine1: "2 Other Street", city: "North Augusta", region: "SC", postalCode: "29841" });
+    await db.insert(schema.jobs).values({ id: jobId, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.northAugusta, customerId: seedIds.carter, serviceLocationId: propertyId, serviceId: seedIds.weeklyService, status: "completed" });
+    await db.insert(schema.invoices).values({ id: invoiceId, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, status: "paid", invoiceNumber: `CROSS-${invoiceId}`, totalMinor: 1000n, paidMinor: 1000n, balanceMinor: 0n });
+    await db.insert(schema.invoiceItems).values({ tenantId: seedIds.happyTenant, invoiceId, jobId, description: "Service", quantity: "1", unitAmountMinor: 1000n, totalMinor: 1000n });
+    await db.insert(schema.payments).values({ id: paymentId, tenantId: seedIds.happyTenant, customerId: seedIds.carter, status: "succeeded", sourceType: "manual", amountMinor: 1000n, idempotencyKey: paymentId, recordedByActorType: "staff" });
+    await db.insert(schema.paymentAllocations).values({ tenantId: seedIds.happyTenant, paymentId, invoiceId, amountMinor: 1000n });
+    expect((await getDocument(augustaOnly, "receipt", paymentId)).kind).toBe("receipt");
+    await expect(getDocument({ ...augustaOnly, locationIds: new Set([seedIds.northAugusta]) }, "receipt", paymentId)).rejects.toMatchObject({ status: 404 });
+    await expect(getDocument(customer, "receipt", paymentId)).rejects.toMatchObject({ status: 404 });
+    await expect(getDocument({ ...owner, tenantId: seedIds.cleanTenant }, "receipt", paymentId)).rejects.toMatchObject({ status: 404 });
+  });
 });

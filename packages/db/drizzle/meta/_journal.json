@@ -113,6 +113,13 @@
       "when": 1791226875412,
       "tag": "0015_absent_zuras",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1791233556083,
+      "tag": "0016_natural_sprite",
+      "breakpoints": true
     }
   ]
 }

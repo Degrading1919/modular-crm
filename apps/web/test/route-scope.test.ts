@@ -104,7 +104,7 @@ describe("route read scope", () => {
     for (const event of events) expect(() => assertTransition("job", event.fromStatus!, event.toStatus, { reason: event.reasonCode ?? undefined, completedChecklist: true })).not.toThrow();
   });
 
-  it.each(["canceled", "unscheduled", "missed", "needs_return", "wrong_date", "removed_assignment", "wrong_location"])("rejects a changed %s stop atomically instead of publishing a partially ready route", async (change) => {
+  it.each(["unscheduled", "missed", "needs_return", "wrong_date", "removed_assignment", "wrong_location"])("rejects a changed %s stop atomically instead of publishing a partially ready route", async (change) => {
     const routeId = crypto.randomUUID();
     const jobIds = [crypto.randomUUID(), crypto.randomUUID()];
     const routeDate = "2026-10-08";
@@ -128,6 +128,28 @@ describe("route read scope", () => {
     await db.insert(schema.jobs).values({ id: jobId, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, serviceId: seedIds.weeklyService, status: "scheduled", scheduledDate: "2026-10-08" });
     await db.insert(schema.jobAssignments).values({ tenantId: seedIds.happyTenant, jobId, membershipId: seedIds.terryMembership, assignmentRole: "primary" });
     for (const next of ["en_route", "in_progress", "completed"]) await expect(transitionJob(terry, jobId, next, { completedChecklist: true })).rejects.toMatchObject({ code: "INVALID_TRANSITION", status: 409 });
+  });
+
+  it("skips a stop canceled before first publication while publishing valid work without changing canceled history", async () => {
+    const routeId = crypto.randomUUID(), canceledId = crypto.randomUUID(), activeId = crypto.randomUUID();
+    await db.insert(schema.routePlans).values({ id: routeId, tenantId: owner.tenantId, organizationLocationId: seedIds.augusta, membershipId: seedIds.terryMembership, routeDate: "2026-10-20", status: "draft" });
+    await db.insert(schema.jobs).values([canceledId, activeId].map((id) => ({ id, tenantId: owner.tenantId, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, serviceId: seedIds.weeklyService, status: "scheduled", scheduledDate: "2026-10-20" })));
+    await db.insert(schema.jobAssignments).values([canceledId, activeId].map((jobId) => ({ tenantId: owner.tenantId, jobId, membershipId: seedIds.terryMembership, assignmentRole: "primary" })));
+    await db.insert(schema.routeStops).values([canceledId, activeId].map((jobId, i) => ({ tenantId: owner.tenantId, routePlanId: routeId, jobId, sequence: i + 1, status: "planned" })));
+    await transitionJob(owner, canceledId, "canceled", { reason: "Customer canceled" });
+    const history = await db.select().from(schema.jobStatusEvents).where(eq(schema.jobStatusEvents.jobId, canceledId));
+    const publish = () => handleRoutesField(new Request(`http://localhost/api/v1/routes/${routeId}/publish`, { method: "POST" }), ["routes", routeId, "publish"], owner);
+    // Cancellation is not an exemption from date, assignment or branch validation.
+    await db.update(schema.jobs).set({ scheduledDate: "2026-10-21" }).where(eq(schema.jobs.id, canceledId));
+    await expect(publish()).rejects.toMatchObject({ status: 409 });
+    expect((await db.select().from(schema.jobs).where(eq(schema.jobs.id, activeId)))[0]!.status).toBe("scheduled");
+    await db.update(schema.jobs).set({ scheduledDate: "2026-10-20" }).where(eq(schema.jobs.id, canceledId));
+    expect((await publish())!.status).toBe(200);
+    expect((await db.select().from(schema.routeStops).where(eq(schema.routeStops.jobId, canceledId)))[0]!.status).toBe("skipped");
+    expect((await db.select().from(schema.jobs).where(eq(schema.jobs.id, canceledId)))[0]).toMatchObject({ status: "canceled", assignedRouteId: null });
+    expect((await db.select().from(schema.jobs).where(eq(schema.jobs.id, activeId)))[0]).toMatchObject({ status: "dispatched", assignedRouteId: routeId });
+    expect(await db.select().from(schema.jobStatusEvents).where(eq(schema.jobStatusEvents.jobId, canceledId))).toEqual(history);
+    expect((await (await listRoutes(terry, ["routes", routeId])).json()).item.status).toBe("published");
   });
 
   it.each(["canceled", "missed", "needs_return"])("republishes an optimized route with its own %s stop without resetting progress or history", async (inactiveState) => {

@@ -29,6 +29,7 @@ const { handleReporting } = await import("../lib/api/reporting.ts");
 const { updateInvoiceFinancialPosition } = await import("../lib/api/invoice-payment-ledger.ts");
 const { openConnectorCredentials } = await import("../lib/api/connector-secrets.ts");
 const { refundId } = await import("../lib/api/refunds.ts");
+const { handleRefundReview } = await import("../lib/api/refund-review.ts");
 let pglite: PGlite;
 let db: Database;
 let account: typeof onlinePaymentAccounts.$inferSelect;
@@ -66,6 +67,46 @@ beforeAll(async () => {
 afterAll(async () => { await pglite?.close(); vi.unstubAllEnvs(); });
 
 describe("account-bound online invoice payments", () => {
+  it.each(["refunded", "not_refunded"] as const)("owner resolves a refund as %s once, audits it and unblocks eligible refunds", async (outcome) => {
+    const invoice = await fixture(); const event = await eventFor(invoice); await apply(event);
+    const [allocation] = await db.select().from(paymentAllocations).where(eq(paymentAllocations.invoiceId, invoice.id));
+    const [review] = await db.insert(refunds).values({ tenantId: owner.tenantId, paymentId: allocation!.paymentId, connectorInstallationId: account.installationId, status: "pending", amountMinor: 400n, currency: "USD", reviewReason: "Confirm with the payment service", providerReference: `review_${crypto.randomUUID()}` }).returning();
+    const path = ["invoices", invoice.id, "refunds", review!.id, "resolve"];
+    await expect(handleRefundReview(request(path.join("/"), { outcome }), path, { ...owner, role: "office" })).rejects.toMatchObject({ status: 403 });
+    await expect(handleRefundReview(request(path.join("/"), { outcome }), path, { ...owner, permissions: new Set() })).rejects.toMatchObject({ status: 403 });
+    await expect(handleRefundReview(request(path.join("/"), { outcome }), path, { ...owner, tenantId: seedIds.cleanTenant })).rejects.toMatchObject({ status: 404 });
+    await expect(handleRefundReview(request(path.join("/"), { outcome }), path, { ...owner, allLocations: false, locationIds: new Set([seedIds.northAugusta]) })).rejects.toMatchObject({ status: 404 });
+    const online = await onlineForAccount(account); const requestRefund = vi.fn(online.requestRefund);
+    const spy = vi.spyOn(accountApi, "onlineForAccount").mockResolvedValue({ ...online, requestRefund });
+    try {
+      const result = await handleRefundReview(request(path.join("/"), { outcome }), path, owner);
+      expect(result!.status).toBe(200); expect((await result!.json()).duplicate).toBe(false);
+      expect((await (await handleRefundReview(request(path.join("/"), { outcome }), path, owner))!.json()).duplicate).toBe(true);
+      await expect(handleRefundReview(request(path.join("/"), { outcome: outcome === "refunded" ? "not_refunded" : "refunded" }), path, owner)).rejects.toMatchObject({ status: 409 });
+      expect((await current(invoice.id)).balanceMinor).toBe(outcome === "refunded" ? 400n : 0n);
+      expect((await db.select().from(refunds).where(eq(refunds.id, review!.id)))[0]).toMatchObject({ reviewReason: null, reviewResolution: outcome, status: outcome === "refunded" ? "succeeded" : "failed" });
+      expect((await db.select().from(domainEvents).where(and(eq(domainEvents.entityId, review!.id), eq(domainEvents.eventType, "payment.refund_review_resolved"))))).toHaveLength(1);
+      const audits = await db.select().from(schema.auditEvents).where(and(eq(schema.auditEvents.entityId, review!.id), eq(schema.auditEvents.action, "payment.refund_review_resolve")));
+      expect(audits).toHaveLength(1); expect(audits[0]).toMatchObject({ actorId: owner.userId, beforeData: { status: "pending" }, afterData: { outcome, balanceCents: outcome === "refunded" ? 400 : 0 } });
+      // A late delivery must not overwrite the owner's checked outcome.
+      await apply({ ...event, id: crypto.randomUUID(), type: "payment.refunded", amountMinor: 400, refundReference: review!.providerReference! });
+      expect((await current(invoice.id)).balanceMinor).toBe(outcome === "refunded" ? 400n : 0n);
+      expect(requestRefund).not.toHaveBeenCalled();
+      const refundPath = ["invoices", invoice.id, "refunds"];
+      const next = await handleOnlinePaymentRefund(request(refundPath.join("/"), { paymentId: allocation!.paymentId, amountCents: 100, idempotencyKey: crypto.randomUUID() }), refundPath, owner);
+      expect(next!.status).toBe(202); expect((await next!.json()).item.status).toBe("succeeded");
+    } finally { spy.mockRestore(); }
+  });
+  it("records an owner-confirmed external excess refund as real money, not fabricated collection", async () => {
+    const invoice = await fixture(); const event = await eventFor(invoice); await apply(event);
+    await apply({ ...event, id: crypto.randomUUID(), type: "payment.refunded", amountMinor: 900, refundReference: crypto.randomUUID() });
+    const ref = crypto.randomUUID(); await apply({ ...event, id: crypto.randomUUID(), type: "payment.refunded", amountMinor: 400, refundReference: ref });
+    const [review] = await db.select().from(refunds).where(eq(refunds.providerReference, ref));
+    const path = ["invoices", invoice.id, "refunds", review!.id, "resolve"];
+    expect((await handleRefundReview(request(path.join("/"), { outcome: "refunded" }), path, owner))!.status).toBe(200);
+    expect(await current(invoice.id)).toMatchObject({ paidMinor: 1200n, balanceMinor: 1300n });
+    expect((await db.select().from(refunds).where(eq(refunds.paymentId, review!.paymentId))).filter((row) => row.status === "succeeded").reduce((sum, row) => sum + row.amountMinor, 0n)).toBe(1300n);
+  });
   it("invalidates an excessive page atomically with a real applied-credit ledger update", async () => {
     const invoice = await fixture(); await checkout(invoice);
     await db.transaction(async (tx) => {

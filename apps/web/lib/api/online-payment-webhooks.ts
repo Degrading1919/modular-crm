@@ -43,9 +43,9 @@ export async function processOnlinePaymentEvent(provider: string, event: OnlineP
       const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.tenantId, account.tenantId), eq(invoices.id, allocation.invoiceId), eq(invoices.organizationId, account.organizationId))).limit(1);
       if (!invoice || payment.currency !== event.currency || invoice.currency !== event.currency) throw new DomainError("CONFLICT", "Payment notification does not match this invoice.", 409);
       const refundRows = await tx.select().from(refunds).where(and(eq(refunds.tenantId, account.tenantId), eq(refunds.paymentId, payment.id)));
-      const prior = refundRows.find((row) => row.providerReference === event.refundReference || (row.id === event.refundRequestReference && row.status === "pending"));
+      const prior = refundRows.find((row) => row.providerReference === event.refundReference || row.id === event.refundRequestReference);
       if (prior && prior.amountMinor !== BigInt(event.amountMinor)) throw new DomainError("CONFLICT", "Refund notification does not match the requested amount.", 409);
-      if (prior?.reviewReason) {
+      if (prior?.reviewReason || prior?.reviewResolution) {
         // Reconciliation has a durable end state; repeated notifications cannot change money.
       } else if (event.type === "refund.failed") {
         if (prior?.status === "succeeded") {

@@ -39,7 +39,7 @@ export function makeInvoiceSnapshot(input: { lines: MoneyLine[]; issuedAt: strin
   });
 }
 
-export function invoiceFinancialPosition(totalCents: number, paidCents: number, refundedCents = 0, creditedCents = 0): {
+export function invoiceFinancialPosition(totalCents: number, paidCents: number, refundedCents = 0, creditedCents = 0, options: { confirmedExcessRefund?: boolean } = {}): {
   grossPaidCents: number;
   refundedCents: number;
   creditedCents: number;
@@ -50,7 +50,9 @@ export function invoiceFinancialPosition(totalCents: number, paidCents: number, 
   for (const value of [totalCents, paidCents, refundedCents, creditedCents]) {
     if (!Number.isInteger(value) || value < 0) throw new DomainError("VALIDATION_ERROR", "Money must use nonnegative integer minor units.", 422);
   }
-  if (refundedCents > paidCents) throw new DomainError("VALIDATION_ERROR", "Refund exceeds payments.", 422);
+  // Ordinary requests cannot over-refund. An owner-reviewed external outcome is
+  // a financial fact, even when it reveals more money returned than recorded.
+  if (refundedCents > paidCents && !options.confirmedExcessRefund) throw new DomainError("VALIDATION_ERROR", "Refund exceeds payments.", 422);
   const netCollectedCents = paidCents - refundedCents;
   const balanceCents = Math.max(0, totalCents - paidCents + refundedCents - creditedCents);
   return {

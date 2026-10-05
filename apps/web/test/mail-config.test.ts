@@ -34,7 +34,10 @@ it("checks the recipient reservation before pre-tenant account transport", async
   vi.stubEnv("NODE_ENV", "production");
   getConfig.mockReturnValue({ environment: "production", smtp: { host: "smtp.example", port: 587, secure: false, from: "team@example.test" } });
   reserveAccount.mockResolvedValue({ allowed: false, nextSendAt: new Date(), code: "email_hourly_limit", note: "Account limit" });
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
   await sendPlatformEmail("customer@example.test", "Verify your account", "Account link");
   expect(reserveAccount).toHaveBeenCalledWith(mailDb, "customer@example.test");
   expect(createTransport).not.toHaveBeenCalled(); expect(sendMail).not.toHaveBeenCalled();
+  expect(warning).toHaveBeenCalledExactlyOnceWith("Account email suppressed: recipient sending limit reached.");
+  warning.mockRestore();
 });

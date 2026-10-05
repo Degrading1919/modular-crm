@@ -54,7 +54,7 @@ export async function handleInvoiceRefund(request: Request, path: string[], acto
       .where(and(eq(paymentAllocations.tenantId, actor.tenantId), eq(paymentAllocations.invoiceId, invoiceId)));
     const ids = allocated.map(({ payment }) => payment.id);
     const refundRows = ids.length
-      ? await db.select({ paymentId: refunds.paymentId, amountMinor: refunds.amountMinor, status: refunds.status, reviewReason: refunds.reviewReason }).from(refunds)
+      ? await db.select({ id: refunds.id, paymentId: refunds.paymentId, amountMinor: refunds.amountMinor, status: refunds.status, reviewReason: refunds.reviewReason }).from(refunds)
         .where(and(eq(refunds.tenantId, actor.tenantId), inArray(refunds.paymentId, ids)))
       : [];
     const refundedByPayment = new Map<string, bigint>();
@@ -70,7 +70,7 @@ export async function handleInvoiceRefund(request: Request, path: string[], acto
       refundedCents: refundedByPayment.get(payment.id) ?? 0n,
       pendingRefundCents: pendingByPayment.get(payment.id) ?? 0n,
       overpaymentCents: invoice.overpayment,
-      refundReviews: actor.role === "owner" ? refundRows.filter((row) => row.paymentId === payment.id && row.reviewReason).map((row) => ({ status: "needs_review", message: row.reviewReason })) : undefined,
+      refundReviews: actor.role === "owner" ? refundRows.filter((row) => row.paymentId === payment.id && row.reviewReason).map((row) => ({ id: row.id, amountCents: Number(row.amountMinor), status: "needs_review", message: row.reviewReason })) : undefined,
       status: payment.status,
       sourceType: payment.sourceType,
       method: payment.recordedMethod ?? payment.sourceType,
@@ -175,7 +175,7 @@ export async function handleInvoiceRefund(request: Request, path: string[], acto
       .from(paymentAllocations).where(and(eq(paymentAllocations.tenantId, actor.tenantId), eq(paymentAllocations.invoiceId, invoiceId)));
     const invoicePaymentIds = invoiceAllocations.map((item) => item.paymentId);
     const invoiceRefundRows = invoicePaymentIds.length
-      ? await tx.select({ amountMinor: refunds.amountMinor }).from(refunds)
+      ? await tx.select({ amountMinor: refunds.amountMinor, reviewResolution: refunds.reviewResolution }).from(refunds)
         .where(and(eq(refunds.tenantId, actor.tenantId), eq(refunds.status, "succeeded"), inArray(refunds.paymentId, invoicePaymentIds)))
       : [];
     const totalRefundedMinor = invoiceRefundRows.reduce((sum, item) => sum + item.amountMinor, 0n);
@@ -184,7 +184,7 @@ export async function handleInvoiceRefund(request: Request, path: string[], acto
     const creditedMinor = creditRows.reduce((sum, item) => sum + item.amountMinor, 0n);
     let position: ReturnType<typeof invoiceFinancialPosition>;
     try {
-      position = invoiceFinancialPosition(Number(invoice.totalMinor), Number(invoice.paidMinor), Number(totalRefundedMinor), Number(creditedMinor));
+      position = invoiceFinancialPosition(Number(invoice.totalMinor), Number(invoice.paidMinor), Number(totalRefundedMinor), Number(creditedMinor), { confirmedExcessRefund: invoiceRefundRows.some((row) => row.reviewResolution === "refunded") });
     } catch (error) {
       if (error instanceof DomainError && error.code === "VALIDATION_ERROR") {
         throw new DomainError("CONFLICT", "Refund would exceed the amount collected for this invoice.", 409);

@@ -19,6 +19,7 @@ import { json, readBody } from "./http";
 import { normalized } from "./sql";
 import { claimFieldOperation, completeFieldOperation, type FieldOperationInput } from "./field-operations";
 import { businessDate } from "../dates";
+import { recordJobReschedule } from "./job-reschedule";
 
 export async function getAssignedJob(actor: SessionActor, jobId: string, permission: Permission = "jobs.read") {
   const db = getDb();
@@ -200,9 +201,13 @@ async function assignJob(request: Request, actor: SessionActor, jobId: string): 
   const next = job.status === "unscheduled" ? "scheduled" : job.status;
   if (next !== job.status) assertTransition("job", job.status, next);
   await db.transaction(async (tx) => {
+    await tx.execute(sql`select id from jobs where tenant_id=${actor.tenantId} and id=${jobId} for update`);
+    const [current] = await tx.select().from(jobs).where(and(eq(jobs.tenantId, actor.tenantId), eq(jobs.id, jobId))).limit(1);
+    if (!current || current.updatedAt.getTime() !== job.updatedAt.getTime()) throw new DomainError("CONFLICT", "This job changed. Refresh it before assigning it again.", 409);
     await tx.update(jobAssignments).set({ removedAt: new Date() }).where(and(eq(jobAssignments.tenantId, actor.tenantId), eq(jobAssignments.jobId, jobId)));
     await tx.insert(jobAssignments).values({ tenantId: actor.tenantId, jobId, membershipId: technician.id, assignmentRole: "primary" });
-    await tx.update(jobs).set({ scheduledDate: date, status: next, updatedAt: new Date() }).where(and(eq(jobs.tenantId, actor.tenantId), eq(jobs.id, jobId)));
+    await tx.update(jobs).set({ scheduledDate: date, status: next, ...(date !== job.scheduledDate ? { serviceWindowStart: null, serviceWindowEnd: null } : {}), updatedAt: new Date() }).where(and(eq(jobs.tenantId, actor.tenantId), eq(jobs.id, jobId)));
+    await recordJobReschedule(tx, actor, job, date);
     if (next !== job.status) await tx.insert(jobStatusEvents).values({ tenantId: actor.tenantId, jobId, fromStatus: job.status, toStatus: next, actorType: "staff", actorId: actor.userId });
     await recordEvent(actor, { type: "job.assigned", entityType: "job", entityId: jobId, payload: { customerId: job.customerId, technicianId: technician.id, scheduledDate: date }, auditAction: "job.assign", locationId: job.organizationLocationId }, tx);
   });

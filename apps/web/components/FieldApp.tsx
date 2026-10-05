@@ -7,7 +7,7 @@ import { Badge, Empty, Icon, Loading, Logo, Modal, Notice, useResource } from ".
 import PayrollApp from "./PayrollApp";
 
 type Item = Record<string, any> & { id: string };
-import { blockedBy, dependencyKey, discardGroup, drainQueue, fieldActions, fieldErrorText, projectedJobState, projectedShiftState, queueKey, readQueue, saveQueue, withQueueLock, type OfflineOperation } from "./field-queue";
+import { blockedBy, dependencyKey, discardGroup, drainQueue, fieldActions, fieldErrorText, projectedJobState, projectedShiftState, queueKey, readQueue, resumeAuthenticatedQueue, saveQueue, withQueueLock, type OfflineOperation } from "./field-queue";
 
 function evidenceSummary(payload: OfflineOperation["payload"]) {
   const text = [payload.text, payload.note, payload.description, payload.reason].find((value) => typeof value === "string" && value.trim());
@@ -87,9 +87,15 @@ export default function FieldApp({ section }: { section: string[] }) {
     const refresh = () => setOperations(readQueue(userId, tenantId));
     window.addEventListener("online", handler);
     window.addEventListener("storage", refresh);
-    if (navigator.onLine) void syncPending();
+    // Returning after sign-in confirms this queue's identity. Genuine conflicts
+    // and permission failures remain reviewable, never automatically retried.
+    if (navigator.onLine) void withQueueLock(queueKey(userId, tenantId), async () => {
+      const saved = readQueue(userId, tenantId);
+      if (saved.some((item) => item.status === "failed" && item.error?.status === 401)) persist(resumeAuthenticatedQueue(saved));
+      await syncQueue();
+    }).catch((issue) => setSyncError((issue as Error).message));
     return () => { window.removeEventListener("online", handler); window.removeEventListener("storage", refresh); };
-  }, [userId, tenantId, syncPending]);
+  }, [userId, tenantId, syncPending, persist, syncQueue]);
   async function mutate(path: string, payload: unknown) {
     if (!userId || !tenantId) throw new Error("Sign in again before saving field updates.");
     const record = payload && typeof payload === "object" && !Array.isArray(payload) ? payload as Record<string, unknown> : { value: payload };

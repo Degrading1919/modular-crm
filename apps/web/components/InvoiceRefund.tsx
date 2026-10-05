@@ -10,7 +10,7 @@ export type RefundPaymentContext = {
   refundedCents: number;
   pendingRefundCents?: number;
   overpaymentCents?: number;
-  refundReviews?: { status: "needs_review"; message: string }[];
+  refundReviews?: { id: string; amountCents: number; status: "needs_review"; message: string }[];
   status: string;
   sourceType: string;
   method?: string;
@@ -85,7 +85,16 @@ export default function InvoiceRefund({
   }
 
   const reviews = paymentContext.flatMap((payment) => payment.refundReviews ?? []);
-  if (reviews.length) return <section className="card card-pad" role="status"><h2>Refund needs review</h2>{reviews.map((review, index) => <p key={index}>{review.message}</p>)}<p>Check the payment service and contact support before starting another refund. Recorded money has not been changed.</p></section>;
+  async function resolve(id: string, outcome: "refunded" | "not_refunded") {
+    if (!window.confirm(outcome === "refunded" ? "Confirm you checked the payment service and this refund went through. This records the refund and updates the invoice balance." : "Confirm you checked the payment service and no refund happened. This removes the refund from the recorded balance if needed.")) return;
+    setSaving(true); setError(null);
+    try {
+      const result = await api<RefundResponse>(`/invoices/${invoiceId}/refunds/${id}/resolve`, body({ outcome }));
+      setNotice("Refund review resolved."); onRefunded?.(result);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "We couldn’t resolve this refund review. Please try again."); }
+    finally { setSaving(false); }
+  }
+  if (reviews.length) return <section className="card card-pad" role="status"><h2>Refund needs review</h2><p>Recorded money has not been changed.</p><p>Check the payment service, then record what actually happened. This does not send another refund.</p>{reviews.map((review) => <div key={review.id}><p>{money(review.amountCents, currency)} · {review.message}</p><div className="inline-actions"><button className="btn btn-primary" type="button" disabled={saving} onClick={() => void resolve(review.id, "refunded")}>The refund went through</button><button className="btn btn-secondary" type="button" disabled={saving} onClick={() => void resolve(review.id, "not_refunded")}>No refund happened</button></div></div>)}{error && <p className="notice notice-error" role="alert">{error}</p>}</section>;
   if (refundablePayments.length === 0) return paymentContext.some((payment) => (payment.pendingRefundCents ?? 0) > 0) ? <p role="status" className="notice">Your refund is awaiting confirmation from the payment service.</p> : null;
 
   return <form id="invoice-refund" className="card card-pad" onSubmit={submit} aria-label="Refund invoice payment">
