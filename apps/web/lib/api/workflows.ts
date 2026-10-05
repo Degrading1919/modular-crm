@@ -1,12 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
-  auditEvents, completionProofs, connectorInstallations, creditAllocations, customerContacts, customers, domainEvents, estimateApprovals, estimateItems, estimateRevisions, estimates, hasUsableFeature, invoiceItems, invoices, jobAssignments, jobStatusEvents,
-  jobs, leads, loadTenantCapabilities, memberships, paymentAllocations, payments, recurrenceRules, refunds, serviceLocations, servicePlans, services, tenants,
+  auditEvents, completionProofs, connectorInstallations, customerContacts, customers, domainEvents, estimateApprovals, estimateItems, estimateRevisions, estimates, hasUsableFeature, invoiceItems, invoices, jobAssignments, jobStatusEvents,
+  jobs, leads, loadTenantCapabilities, memberships, paymentAllocations, payments, recurrenceRules, serviceLocations, servicePlans, services, tenants,
   secureEstimateTokens,
 } from "@modular-crm/db";
-import { assertTransition, DomainError, invoiceFinancialPosition, manualPaymentMethods, requirePermission, type Permission } from "@modular-crm/domain";
+import { assertTransition, DomainError, manualPaymentMethods, requirePermission, type Permission } from "@modular-crm/domain";
+import { updateInvoiceFinancialPosition } from "./invoice-payment-ledger";
 import { getCapability } from "../connectors";
 import { getDb } from "../db";
 import type { Database } from "@modular-crm/db";
@@ -425,19 +426,7 @@ async function invoiceAction(request: Request, actor: SessionActor, invoiceId: s
     if (status === "succeeded") {
       await tx.insert(paymentAllocations).values({ tenantId: actor.tenantId, paymentId: payment.id, invoiceId, amountMinor: BigInt(body.amountCents) });
       const paidMinor = current.paidMinor + BigInt(body.amountCents);
-      const allocations = await tx.select({ paymentId: paymentAllocations.paymentId }).from(paymentAllocations)
-        .where(and(eq(paymentAllocations.tenantId, actor.tenantId), eq(paymentAllocations.invoiceId, invoiceId)));
-      const paymentIds = allocations.map((allocation) => allocation.paymentId);
-      const refundRows = paymentIds.length ? await tx.select({ amountMinor: refunds.amountMinor }).from(refunds)
-        .where(and(eq(refunds.tenantId, actor.tenantId), eq(refunds.status, "succeeded"), inArray(refunds.paymentId, paymentIds))) : [];
-      const creditRows = await tx.select({ amountMinor: creditAllocations.amountMinor }).from(creditAllocations)
-        .where(and(eq(creditAllocations.tenantId, actor.tenantId), eq(creditAllocations.invoiceId, invoiceId)));
-      const refundedMinor = refundRows.reduce((sum, row) => sum + row.amountMinor, 0n);
-      const creditedMinor = creditRows.reduce((sum, row) => sum + row.amountMinor, 0n);
-      const position = invoiceFinancialPosition(Number(current.totalMinor), Number(paidMinor), Number(refundedMinor), Number(creditedMinor));
-      balanceCents = position.balanceCents;
-      await tx.update(invoices).set({ paidMinor, balanceMinor: BigInt(balanceCents), status: position.status, updatedAt: new Date() })
-        .where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, actor.tenantId)));
+      balanceCents = await updateInvoiceFinancialPosition(tx, current, paidMinor);
     }
     await recordEvent(actor, { type: status === "succeeded" ? "payment.succeeded" : "payment.failed", entityType: "payment", entityId: payment.id, payload: { invoiceId, customerId: current.customerId, amountCents: body.amountCents, method: recordedMethod, reference }, auditAction: `payment.${status}`, locationId: current.organizationLocationId }, tx);
     return { payment, duplicate: false, balanceCents };

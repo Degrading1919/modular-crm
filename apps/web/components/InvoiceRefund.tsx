@@ -8,6 +8,7 @@ export type RefundPaymentContext = {
   id: string;
   amountCents: number;
   refundedCents: number;
+  pendingRefundCents?: number;
   status: string;
   sourceType: string;
   method?: string;
@@ -37,21 +38,22 @@ export default function InvoiceRefund({
 }) {
   const refundablePayments = paymentContext.filter((payment) =>
     ["succeeded", "partially_refunded"].includes(payment.status)
-    && payment.amountCents > payment.refundedCents,
+    && payment.amountCents > payment.refundedCents + (payment.pendingRefundCents ?? 0),
   );
   const [paymentId, setPaymentId] = useState(refundablePayments[0]?.id ?? "");
   const selected = refundablePayments.find((payment) => payment.id === paymentId) ?? refundablePayments[0];
-  const maxCents = selected ? selected.amountCents - selected.refundedCents : 0;
+  const maxCents = selected ? selected.amountCents - selected.refundedCents - (selected.pendingRefundCents ?? 0) : 0;
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const retryKey = useRef("");
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selected) return;
-    const amountCents = Number(amount) * 100;
+    const amountCents = Math.round(Number(amount) * 100);
     if (!/^\d+(?:\.\d{1,2})?$/.test(amount) || !Number.isSafeInteger(amountCents) || amountCents <= 0 || amountCents > maxCents) {
       setError(`Enter an amount between ${money(1, currency)} and ${money(maxCents, currency)}.`);
       return;
@@ -69,6 +71,7 @@ export default function InvoiceRefund({
       retryKey.current = "";
       setAmount("");
       setReason("");
+      setNotice(result.item.status === "pending" ? "Your refund is awaiting confirmation from the payment service." : result.item.status === "failed" ? "The refund did not go through. Review the payment before starting a new refund." : "Refund recorded.");
       onRefunded?.(result);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "We couldn’t complete the refund. Please try again.");
@@ -77,14 +80,14 @@ export default function InvoiceRefund({
     }
   }
 
-  if (refundablePayments.length === 0) return null;
+  if (refundablePayments.length === 0) return paymentContext.some((payment) => (payment.pendingRefundCents ?? 0) > 0) ? <p role="status" className="notice">Your refund is awaiting confirmation from the payment service.</p> : null;
 
   return <form className="card card-pad" onSubmit={submit} aria-label="Refund invoice payment">
     <div className="card-heading"><div><h2>Refund a payment</h2><p className="subtle" style={{ fontSize: ".84rem", margin: "4px 0 0" }}>Current balance {money(balanceCents, currency)}. Refunds are recorded in your account history and reopen the invoice balance.</p></div></div>
     {refundablePayments.length > 1 && <label className="field">Payment
       <select value={selected?.id ?? ""} onChange={(event) => { setPaymentId(event.target.value); setAmount(""); }}>
         {refundablePayments.map((payment) => <option key={payment.id} value={payment.id}>
-          {money(payment.amountCents - payment.refundedCents, currency)} remaining · {paymentMethodLabel(payment.method, payment.sourceType)}{payment.reference ? ` · ${payment.reference}` : ""}
+          {money(payment.amountCents - payment.refundedCents - (payment.pendingRefundCents ?? 0), currency)} remaining · {paymentMethodLabel(payment.method, payment.sourceType)}{payment.reference ? ` · ${payment.reference}` : ""}
         </option>)}
       </select>
     </label>}
@@ -98,6 +101,8 @@ export default function InvoiceRefund({
       <textarea maxLength={500} rows={2} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Add a note for your records" />
     </label>
     {error && <p className="notice notice-error" role="alert">{error}</p>}
-    <button className="btn btn-primary" type="submit" disabled={saving || !selected || maxCents <= 0}>{saving ? "Recording refund…" : "Record refund"}</button>
+    {notice && <p className="notice" role="status">{notice}</p>}
+    {(selected?.pendingRefundCents ?? 0) > 0 && <p role="status" className="notice">{money(selected!.pendingRefundCents, currency)} is awaiting confirmation from the payment service.</p>}
+    <button className="btn btn-primary" type="submit" disabled={saving || !selected || maxCents <= 0}>{saving ? "Submitting refund…" : selected?.method === "card" ? "Refund payment" : "Record refund"}</button>
   </form>;
 }

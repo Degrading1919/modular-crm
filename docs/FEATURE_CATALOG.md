@@ -36,6 +36,14 @@ Accepted behavior should also be represented in the appropriate authoritative pr
 - **Industry scope:** Core
 - **Dependencies:** Connector delivery webhooks, outbound-message identity, communication events, tenant-scoped suppression
 
+### Online invoice card payments
+
+- **State:** Accepted
+- **Problem:** Customers could not pay real invoice balances through a guided connected payment service.
+- **Behavior:** Owners enable a hosted Stripe Standard account without handling keys; customers use Pay now in the portal or eligible service invoice email. Full balance is the default, partial payment requires owner opt-in, and signed notifications reconcile receipts/balances/history once. Owners can request partial refunds, which are final only after processor confirmation. Local mocks exercise the complete hosted workflow without moving money.
+- **Industry scope:** Core
+- **Dependencies:** Payments capability, operator configuration, encrypted organization account binding, invoice authorization, notification/event dedupe, existing ledger/receipts and service messaging
+
 ### Automation engine
 
 - **State:** Accepted

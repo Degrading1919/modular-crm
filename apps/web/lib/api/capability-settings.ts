@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, desc, eq, exists, inArray, isNull, ne, sql, type SQL } from "drizzle-orm";
 import { CAPABILITY_LABELS, type CapabilityKey, type ConnectorManifest } from "@modular-crm/connectors";
 import { validateAutomationRule, type AutomationAction, type AutomationActionType, type AutomationRule } from "@modular-crm/automations";
-import { messagePurpose, type Condition } from "@modular-crm/config";
+import { messagePurpose, readServerConfig, type Condition } from "@modular-crm/config";
 import {
   automationRules, automationRuns, communicationEvents, connectorInstallations, customerContacts, customers, domainEvents,
   hasUsableFeature, jobAssignments, jobs, loadTenantCapabilities, organizationLocations, organizations, outboundMessages, tenants,
@@ -253,6 +253,7 @@ async function listConnections(actor: SessionActor): Promise<Response> {
   requirePermission(actor, "connectors.read");
   requireStaff(actor);
   const registry = await hydrateTenantConnectors(actor.tenantId);
+  const mockPaymentsAvailable = readServerConfig(process.env).mockConnectors;
   const installations = await getDb().select().from(connectorInstallations).where(eq(connectorInstallations.tenantId, actor.tenantId));
   const newestByKey = new Map<string, typeof installations[number]>();
   for (const installation of installations) {
@@ -272,7 +273,8 @@ async function listConnections(actor: SessionActor): Promise<Response> {
         capabilityKey,
         status: connectorStatus,
         health: stored?.status === "connected" ? runtime.health : stored?.status === "expired" || stored?.status === "needs_attention" ? "degraded" : "unavailable",
-        mode: manifest.availability === "mock_complete" ? "mock" : manifest.authType === "oauth2" && manifest.availability === "credentials_ready" ? "oauth_setup" : manifest.availability === "credentials_ready" ? "live_setup" : "local",
+        mode: manifest.guidedPayments ? "online_setup" : manifest.availability === "mock_complete" ? "mock" : manifest.authType === "oauth2" && manifest.availability === "credentials_ready" ? "oauth_setup" : manifest.availability === "credentials_ready" ? "live_setup" : "local",
+        ...(manifest.guidedPayments || (manifest.key === "mock-payments" && mockPaymentsAvailable) ? { onlinePayments: true } : {}),
         environment: manifest.availability === "mock_complete" ? "test" : manifest.availability === "credentials_ready" ? "production" : "local",
         ...(manifest.authType === "oauth2" && manifest.availability === "credentials_ready" ? {
           oauthAvailable: registry.isOAuthAvailable?.(manifest.key) ?? false,
@@ -300,6 +302,7 @@ async function changeConnection(request: Request, path: string[], actor: Session
   const registry = getRegistry();
   const manifest = registry.listCatalog().find((candidate) => candidate.key === connectorKey);
   if (!manifest || manifest.availability === "planned" || manifest.platformManaged) throw new DomainError("NOT_FOUND", "Connection is not available yet.", 404);
+  if (manifest.guidedPayments) throw new DomainError("VALIDATION_ERROR", "Use online payment setup to manage this connection.", 422);
   if (action !== "disconnect") await assertConnectorEntitlement(actor.tenantId, manifest);
   const db = getDb();
   if (manifest.authType === "oauth2") {

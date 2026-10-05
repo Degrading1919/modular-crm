@@ -11,6 +11,15 @@ const healthy = {
 };
 
 describe("production startup configuration", () => {
+  it("hides unconfigured payments and validates complete matching Stripe mode without leaking secrets", () => {
+    expect(readServerConfig(healthy).stripePayments).toBeUndefined();
+    const configured = { ...healthy, PAYMENTS_STRIPE_SECRET_KEY: "sk_test_fixture", PAYMENTS_STRIPE_WEBHOOK_SECRET: "whsec_fixture", PAYMENTS_STRIPE_MODE: "test" };
+    expect(readServerConfig(configured).stripePayments?.mode).toBe("test");
+    for (const changed of [{ PAYMENTS_STRIPE_WEBHOOK_SECRET: undefined }, { PAYMENTS_STRIPE_MODE: "live" }, { PAYMENTS_STRIPE_SECRET_KEY: "sk_live_private" }]) {
+      expect(() => readServerConfig({ ...configured, ...changed })).toThrow(/PAYMENTS_STRIPE/);
+    }
+    expect(() => readServerConfig({ ...configured, NODE_ENV: "test", PAYMENTS_STRIPE_SECRET_KEY: "sk_live_private", PAYMENTS_STRIPE_MODE: "live" })).toThrow(/Live payment/);
+  });
   it("accepts explicit production settings and freezes the server-only result", () => {
     const config = readServerConfig(healthy);
     expect(config).toMatchObject({ environment: "production", mockConnectors: false, publicBaseUrl: healthy.PUBLIC_BASE_URL, workerHealthPort: 3001 });

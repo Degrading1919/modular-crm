@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-05 — Hosted invoice payments are account-bound and webhook-confirmed
+
+- **Status:** Accepted
+- **Area:** Connectors / Product / Implementation
+- **Decision:** Extend provider-neutral payments with guided onboarding, hosted invoice checkout, authenticated raw notification parsing and partial refunds; implement Stripe Standard direct Checkout behind operator-owned configuration and local signed mock parity. Bind accounts to the invoice business/tenant, calculate collectible amounts server-side, and require verified deduplicated notifications before recording collected or refunded money. Preserve pending refund reservations, account bindings for historical confirmations, canonical balance/receipt/report semantics and owner opt-in for partial customer payments.
+- **Rationale:** A redirect or API acceptance is not payment proof; persistent account, request and event identity protects scope and replay while owners never manage keys or card data.
+- **Authoritative doc:** `docs/CONNECTOR_SYSTEM.md`, `docs/DEPLOYMENT.md`, `docs/FEATURE_CATALOG.md`
+
 ## 2026-10-05 — Essential service email and shared-sender protection
 
 - **Status:** Accepted

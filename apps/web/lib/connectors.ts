@@ -1,7 +1,8 @@
 import path from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import { connectorInstallations, type Database } from "@modular-crm/db";
-import { ConnectorError, ConnectorRegistry, createMockConnectorRegistry, type CapabilityKey, type InstallationView } from "@modular-crm/connectors";
+import { ConnectorError, ConnectorRegistry, createMockConnectorRegistry, createStripePaymentDefinition, type CapabilityKey, type InstallationView } from "@modular-crm/connectors";
+import { readServerConfig } from "@modular-crm/config";
 import { DomainError } from "@modular-crm/domain";
 import { createLocalStorageDefinition } from "@modular-crm/connectors/local-storage";
 import { createS3StorageDefinition } from "@modular-crm/connectors/s3-storage";
@@ -14,6 +15,8 @@ const globalForConnectors = globalThis as typeof globalThis & { modularRegistry?
 export function getRegistry() {
   if (!globalForConnectors.modularRegistry) {
     const registry = createMockConnectorRegistry({ includePlannedProviders: true });
+    const stripe = readServerConfig(process.env).stripePayments;
+    if (stripe) registry.register(createStripePaymentDefinition(stripe));
     const objectStorageValues = [process.env.OBJECT_STORAGE_ENDPOINT, process.env.OBJECT_STORAGE_BUCKET, process.env.OBJECT_STORAGE_ACCESS_KEY, process.env.OBJECT_STORAGE_SECRET_KEY];
     const configuredStorageValues = objectStorageValues.filter(Boolean).length;
     if (configuredStorageValues > 0 && configuredStorageValues < objectStorageValues.length) throw new Error("Object storage configuration is incomplete");
@@ -41,6 +44,13 @@ export async function hydrateTenantConnectors(tenantId: string) {
   for (const installation of installations) {
     if (installation.status !== "connected") continue;
     const manifest = registry.getDefinition(installation.connectorKey)?.manifest;
+    if (manifest?.guidedPayments) {
+      if (installation.credentialReference) {
+        try { registry.connectGuidedPayments(tenantId, installation.connectorKey, openConnectorCredentials(installation.credentialReference, { tenantId, installationId: installation.id, connectorKey: installation.connectorKey })); }
+        catch { registry.disconnect(tenantId, installation.connectorKey); }
+      }
+      continue;
+    }
     if (manifest?.authType === "oauth2" && manifest.availability === "credentials_ready") {
       try { await (await import("./api/connector-oauth")).hydrateOAuthInstallation(tenantId, installation.id); }
       catch { registry.disconnect(tenantId, installation.connectorKey); }

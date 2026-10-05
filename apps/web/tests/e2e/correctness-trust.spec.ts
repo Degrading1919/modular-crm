@@ -134,6 +134,7 @@ test("record details, portal estimates and payment confirmation use the record c
   await page.route("**/api/v1/portal/invoices", (route) => route.fulfill({ json: { items: [{
     id: "currency-invoice", number: "CURRENCY-1", status: "issued", currency: "EUR",
     totalCents: 12345, paidCents: 345, balanceCents: 12000, openBalanceCents: 12000,
+    demoPaymentAvailable: true,
   }] } }));
   await page.route("**/api/v1/portal/estimates", (route) => route.fulfill({ json: { items: [{
     id: "currency-estimate", number: "CURRENCY-2", status: "sent", currency: "EUR", totalCents: 12345,

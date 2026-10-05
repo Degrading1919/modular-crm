@@ -14,6 +14,7 @@ export function paymentMethodLabel(method: string | null | undefined, source?: s
     case "cash": return "Cash";
     case "check": return "Check";
     case "card_external": return "Card (taken outside the app)";
+    case "card": return source === "mock" ? "Card (test payment)" : "Card";
     case "other": return "Other";
     case "test": case "mock": return "Test payment";
     default: return source === "mock" ? "Test payment" : "Method not recorded";

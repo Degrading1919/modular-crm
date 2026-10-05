@@ -60,6 +60,8 @@ export type ConnectorManifest = Readonly<{
   availability: "mock_complete" | "local_ready" | "credentials_ready" | "planned";
   /** Environment-owned integration; never shown as an owner-controlled marketplace connection. */
   platformManaged?: true;
+  /** Hosted owner onboarding; no owner-entered credentials. */
+  guidedPayments?: true;
   /** Explicitly enables tenant-owned API key/service-account credential setup. */
   credentialSetup?: true;
   /** Server-enforced credential fields that the owner setup form may submit. */
@@ -85,10 +87,33 @@ export class ConnectorError extends Error {
 }
 
 export interface PaymentCapability {
+  online: OnlinePaymentCapability;
   createPaymentMethod(input: { customerId: string; testToken?: string }): Promise<{ reference: string; label: string }>;
   charge(input: { paymentMethodReference: string; amountMinor: number; currency: string; idempotencyKey: string }): Promise<{ reference: string; status: "succeeded" | "failed"; amountMinor: number; currency: string }>;
   refund(input: { paymentReference: string; amountMinor: number; idempotencyKey: string }): Promise<{ reference: string; paymentReference: string; amountMinor: number; status: "succeeded" }>;
   getPayment(reference: string): Promise<{ reference: string; status: "succeeded" | "failed"; amountMinor: number; currency: string } | undefined>;
+}
+/** Hosted payment processing is separate from staff-recorded/offline payments. */
+export type OnlinePaymentEvent = Readonly<{
+  id: string;
+  accountReference: string;
+  type: "payment.succeeded" | "payment.failed" | "payment.refunded" | "refund.failed";
+  paymentReference: string;
+  sessionReference?: string;
+  sessionRequestReference?: string;
+  refundReference?: string;
+  refundRequestReference?: string;
+  amountMinor: number;
+  currency: string;
+  feeMinor?: number;
+}>;
+export interface OnlinePaymentCapability {
+  startOnboarding(input: { returnUrl: string; refreshUrl: string; idempotencyKey: string; saveAccount?: (reference: string) => Promise<void> }): Promise<{ accountReference: string; url: string }>;
+  accountStatus(): Promise<{ accountReference: string; chargesEnabled: boolean; detailsNeeded: boolean }>;
+  createHostedPage(input: { invoiceReference: string; requestReference?: string; amountMinor: number; currency: string; idempotencyKey: string; returnUrl: string; cancelUrl: string; expiresAt: number }): Promise<{ reference: string; url: string }>;
+  expireHostedPage(reference: string): Promise<void>;
+  verifyWebhook(input: { rawBody: string; signature: string; now?: Date }): OnlinePaymentEvent | null;
+  requestRefund(input: { paymentReference: string; amountMinor: number; idempotencyKey: string; requestReference: string }): Promise<{ reference: string; status: "pending" }>;
 }
 /** A provider may accept a message without returning a provider-side message identifier. */
 export type EmailInput = { to: string; subject: string; body: string; idempotencyKey: string; html?: string; replyTo?: string; unsubscribeUrl?: string };

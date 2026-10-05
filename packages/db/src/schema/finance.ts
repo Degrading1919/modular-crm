@@ -41,6 +41,7 @@ export const payments = pgTable("payments", {
   status: status(), sourceType: text("source_type").notNull(), connectorInstallationId: uuid("connector_installation_id"),
   recordedMethod: text("recorded_method"), reference: text("reference"),
   providerReference: text("provider_reference"), amountMinor: money("amount_minor"), currency: currency(),
+  feeMinor: bigint("fee_minor", { mode: "bigint" }),
   receivedAt: timestamp("received_at", { withTimezone: true }), failureCode: text("failure_code"), failureMessage: text("failure_message"),
   idempotencyKey: text("idempotency_key").notNull(), recordedByActorType: text("recorded_by_actor_type").notNull(),
   recordedByActorId: text("recorded_by_actor_id"),
@@ -49,7 +50,7 @@ export const payments = pgTable("payments", {
   foreignKey({ columns: [t.tenantId, t.customerId], foreignColumns: [customers.tenantId, customers.id], name: "payments_customer_tenant_fk" }),
   index("payments_customer_idx").on(t.tenantId, t.customerId), index("payments_status_received_idx").on(t.tenantId, t.status, t.receivedAt),
   check("payments_amount_nonnegative", sql`${t.amountMinor} >= 0`),
-  check("payments_recorded_method_valid", sql`${t.recordedMethod} is null or ${t.recordedMethod} in ('cash', 'check', 'card_external', 'other', 'test')`),
+  check("payments_recorded_method_valid", sql`${t.recordedMethod} is null or ${t.recordedMethod} in ('cash', 'check', 'card_external', 'card', 'other', 'test')`),
 ]);
 
 export const paymentAllocations = pgTable("payment_allocations", {

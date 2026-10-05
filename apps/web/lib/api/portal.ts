@@ -10,6 +10,7 @@ import { normalized, rows, uuidArray } from "./sql";
 import { estimateAction, invoiceAction } from "./workflows";
 import { businessTimeZone, openInvoiceBalance, upcomingJob } from "./read-facts";
 import { balanceTotals } from "../presentation";
+import { readServerConfig } from "@modular-crm/config";
 
 function customerActor(actor: SessionActor): asserts actor is SessionActor & { kind: "customer"; customerIds: Set<string> } {
   if (actor.kind !== "customer") throw new DomainError("FORBIDDEN", "Customer access is required.", 403);
@@ -163,8 +164,17 @@ async function portalList(actor: SessionActor, resource: string): Promise<Respon
       where e.tenant_id=${actor.tenantId} and ${customerLocationPredicate(actor, "e.customer_id", "e.service_location_id")} and e.status<>'draft'
       order by e.created_at desc`); break;
     case "invoices": items = await rows(sql`select i.*,i.invoice_number as number,i.total_minor as total_cents,i.paid_minor as paid_cents,
-      i.balance_minor as balance_cents,${openInvoiceBalance()} as open_balance_cents,i.due_at as due_date
-      from invoices i where i.tenant_id=${actor.tenantId} and i.customer_id=any(${uuidArray(customerIds)}) and i.status<>'draft'
+      i.balance_minor as balance_cents,${openInvoiceBalance()} as open_balance_cents,i.due_at as due_date,
+      (opa.charges_enabled=true and ci.status='connected' and
+        ((opa.provider='mock-payments' and ${readServerConfig(process.env).mockConnectors}) or
+         (opa.provider='stripe-online-payments' and ${Boolean(readServerConfig(process.env).stripePayments)}))) as online_payment_available,
+      coalesce(opa.allow_partial,false) as allow_partial_payment,
+      ${readServerConfig(process.env).mockConnectors} as demo_payment_available,
+      (select ops.failure_message from online_payment_sessions ops where ops.tenant_id=i.tenant_id and ops.invoice_id=i.id
+        order by ops.created_at desc,ops.id desc limit 1) as payment_note
+      from invoices i left join online_payment_accounts opa on opa.tenant_id=i.tenant_id and opa.organization_id=i.organization_id
+      left join connector_installations ci on ci.tenant_id=opa.tenant_id and ci.id=opa.installation_id
+      where i.tenant_id=${actor.tenantId} and i.customer_id=any(${uuidArray(customerIds)}) and i.status<>'draft'
         and ${invoiceLocationPredicate(actor, "i")}
       order by i.created_at desc`); break;
     case "payments": items = await rows(sql`select p.id,p.status,p.amount_minor,p.currency,p.received_at,coalesce(p.recorded_method,p.source_type) as method,p.reference,
