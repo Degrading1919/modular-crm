@@ -1,6 +1,10 @@
 import { expect, it } from "vitest";
 import { sealSecret } from "@modular-crm/domain";
-import { environmentSecretResolver } from "./index.js";
+import { environmentSecretResolver, startWorker } from "./index.js";
+
+it("refuses unsafe production settings before starting any database or job loop", async () => {
+  await expect(startWorker({ NODE_ENV: "production" })).rejects.toThrow(/DATABASE_URL.*BETTER_AUTH_SECRET.*WEBHOOK_SECRET_ENCRYPTION_KEY.*CONNECTOR_CREDENTIAL_ENCRYPTION_KEY/);
+});
 
 it("resolves webhook secrets from server-only references", async () => {
   const resolve = environmentSecretResolver({ WEBHOOK_SECRETS_JSON: '{"subscription-1":"test-secret"}', WEBHOOK_TEST_SECRET: "local-secret" });
