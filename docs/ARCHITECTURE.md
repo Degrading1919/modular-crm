@@ -95,6 +95,16 @@ Current preferred direction:
 
 The production hosting provider should remain replaceable.
 
+### Production startup and health contract
+
+Web Node startup (Next.js instrumentation, before requests) and worker startup each validate `readServerConfig` once. Production refuses missing database configuration, missing/development/short authentication signing secrets, invalid 32-byte base64url encryption keys, mock connectors or mock DNS verification, missing/non-HTTPS application/auth/public URLs, and development Mailpit mail transport. One aggregate startup message names all invalid settings without printing values. Builds compile without requiring deployment-only settings; production runtime never inherits that exemption.
+
+Production mail uses explicit `SMTP_HOST`, `SMTP_PORT`, `SMTP_FROM` and optional paired `SMTP_USER`/`SMTP_PASSWORD`; port 465 may use `SMTP_SECURE=true`, otherwise STARTTLS is required. Development retains Mailpit defaults. `LOCAL_SMOKE_TEST=true` permits only loopback HTTP URLs for an explicitly local production smoke test, not missing URLs, mock behavior, Mailpit or unsafe secrets. Never use this exception in a deployed container.
+
+Both processes expose unauthenticated `GET /api/health/live` (200, no database work) and `GET /api/health/ready` (200 or 503). Responses contain only a generic status and are not cached. Readiness uses a dedicated PostgreSQL connection with one-second connect and query/statement timeouts (allow a load-balancer timeout of at least three seconds) and verifies every migration shipped in the application against the Drizzle ledger. A missing ledger or any missing migration is unavailable; probes never migrate or alter data. The worker additionally inspects actual active pg-boss polling workers for every registered application queue; initial startup, removed/stopping workers and shutdown are not ready. Its HTTP listener uses `WORKER_HEALTH_PORT` (default 3001), bound on the container interface; web uses the normal app port. Use liveness for process restart and readiness for traffic/operational availability, not liveness to test database health. Keep these probes internal to container/load-balancer networking where possible.
+
+Malformed PostgreSQL input casts (`22P02`, including nested Drizzle causes) are normalized centrally to a plain 400 validation response. Existing explicit UUID validation may return 404 instead. Authentication, capability, tenant/location checks and transaction atomicity remain in place; neither SQL details nor input values appear in the error response. Other database faults remain server errors, not fabricated not-found responses.
+
 ## Local development
 
 The application should boot locally without requiring real external accounts.

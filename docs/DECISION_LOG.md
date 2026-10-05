@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-05 — Production startup fails closed; readiness observes database and worker state
+
+- **Status:** Accepted
+- **Area:** Architecture / Implementation
+- **Decision:** Validate the existing shared server configuration once before web/worker runtime starts; aggregate unsafe production settings without secret values. Provide unauthenticated generic liveness and bounded database/migration readiness in both apps, with worker readiness requiring actual job polling. Normalize malformed PostgreSQL input casts centrally to 400 while preserving explicit 404 checks, authorization and other error classifications.
+- **Rationale:** Unused startup validation, inherited local mail defaults, absent health probes and unhandled UUID casts prevented a reliable production configuration boundary. A loopback-only HTTP smoke exception does not bypass the remaining production protections.
+- **Authoritative doc:** `docs/ARCHITECTURE.md`
+
 ## 2026-10-05 — Export discovery is evaluated once; field tests observe confirmed sync
 
 - **Status:** Accepted

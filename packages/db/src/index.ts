@@ -4,3 +4,4 @@ export * from "./tenant-repository.ts";
 export * from "./seed.ts";
 export * from "./capability-access.ts";
 export * from "./initial-capability-catalog.ts";
+export * from "./health.ts";

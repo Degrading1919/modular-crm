@@ -103,17 +103,71 @@ export type ServerConfig = Readonly<{
   storageEndpoint?: string;
   storageBucket: string;
   publicBaseUrl: string;
+  authBaseUrl: string;
+  appBaseUrl: string;
+  localSmokeTest: boolean;
+  workerHealthPort: number;
+  smtp: Readonly<{ host: string; port: number; secure: boolean; user?: string; password?: string; from: string }>;
 }>;
+
+export const DEVELOPMENT_AUTH_SECRET = "dev-only-replace-before-deploying-0123456789";
+
+function validEncryptionKey(value: string | undefined): boolean {
+  if (!value) return false;
+  const bytes = Buffer.from(value, "base64url");
+  return bytes.length === 32 && bytes.toString("base64url") === value;
+}
+
+function isLoopback(host: string): boolean {
+  return host === "localhost" || host === "[::1]" || host === "::1"
+    || (/^127\.(?:\d{1,3}\.){2}\d{1,3}$/.test(host) && host.split(".").every((part) => Number(part) <= 255));
+}
 
 /** Server-only startup settings; never serialize the returned object to a browser payload. */
 export function readServerConfig(env: Record<string, string | undefined>): ServerConfig {
   const environment = env.NODE_ENV === "production" ? "production" : env.NODE_ENV === "test" ? "test" : "development";
+  const problems: string[] = [];
   const databaseUrl = env.DATABASE_URL?.trim() || undefined;
-  if (environment === "production" && !databaseUrl) throw new Error("DATABASE_URL is required in production");
+  const production = environment === "production";
+  const localSmokeTest = env.LOCAL_SMOKE_TEST === "true";
+  if (env.LOCAL_SMOKE_TEST && !["true", "false"].includes(env.LOCAL_SMOKE_TEST)) problems.push("LOCAL_SMOKE_TEST must be true or false");
+  if (production && !databaseUrl) problems.push("DATABASE_URL is required");
+  if (production && (!env.BETTER_AUTH_SECRET || env.BETTER_AUTH_SECRET.trim().length < 32 || env.BETTER_AUTH_SECRET.trim() === DEVELOPMENT_AUTH_SECRET)) problems.push("BETTER_AUTH_SECRET must be a unique secret of at least 32 characters, not the development value");
+  if (production) for (const key of ["WEBHOOK_SECRET_ENCRYPTION_KEY", "CONNECTOR_CREDENTIAL_ENCRYPTION_KEY"] as const) {
+    if (!validEncryptionKey(env[key])) problems.push(`${key} must be a base64url-encoded 32-byte key`);
+  }
   const rawMock = env.MOCK_CONNECTORS;
-  if (rawMock && rawMock !== "true" && rawMock !== "false") throw new Error("MOCK_CONNECTORS must be true or false");
+  if (rawMock && rawMock !== "true" && rawMock !== "false") problems.push("MOCK_CONNECTORS must be true or false");
   const mockConnectors = rawMock ? rawMock === "true" : environment !== "production";
-  const publicBaseUrl = env.PUBLIC_BASE_URL?.trim() || "http://localhost:3000";
-  if (!/^https?:\/\//.test(publicBaseUrl)) throw new Error("PUBLIC_BASE_URL must be an HTTP URL");
-  return Object.freeze({ environment, databaseUrl, mockConnectors, storageEndpoint: env.STORAGE_ENDPOINT?.trim() || undefined, storageBucket: env.STORAGE_BUCKET?.trim() || "modular-crm", publicBaseUrl });
+  if (production && mockConnectors) problems.push("MOCK_CONNECTORS must not be true in production");
+  if (production && env.DOMAIN_VERIFICATION_MODE === "mock") problems.push("DOMAIN_VERIFICATION_MODE must not be mock in production");
+  const baseUrl = (key: string): string => {
+    const value = env[key]?.trim();
+    if (production && !value) problems.push(`${key} is required`);
+    const result = value || "http://localhost:3000";
+    try {
+      const url = new URL(result);
+      const localHttp = localSmokeTest && url.protocol === "http:" && isLoopback(url.hostname);
+      if (!url.hostname || url.username || url.password || !["http:", "https:"].includes(url.protocol) || (production && url.protocol !== "https:" && !localHttp)) problems.push(`${key} must be an HTTPS URL (local smoke tests may use loopback HTTP)`);
+    } catch { problems.push(`${key} must be a valid HTTP${production ? "S" : ""} URL`); }
+    return result;
+  };
+  const publicBaseUrl = baseUrl("PUBLIC_BASE_URL");
+  const authBaseUrl = baseUrl("BETTER_AUTH_URL");
+  const appBaseUrl = baseUrl("APP_BASE_URL");
+  const host = env.SMTP_HOST?.trim() || env.MAILPIT_SMTP_HOST?.trim() || "localhost";
+  const port = Number(env.SMTP_PORT || env.MAILPIT_SMTP_PORT || (production ? 587 : 1025));
+  const secure = env.SMTP_SECURE === "true";
+  const from = env.SMTP_FROM?.trim() || "Modular CRM <no-reply@localhost>";
+  if (!Number.isInteger(port) || port < 1 || port > 65535) problems.push("SMTP_PORT must be a valid port");
+  if (env.SMTP_SECURE && !["true", "false"].includes(env.SMTP_SECURE)) problems.push("SMTP_SECURE must be true or false");
+  if (production && (!env.SMTP_HOST?.trim() || isLoopback(host.toLowerCase()) || /mailpit/i.test(host) || port === 1025)) problems.push("SMTP_HOST/SMTP_PORT must use a production mail service, not Mailpit");
+  if (production && (!env.SMTP_FROM?.trim() || /@localhost\b/i.test(from))) problems.push("SMTP_FROM must be a production sender address");
+  if (Boolean(env.SMTP_USER) !== Boolean(env.SMTP_PASSWORD)) problems.push("SMTP_USER and SMTP_PASSWORD must be supplied together");
+  const workerHealthPort = Number(env.WORKER_HEALTH_PORT || 3001);
+  if (!Number.isInteger(workerHealthPort) || workerHealthPort < 1 || workerHealthPort > 65535) problems.push("WORKER_HEALTH_PORT must be a valid port");
+  if (problems.length) throw new Error(`Invalid server configuration: ${problems.join("; ")}.`);
+  return Object.freeze({ environment, databaseUrl, mockConnectors, publicBaseUrl, authBaseUrl, appBaseUrl, localSmokeTest, workerHealthPort,
+    smtp: Object.freeze({ host, port, secure, user: env.SMTP_USER, password: env.SMTP_PASSWORD, from }),
+    storageEndpoint: env.STORAGE_ENDPOINT?.trim() || undefined, storageBucket: env.STORAGE_BUCKET?.trim() || "modular-crm" });
 }

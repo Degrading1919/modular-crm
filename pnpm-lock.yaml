@@ -117,6 +117,9 @@ importers:
       '@modular-crm/automations':
         specifier: workspace:*
         version: link:../../packages/automations
+      '@modular-crm/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@modular-crm/connectors':
         specifier: workspace:*
         version: link:../../packages/connectors

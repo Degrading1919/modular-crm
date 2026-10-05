@@ -6,6 +6,7 @@
   "dependencies": {
     "@modular-crm/automations": "workspace:*",
     "@modular-crm/connectors": "workspace:*",
+    "@modular-crm/config": "workspace:*",
     "@modular-crm/db": "workspace:*",
     "@modular-crm/domain": "workspace:*",
     "drizzle-orm": "0.45.3",

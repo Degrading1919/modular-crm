@@ -1,11 +1,13 @@
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { PgBoss } from "pg-boss";
+import { readServerConfig } from "@modular-crm/config";
 import { closeDatabase, createDatabase, type Database } from "@modular-crm/db";
 import { isSecretEnvelope, openSecret } from "@modular-crm/domain";
 import { createMockConnectorRegistry } from "@modular-crm/connectors";
 import { enqueuePendingAutomationRuns, processAutomationRun } from "./automations-db.js";
 import { processDomainEvent, publishPendingDomainEvents } from "./events-db.js";
+import { jobLoopRunning, startHealthServer } from "./health.js";
 import { enqueuePendingMessages, processOutboundMessage } from "./messages-db.js";
 import { QUEUES, registerWorkerQueues, type AutomationRunJob, type DomainEventJob, type OutboundMessageJob, type RecurringGenerationJob, type WebhookDeliveryJob } from "./queues.js";
 import { generateRecurringJobs } from "./recurring-db.js";
@@ -60,10 +62,13 @@ export async function registerWorkerHandlers(db: Database, boss: PgBoss, resolve
 }
 
 export async function startWorker(env: Record<string, string | undefined> = process.env): Promise<{ stop: () => Promise<void>; boss: PgBoss; db: Database }> {
-  const connectionString = env.DATABASE_URL;
+  const config = readServerConfig(env);
+  const connectionString = config.databaseUrl;
   if (!connectionString) throw new Error("DATABASE_URL is required for the background worker");
   const db = createDatabase(connectionString);
   const boss = new PgBoss({ connectionString });
+  let stopping = false;
+  let health: Awaited<ReturnType<typeof startHealthServer>> | undefined;
   boss.on("error", (error) => log("queue.error", { message: error.message }));
   try {
     await boss.start();
@@ -73,12 +78,15 @@ export async function startWorker(env: Record<string, string | undefined> = proc
     await boss.schedule(QUEUES.recurringGeneration, "0 3 * * *", {}, { tz: "UTC" });
     await boss.send(QUEUES.publishOutbox, {});
     await boss.send(QUEUES.recurringGeneration, {});
+    health = await startHealthServer({ port: config.workerHealthPort, connectionString, isRunning: () => !stopping && jobLoopRunning(boss) });
     const outboxSweep = setInterval(() => {
       void boss.send(QUEUES.publishOutbox, {}).catch(() => log("outbox.enqueue_failed"));
     }, 15_000);
     log("started", { queues: Object.values(QUEUES) });
-    return { boss, db, stop: async () => { clearInterval(outboxSweep); await boss.stop(); await closeDatabase(db); log("stopped"); } };
+    return { boss, db, stop: async () => { stopping = true; clearInterval(outboxSweep); await health?.stop(); await boss.stop(); await closeDatabase(db); log("stopped"); } };
   } catch (error) {
+    stopping = true;
+    await health?.stop().catch(() => undefined);
     await boss.stop().catch(() => undefined);
     await closeDatabase(db);
     throw error;
