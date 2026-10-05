@@ -408,12 +408,13 @@ function RouteMap({ stops }: { stops: Entity[] }) {
 
 function Connections({ role, permissions }: { role: string; permissions?: string[] }) {
   const result = useResource<{ items: Entity[] }>("/connections", { items: [] });
+  const { loading, reload } = result;
   const [error, setError] = useState(""); const [notice, setNotice] = useState(""); const [busy, setBusy] = useState("");
   const items = unwrapItems(result.data);
   const groups = Array.from(new Set(items.map((item) => item.capability || "Other")));
   const mayManageCredentials = role === "owner" && Boolean(permissions?.includes("connectors.configure"));
   useEffect(() => {
-    if (result.loading || typeof window === "undefined") return;
+    if (loading || typeof window === "undefined") return;
     const query = new URLSearchParams(window.location.search);
     const key = query.get("connection");
     const status = query.get("status");
@@ -425,8 +426,8 @@ function Connections({ role, permissions }: { role: string; permissions?: string
     query.delete("connection"); query.delete("status");
     const search = query.toString();
     window.history.replaceState(window.history.state, "", `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`);
-    result.reload();
-  }, [result.loading, items, result.reload]);
+    reload();
+  }, [loading, items, reload]);
   async function change(item: Entity, action: "connect" | "disconnect" | "reconnect") {
     if (action === "disconnect" && !window.confirm(`Disconnect ${item.name}? Existing business records will stay in Modular.`)) return;
     const isLiveSetup = item.mode === "live_setup";
