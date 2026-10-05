@@ -105,6 +105,7 @@ test("owner publishes an ordered route and technician completes the field workda
     const fieldRoute = (await fieldRouteResponse.json()).item;
     expect(fieldRoute.route.status).toBe("published");
     expect(fieldRoute.jobs.map((job: { id: string }) => job.id)).toEqual(orderedJobIds);
+    expect(fieldRoute.jobs.every((job: { status: string }) => job.status === "dispatched")).toBe(true);
 
     await field.getByRole("navigation", { name: "Field navigation" }).getByRole("link", { name: "Time" }).click();
     await field.getByRole("button", { name: "Clock in" }).click();
@@ -120,7 +121,15 @@ test("owner publishes an ordered route and technician completes the field workda
     await expect(field.getByText("Before you begin")).toBeVisible();
     await expect(field.getByText("Access", { exact: true })).toBeVisible();
     await expect(field.getByText(jobs.find((job) => job.id === orderedJobIds[0])!.instruction)).toBeVisible();
+    await field.getByRole("button", { name: "On my way" }).click();
+    await expect(field.getByText(/^En route$/i)).toBeVisible();
+    await expect(field.getByRole("button", { name: "On my way" })).toHaveCount(0);
     await field.getByRole("button", { name: "Start job" }).click();
+    await expect(field.getByText(/^In progress$/i)).toBeVisible();
+    await field.getByRole("button", { name: "Pause job" }).click();
+    await expect(field.getByText(/^Paused$/i)).toBeVisible();
+    await expect(field.getByRole("button", { name: /Complete job/ })).toHaveCount(0);
+    await field.getByRole("button", { name: "Resume job" }).click();
     await expect(field.getByText(/^In progress$/i)).toBeVisible();
     const completionNote = `Completed field checklist ${unique}`;
     await field.getByLabel("What should the office know?").fill(completionNote);
@@ -128,6 +137,7 @@ test("owner publishes an ordered route and technician completes the field workda
     await field.getByLabel(/I left gates and access points secure/).check();
     await field.getByRole("button", { name: /Complete job/ }).click();
     await expect(field.getByText(/^Completed$/i)).toBeVisible();
+    await expect(field.getByRole("button", { name: /Start job|On my way|Pause job|Resume job|Can’t complete|Complete job/ })).toHaveCount(0);
 
     await field.goto(`/field/job/${orderedJobIds[1]}`);
     await expect(field.getByText("Before you begin")).toBeVisible();

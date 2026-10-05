@@ -3,7 +3,7 @@ import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   breaks, customerAssets, files, fileLinks, formResponses, jobAssignments, jobs, memberships, mileageRecords,
-  notes, organizationLocations, organizations, routeOptimizationRuns, routePlans, routeStops, serviceLocations, shifts, tenants, ticketStatusDefinitions,
+  notes, organizationLocations, organizations, routeOptimizationRuns, routePlans, routeStops, serviceLocations, shifts, tenants, ticketStatusDefinitions, jobStatusEvents,
   ticketTypeDefinitions, tickets, timeEntries,
 } from "@modular-crm/db";
 import { assertTransition, DomainError, requirePermission } from "@modular-crm/domain";
@@ -131,18 +131,40 @@ async function mutateRoute(request: Request, actor: SessionActor, id: string, ac
   if (!route || !locationAllowed(actor, route.organizationLocationId)) throw new DomainError("NOT_FOUND", "Route not found.", 404);
   const stops = await db.select().from(routeStops).where(and(eq(routeStops.tenantId, actor.tenantId), eq(routeStops.routePlanId, id))).orderBy(routeStops.sequence);
   if (action === "publish") {
-    assertTransition("route", route.status, "published");
-    if (!stops.length) throw new DomainError("VALIDATION_ERROR", "Add stops before publishing.", 422);
     await db.transaction(async (tx) => {
+      const [currentRoute] = await tx.select().from(routePlans).where(and(eq(routePlans.id, id), eq(routePlans.tenantId, actor.tenantId))).for("update");
+      if (!currentRoute) throw new DomainError("NOT_FOUND", "Route not found.", 404);
+      assertTransition("route", currentRoute.status, "published");
+      const currentStops = await tx.select().from(routeStops).where(and(eq(routeStops.tenantId, actor.tenantId), eq(routeStops.routePlanId, id))).for("update");
+      if (!currentStops.length) throw new DomainError("VALIDATION_ERROR", "Add stops before publishing.", 422);
+      const stopJobs = await tx.select().from(jobs).where(and(eq(jobs.tenantId, actor.tenantId), sql`${jobs.id} = any(${uuidArray(currentStops.map((stop) => stop.jobId))})`)).orderBy(jobs.id).for("update");
+      for (const job of stopJobs) {
+        const [assignment] = await tx.select({ id: jobAssignments.id }).from(jobAssignments).where(and(
+          eq(jobAssignments.tenantId, actor.tenantId), eq(jobAssignments.jobId, job.id), eq(jobAssignments.membershipId, currentRoute.membershipId), isNull(jobAssignments.removedAt),
+        )).for("update");
+        // Keep this route's inactive stops as history; re-publication must neither
+        // reactivate them nor strand the remaining work after optimization.
+        const ownPublishedStop = job.assignedRouteId === id && ["dispatched", "en_route", "in_progress", "paused", "completed", "skipped", "canceled", "missed", "needs_return"].includes(job.status);
+        if (!assignment || job.organizationId !== actor.organizationId || job.organizationLocationId !== currentRoute.organizationLocationId ||
+          !locationAllowed(actor, job.organizationLocationId) || job.scheduledDate !== currentRoute.routeDate ||
+          (job.status !== "scheduled" && !ownPublishedStop)) {
+          throw new DomainError("CONFLICT", "A route stop changed. Review its date, assignment and status before publishing.", 409);
+        }
+        if (job.status === "scheduled") assertTransition("job", job.status, "dispatched");
+      }
+      if (stopJobs.length !== currentStops.length) throw new DomainError("CONFLICT", "A route stop is no longer available. Review the route before publishing.", 409);
       await tx.update(routePlans).set({ status: "published", publishedAt: new Date(), updatedAt: new Date() }).where(and(eq(routePlans.id, id), eq(routePlans.tenantId, actor.tenantId)));
       const dispatched = await tx.update(jobs).set({ status: "dispatched", assignedRouteId: id, updatedAt: new Date() })
-        .where(and(eq(jobs.tenantId, actor.tenantId), sql`${jobs.id} = any(${uuidArray(stops.map((stop) => stop.jobId))})`, eq(jobs.status, "scheduled")))
+        .where(and(eq(jobs.tenantId, actor.tenantId), sql`${jobs.id} = any(${uuidArray(currentStops.map((stop) => stop.jobId))})`, eq(jobs.status, "scheduled")))
         .returning({ id: jobs.id, customerId: jobs.customerId, organizationLocationId: jobs.organizationLocationId });
-      for (const job of dispatched) await recordEvent(actor, {
+      for (const job of dispatched) {
+        await tx.insert(jobStatusEvents).values({ tenantId: actor.tenantId, jobId: job.id, fromStatus: "scheduled", toStatus: "dispatched", actorType: actor.kind, actorId: actor.userId });
+        await recordEvent(actor, {
         type: "job.dispatched", entityType: "job", entityId: job.id,
         payload: { customerId: job.customerId, jobId: job.id, routeId: id },
         locationId: job.organizationLocationId,
-      }, tx);
+        }, tx);
+      }
       await recordEvent(actor, { type: "route.published", entityType: "route", entityId: id, locationId: route.organizationLocationId, auditAction: "route.publish" }, tx);
     });
   } else if (action === "optimize") {
