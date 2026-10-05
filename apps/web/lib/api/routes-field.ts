@@ -84,7 +84,7 @@ async function routeView(actor: SessionActor, id?: string) {
       join customers c on c.id=j.customer_id and c.tenant_id=j.tenant_id
       join services s on s.id=j.service_id and s.tenant_id=j.tenant_id
       join service_locations sl on sl.id=j.service_location_id and sl.tenant_id=j.tenant_id
-      where rs.tenant_id=${actor.tenantId} and rs.route_plan_id=${route.id}
+      where rs.tenant_id=${actor.tenantId} and rs.route_plan_id=${route.id} and rs.status <> 'removed'
         and j.organization_id=${actor.organizationId} and j.organization_location_id=${route.organization_location_id}
         and j.scheduled_date=${route.route_date}
         and (${actor.allLocations} or j.organization_location_id = any(${uuidArray(actor.locationIds)}))
@@ -129,13 +129,13 @@ async function mutateRoute(request: Request, actor: SessionActor, id: string, ac
   const db = getDb();
   const [route] = await db.select().from(routePlans).where(and(eq(routePlans.tenantId, actor.tenantId), eq(routePlans.id, id))).limit(1);
   if (!route || !locationAllowed(actor, route.organizationLocationId)) throw new DomainError("NOT_FOUND", "Route not found.", 404);
-  const stops = await db.select().from(routeStops).where(and(eq(routeStops.tenantId, actor.tenantId), eq(routeStops.routePlanId, id))).orderBy(routeStops.sequence);
+  const stops = await db.select().from(routeStops).where(and(eq(routeStops.tenantId, actor.tenantId), eq(routeStops.routePlanId, id), sql`${routeStops.status} <> 'removed'`)).orderBy(routeStops.sequence);
   if (action === "publish") {
     await db.transaction(async (tx) => {
       const [currentRoute] = await tx.select().from(routePlans).where(and(eq(routePlans.id, id), eq(routePlans.tenantId, actor.tenantId))).for("update");
       if (!currentRoute) throw new DomainError("NOT_FOUND", "Route not found.", 404);
       assertTransition("route", currentRoute.status, "published");
-      const currentStops = await tx.select().from(routeStops).where(and(eq(routeStops.tenantId, actor.tenantId), eq(routeStops.routePlanId, id))).for("update");
+      const currentStops = await tx.select().from(routeStops).where(and(eq(routeStops.tenantId, actor.tenantId), eq(routeStops.routePlanId, id), sql`${routeStops.status} <> 'removed'`)).for("update");
       if (!currentStops.length) throw new DomainError("VALIDATION_ERROR", "Add stops before publishing.", 422);
       const stopJobs = await tx.select().from(jobs).where(and(eq(jobs.tenantId, actor.tenantId), sql`${jobs.id} = any(${uuidArray(currentStops.map((stop) => stop.jobId))})`)).orderBy(jobs.id).for("update");
       for (const job of stopJobs) {

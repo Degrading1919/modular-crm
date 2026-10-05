@@ -182,7 +182,7 @@ test("V1 lifecycle: estimate approval through field work, billing, and feedback"
   await page.goto(`/app/invoices/${invoice.id}`);
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Issue invoice" }).click();
-  await expect(page.getByText("Issue invoice completed.")).toBeVisible();
+  await expect(page.getByText("Invoice issued.", { exact: true })).toBeVisible();
 
   // Carter's seeded portal identity can see this issued invoice. Feedback for a
   // stand-alone one-time job has no portal form, so exercise its customer-auth

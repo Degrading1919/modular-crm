@@ -18,6 +18,7 @@ import { reviseEstimate } from "./estimate-revisions";
 import { fieldTicketScope } from "./ticket-scope";
 import { invoiceOverpayment, openInvoiceBalance, upcomingJob } from "./read-facts";
 import { recordJobReschedule } from "./job-reschedule";
+import { lockJobForPlanning, withdrawJobFromRoutes } from "./job-planning";
 
 type RecordResource = "leads" | "customers" | "jobs" | "estimates" | "invoices" | "service-plans" | "tickets" | "services";
 const resources = new Set<RecordResource>(["leads", "customers", "jobs", "estimates", "invoices", "service-plans", "tickets", "services"]);
@@ -190,7 +191,7 @@ async function readResource(resource: RecordResource, actor: SessionActor, id?: 
       const [contacts, locations, pets] = await Promise.all([
         rows(sql`select * from customer_contacts where tenant_id=${actor.tenantId} and customer_id=${id}`),
         rows(sql`select id,name,address_line1,city,region,postal_code from service_locations where tenant_id=${actor.tenantId} and customer_id=${id} and active=true and ${locationSql(actor, sql`organization_location_id`)} order by created_at,id`),
-        rows(sql`select id,name,custom_fields from customer_assets where tenant_id=${actor.tenantId} and customer_id=${id} and archived_at is null`),
+        rows(sql`select ca.id,ca.name,ca.custom_fields from customer_assets ca where ca.tenant_id=${actor.tenantId} and ca.customer_id=${id} and ca.archived_at is null and (ca.service_location_id is null or exists(select 1 from service_locations sl where sl.tenant_id=ca.tenant_id and sl.id=ca.service_location_id and ${locationSql(actor, sql`sl.organization_location_id`)}))`),
       ]);
       item.contacts = normalized(contacts); item.locations = normalized(locations); item.pets = normalized(pets);
     }
@@ -454,6 +455,24 @@ const patchSchemas: Partial<Record<RecordResource, z.ZodType<Record<string, unkn
 
 async function patchResource(resource: RecordResource, id: string, request: Request, actor: SessionActor): Promise<Response> {
   requireStaff(actor);
+  if (resource === "invoices") {
+    requirePermission(actor, "invoices.adjust");
+    const body = await readBody(request, z.object({ description: z.string().trim().min(1).max(1000), totalCents: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), dueDate: z.iso.date().nullable(), expectedUpdatedAt: z.iso.datetime({ offset: true }) }));
+    const item = await getDb().transaction(async (tx) => {
+      const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.tenantId, actor.tenantId), eq(invoices.id, id))).for("update");
+      if (!invoice) throw new DomainError("NOT_FOUND", "Invoice not found.", 404);
+      assertLocationAccess(actor, invoice.organizationLocationId);
+      if (invoice.status !== "draft") throw new DomainError("CONFLICT", "Issued invoices keep their original details. Use a billing correction instead.", 409);
+      if (invoice.updatedAt.toISOString() !== body.expectedUpdatedAt) throw new DomainError("CONFLICT", "This invoice changed. Refresh it before editing.", 409);
+      const lines = await tx.select().from(invoiceItems).where(and(eq(invoiceItems.tenantId, actor.tenantId), eq(invoiceItems.invoiceId, id)));
+      if (lines.length !== 1 || Number(invoice.taxMinor) !== 0 || Number(invoice.discountMinor) !== 0) throw new DomainError("CONFLICT", "This invoice has itemized pricing. Keep its original lines when making a billing correction.", 409);
+      await tx.update(invoiceItems).set({ description: body.description, quantity: "1", unitAmountMinor: BigInt(body.totalCents), totalMinor: BigInt(body.totalCents) }).where(and(eq(invoiceItems.tenantId, actor.tenantId), eq(invoiceItems.invoiceId, id)));
+      const [saved] = await tx.update(invoices).set({ subtotalMinor: BigInt(body.totalCents), totalMinor: BigInt(body.totalCents), balanceMinor: BigInt(body.totalCents), dueAt: body.dueDate ? new Date(`${body.dueDate}T23:59:59Z`) : null, billingSnapshot: { ...invoice.billingSnapshot, description: body.description, totalCents: body.totalCents }, updatedAt: new Date() }).where(and(eq(invoices.tenantId, actor.tenantId), eq(invoices.id, id))).returning();
+      await recordEvent(actor, { type: "invoice.updated", entityType: "invoice", entityId: id, locationId: invoice.organizationLocationId, auditAction: "invoice.edit_draft", before: normalized(invoice) as Record<string, unknown>, after: normalized(saved) as Record<string, unknown> }, tx);
+      return saved;
+    });
+    return json({ item: normalized(item) });
+  }
   const mapping: Partial<Record<RecordResource, { table: string; permission: Permission; locationColumn?: string; fields: Record<string, string> }>> = {
     leads: { table: "leads", permission: "leads.update", locationColumn: "owning_location_id", fields: { email: "email", phone: "phone", source: "source_detail" } },
     customers: { table: "customers", permission: "customers.update", locationColumn: "owning_location_id", fields: { name: "display_name", email: "billing_email", phone: "billing_phone" } },
@@ -470,6 +489,7 @@ async function patchResource(resource: RecordResource, id: string, request: Requ
   requirePermission(actor, config.permission);
   if (resource === "tickets") await assertTicketAccess(actor, id);
   const updated = await getDb().transaction(async (tx) => {
+    const planningJob = resource === "jobs" ? await lockJobForPlanning(tx, actor, id) : null;
     const table = sql.raw(`"${config.table}"`);
     const locationScope = config.locationColumn && !actor.allLocations
       ? actor.locationIds.size
@@ -481,7 +501,12 @@ async function patchResource(resource: RecordResource, id: string, request: Requ
     const changes = Object.fromEntries(entries.map(([key, value]) => [config.fields[key]!, value]));
     const rescheduled = resource === "jobs" && body.scheduledDate !== undefined && body.scheduledDate !== before.scheduled_date;
     // A date-only edit cannot truthfully retain a window on the previous date.
-    if (rescheduled) { changes.service_window_start = null; changes.service_window_end = null; }
+    if (rescheduled) {
+      const withdrawn = await withdrawJobFromRoutes(tx, actor, planningJob!);
+      changes.service_window_start = null; changes.service_window_end = null;
+      changes.assigned_route_id = withdrawn.assignedRouteId; changes.status = withdrawn.status;
+      if (body.scheduledDate === null && changes.status === "scheduled") throw new DomainError("VALIDATION_ERROR", "Choose a service date for scheduled work.", 422);
+    }
     const assignments = sql.join(Object.entries(changes).map(([column, value]) => {
       const encoded = value !== null && typeof value === "object" && !(value instanceof Date)
         ? sql`${JSON.stringify(value)}::jsonb`

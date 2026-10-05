@@ -61,12 +61,15 @@ test("owner records inventory movements and refunds a collected invoice payment"
   await page.goto(`/app/invoices/${invoice.id}`);
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Issue invoice" }).click();
-  await expect(page.getByText("Issue invoice completed.")).toBeVisible();
+  await expect(page.getByText("Invoice issued.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Record summary" })).toContainText("Issued");
   await page.getByRole("button", { name: "Record payment" }).click();
   await page.getByLabel("How the customer paid").selectOption("cash");
   await page.getByRole("button", { name: "Record payment", exact: true }).last().click();
   await expect(page.getByRole("heading", { name: "Refund a payment" })).toBeVisible();
-  await expect(page.getByText("Cash · Succeeded", { exact: false })).toBeVisible();
+  const paymentHistory = page.getByRole("region", { name: "Payment history", exact: true });
+  await expect(paymentHistory).toContainText("Cash");
+  await expect(paymentHistory).toContainText("Succeeded");
 
   await page.getByLabel("Refund amount (USD)").fill("5.00");
   await page.getByLabel("Reason (optional)").fill(`E2E refund ${suffix}`);

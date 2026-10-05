@@ -23,6 +23,7 @@ process.env.DATABASE_URL ??= "postgres://localhost:5433/modular_crm_test";
 const { handleWorkflow } = await import("../lib/api/workflows.ts");
 const { handleRecords } = await import("../lib/api/records.ts");
 const { handleRoutesField } = await import("../lib/api/routes-field.ts");
+const { handleJobPlanning } = await import("../lib/api/job-planning.ts");
 const { processDomainEvent } = await import("../../worker/src/events-db.js");
 const { processAutomationRun } = await import("../../worker/src/automations-db.js");
 const { QUEUES } = await import("../../worker/src/queues.js");
@@ -83,16 +84,55 @@ it("reschedules through the job API, suppresses old reminders permanently, and e
   expect((await db.select().from(schema.jobs).where(eq(schema.jobs.id, jobId)))[0]!.serviceWindowStart).toBeNull();
   await process(reschedule!.id);
   await processDomainEvent(db, boss, { tenantId: owner.tenantId, eventId: reschedule!.id });
+  expect(await db.select().from(outboundMessages).where(eq(outboundMessages.jobId, jobId))).toHaveLength(1);
+  expect((await db.select().from(schema.jobs).where(eq(schema.jobs.id, jobId)))[0]).toMatchObject({ status: "scheduled", assignedRouteId: null });
+  const newRoute = await handleRoutesField(new Request("http://localhost", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ date: nextDate, technicianId: seedIds.terryMembership }) }), ["routes"], owner);
+  const newRouteId = (await newRoute!.json()).item.id;
+  expect((await handleRoutesField(new Request("http://localhost", { method: "POST" }), ["routes", newRouteId, "publish"], owner))!.status).toBe(200);
+  const dispatches = await db.select().from(domainEvents).where(and(eq(domainEvents.entityId, jobId), eq(domainEvents.eventType, "job.dispatched")));
+  const newDispatch = dispatches.find((event) => event.payload.scheduledDate === nextDate)!;
+  await process(newDispatch.id);
+  await processDomainEvent(db, boss, { tenantId: owner.tenantId, eventId: newDispatch.id });
   const messages = await db.select().from(outboundMessages).where(eq(outboundMessages.jobId, jobId));
   expect(messages).toHaveLength(2);
   expect(messages.find((message) => message.id === old!.id)).toMatchObject({ status: "suppressed", failureCode: "visit_rescheduled" });
   expect(messages.find((message) => message.id !== old!.id)).toMatchObject({ status: "queued", renderedBody: `Your service date is ${nextDate}` });
   expect(messages.find((message) => message.id !== old!.id)!.expiresAt!.getTime()).toBeGreaterThan(old!.expiresAt!.getTime());
-  expect(await db.select().from(schema.notes).where(and(eq(schema.notes.entityId, jobId), eq(schema.notes.entityType, "job")))).toHaveLength(1);
+  expect(await db.select().from(schema.notes).where(and(eq(schema.notes.entityId, jobId), eq(schema.notes.entityType, "job")))).toHaveLength(2);
   // No-op edits neither revive old mail nor create another scheduling event.
   await handleRecords(new Request("http://localhost", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ scheduledDate: nextDate }) }), ["jobs", jobId], owner);
   expect(await db.select().from(domainEvents).where(and(eq(domainEvents.entityId, jobId), eq(domainEvents.eventType, "job.rescheduled")))).toHaveLength(1);
   await db.update(automationRules).set({ status: "archived" }).where(eq(automationRules.id, rule!.id));
+});
+
+it("does not dispatch reminders for a never-published date edit and delivers a configured cancellation once", async () => {
+  const jobId = crypto.randomUUID();
+  const [job] = await db.insert(schema.jobs).values({ id: jobId, tenantId: owner.tenantId, organizationId: owner.organizationId!, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, serviceId: seedIds.weeklyService, scheduledDate: "2027-01-01", status: "scheduled" }).returning();
+  const rules = await db.insert(automationRules).values([
+    { tenantId: owner.tenantId, name: "Only published visits", source: "tenant", status: "active", triggerConfig: { event: "job.dispatched" }, conditions: { field: "event.entityId", operator: "equals", value: jobId }, actions: [{ actionType: "send_sms", purpose: "service", configuration: { templateKey: "service-day-reminder", body: "Service reminder" } }] },
+    { tenantId: owner.tenantId, name: "Configured cancellation", source: "tenant", status: "active", triggerConfig: { event: "job.canceled" }, conditions: { field: "event.entityId", operator: "equals", value: jobId }, actions: [{ actionType: "send_sms", purpose: "service", configuration: { templateKey: "visit-cancellation", body: "Your visit was canceled: ${event.payload.reason}" } }] },
+  ]).returning();
+  const request = (data: unknown) => new Request("http://localhost", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(data) });
+  const edited = await handleJobPlanning(request({ idempotencyKey: crypto.randomUUID(), expectedUpdatedAt: job!.updatedAt.toISOString(), scheduledDate: "2027-01-02" }), ["jobs", jobId, "reschedule"], owner);
+  expect(edited!.status).toBe(200);
+  const [reschedule] = await db.select().from(domainEvents).where(and(eq(domainEvents.entityId, jobId), eq(domainEvents.eventType, "job.rescheduled")));
+  expect(reschedule!.payload).toMatchObject({ suppressedReminderCount: 0, awaitingDispatch: true });
+  await processDomainEvent(db, boss, { tenantId: owner.tenantId, eventId: reschedule!.id });
+  expect(await db.select().from(automationRuns).where(eq(automationRuns.triggeringEventId, reschedule!.id))).toHaveLength(0);
+  expect(await db.select().from(outboundMessages).where(eq(outboundMessages.jobId, jobId))).toHaveLength(0);
+  const current = (await edited!.json()).item;
+  const cancel = { idempotencyKey: crypto.randomUUID(), expectedUpdatedAt: current.updatedAt, reason: "Customer is away" };
+  expect((await handleJobPlanning(request(cancel), ["jobs", jobId, "cancel"], owner))!.status).toBe(200);
+  expect((await (await handleJobPlanning(request(cancel), ["jobs", jobId, "cancel"], owner))!.json()).duplicate).toBe(true);
+  const cancellations = await db.select().from(domainEvents).where(and(eq(domainEvents.entityId, jobId), eq(domainEvents.eventType, "job.canceled")));
+  expect(cancellations).toHaveLength(1);
+  await processDomainEvent(db, boss, { tenantId: owner.tenantId, eventId: cancellations[0]!.id });
+  await processDomainEvent(db, boss, { tenantId: owner.tenantId, eventId: cancellations[0]!.id });
+  const runs = await db.select().from(automationRuns).where(eq(automationRuns.triggeringEventId, cancellations[0]!.id));
+  expect(runs).toHaveLength(1);
+  expect(await processAutomationRun(db, boss, { tenantId: owner.tenantId, runId: runs[0]!.id })).toBe("completed");
+  expect(await db.select().from(outboundMessages).where(eq(outboundMessages.jobId, jobId))).toMatchObject([{ status: "queued", renderedBody: "Your visit was canceled: Customer is away" }]);
+  for (const rule of rules) await db.update(automationRules).set({ status: "archived" }).where(eq(automationRules.id, rule.id));
 });
 
 it("routes the successful payment producer event through the default receipt recipe and worker", async () => {

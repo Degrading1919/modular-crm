@@ -96,6 +96,7 @@ Rules:
 
 - A job may be created directly as scheduled when date/assignment is known.
 - Dispatched means the job has been committed to a field route/assignee.
+- An explicit authorized reschedule/reassign may withdraw unstarted dispatched work back to scheduled. Preserve removed stop/status history and clear its active route; the generic status endpoint and field UI cannot use this transition to bypass planning protections. Started work cannot be reset through planning edits.
 - en_route may be triggered manually or by technician workflow.
 - in_progress records actual start time.
 - completed requires required forms/checklists and required proof for the Industry Pack.

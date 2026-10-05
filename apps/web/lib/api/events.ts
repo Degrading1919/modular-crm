@@ -4,6 +4,7 @@ import { getDb } from "../db";
 import { type SessionActor } from "./actor";
 
 export async function recordEvent(actor: SessionActor, input: {
+  id?: string;
   type: string;
   entityType: string;
   entityId: string;
@@ -14,6 +15,7 @@ export async function recordEvent(actor: SessionActor, input: {
   locationId?: string | null;
 }, writer: Pick<ReturnType<typeof getDb>, "insert"> = getDb()): Promise<void> {
   await writer.insert(domainEvents).values({
+    ...(input.id ? { id: input.id } : {}),
     tenantId: actor.tenantId, eventType: input.type, actorType: actor.kind, actorId: actor.userId,
     entityType: input.entityType, entityId: input.entityId, payload: input.payload ?? {},
     // A parent member may act at a child franchise location. The event's organization

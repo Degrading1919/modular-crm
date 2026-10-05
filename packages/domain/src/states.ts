@@ -19,7 +19,7 @@ const transitions = {
   },
   job: {
     draft: ["unscheduled", "scheduled", "canceled"], unscheduled: ["scheduled", "canceled"],
-    scheduled: ["dispatched", "canceled", "missed", "skipped"], dispatched: ["en_route", "in_progress", "canceled", "missed", "skipped"],
+    scheduled: ["dispatched", "canceled", "missed", "skipped"], dispatched: ["scheduled", "en_route", "in_progress", "canceled", "missed", "skipped"],
     en_route: ["in_progress", "skipped", "missed", "canceled"], in_progress: ["paused", "completed", "skipped", "needs_return", "canceled"],
     paused: ["in_progress", "skipped", "canceled"], completed: ["needs_return"], skipped: [], missed: ["scheduled"], canceled: [], needs_return: [],
   },

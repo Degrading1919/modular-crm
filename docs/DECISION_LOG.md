@@ -4,6 +4,15 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-05 — Actionable record pages and safe job planning changes
+
+- **Status:** Accepted
+- **Area:** Product / UX / Connectors
+- **Decision:** Share explicit scoped customer/job/invoice/lead detail pages with business-language facts, money, related work, validated editing and event history. Audited idempotent planning changes retain removed route history and legally return unstarted dispatched work to Scheduled; old reminders are suppressed and new dispatch sends their replacements, while cancellation preserves reasons and configured notifications. Warn explicitly before recording a checked refund outcome above collected funds.
+- **Rationale:** Raw record dumps and date-only mutations made record actions confusing and left jobs on obsolete routes; premature reminder replay contradicted the scheduling contract.
+- **Authoritative doc:** `docs/PRODUCT_SCOPE.md`, `docs/CONNECTOR_SYSTEM.md`, `docs/V1_STATE_MACHINES.md`
+- **Supersedes:** Immediate replacement reminder replay in “Close checked-outcome and field recovery dead ends” (2026-10-05).
+
 ## 2026-10-05 — Close checked-outcome and field recovery dead ends
 
 - **Status:** Accepted

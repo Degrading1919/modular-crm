@@ -3,7 +3,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   auditEvents, completionProofs, connectorInstallations, customerContacts, customers, domainEvents, estimateApprovals, estimateItems, estimateRevisions, estimates, hasUsableFeature, invoiceItems, invoices, jobAssignments, jobStatusEvents,
-  jobs, leads, loadTenantCapabilities, memberships, paymentAllocations, payments, recurrenceRules, serviceLocations, servicePlans, services, tenants,
+  jobs, leads, loadTenantCapabilities, paymentAllocations, payments, recurrenceRules, serviceLocations, servicePlans, services, tenants,
   secureEstimateTokens,
 } from "@modular-crm/db";
 import { assertTransition, DomainError, manualPaymentMethods, requirePermission, type Permission } from "@modular-crm/domain";
@@ -19,7 +19,8 @@ import { json, readBody } from "./http";
 import { normalized } from "./sql";
 import { claimFieldOperation, completeFieldOperation, type FieldOperationInput } from "./field-operations";
 import { businessDate } from "../dates";
-import { recordJobReschedule } from "./job-reschedule";
+import { recordJobReschedule, suppressJobReminders } from "./job-reschedule";
+import { assignableTechnician, lockJobForPlanning, withdrawJobFromRoutes } from "./job-planning";
 
 export async function getAssignedJob(actor: SessionActor, jobId: string, permission: Permission = "jobs.read") {
   const db = getDb();
@@ -194,24 +195,25 @@ async function assignJob(request: Request, actor: SessionActor, jobId: string): 
   const body = await readBody(request, z.object({ technicianId: z.string().min(1), scheduledDate: z.iso.date().optional() }));
   const db = getDb();
   const job = await getAssignedJob(actor, jobId, "jobs.assign");
-  const [technician] = await db.select().from(memberships).where(and(eq(memberships.tenantId, actor.tenantId), eq(memberships.id, body.technicianId), eq(memberships.status, "active"))).limit(1);
-  if (!technician || (job.organizationLocationId && technician.defaultLocationId !== job.organizationLocationId && !actor.allLocations)) throw new DomainError("NOT_FOUND", "Technician not found for this location.", 404);
+  const technician = await assignableTechnician(db, actor, job, body.technicianId);
   const date = body.scheduledDate ?? job.scheduledDate;
   if (!date) throw new DomainError("VALIDATION_ERROR", "Choose a service date.", 422);
-  const next = job.status === "unscheduled" ? "scheduled" : job.status;
+  let next = job.status === "unscheduled" ? "scheduled" : job.status;
   if (next !== job.status) assertTransition("job", job.status, next);
   await db.transaction(async (tx) => {
-    await tx.execute(sql`select id from jobs where tenant_id=${actor.tenantId} and id=${jobId} for update`);
-    const [current] = await tx.select().from(jobs).where(and(eq(jobs.tenantId, actor.tenantId), eq(jobs.id, jobId))).limit(1);
+    const current = await lockJobForPlanning(tx, actor, jobId);
     if (!current || current.updatedAt.getTime() !== job.updatedAt.getTime()) throw new DomainError("CONFLICT", "This job changed. Refresh it before assigning it again.", 409);
+    const withdrawn = await withdrawJobFromRoutes(tx, actor, current);
+    next = withdrawn.status === "unscheduled" ? "scheduled" : withdrawn.status;
     await tx.update(jobAssignments).set({ removedAt: new Date() }).where(and(eq(jobAssignments.tenantId, actor.tenantId), eq(jobAssignments.jobId, jobId)));
     await tx.insert(jobAssignments).values({ tenantId: actor.tenantId, jobId, membershipId: technician.id, assignmentRole: "primary" });
-    await tx.update(jobs).set({ scheduledDate: date, status: next, ...(date !== job.scheduledDate ? { serviceWindowStart: null, serviceWindowEnd: null } : {}), updatedAt: new Date() }).where(and(eq(jobs.tenantId, actor.tenantId), eq(jobs.id, jobId)));
+    await tx.update(jobs).set({ assignedRouteId: null, scheduledDate: date, status: next, ...(date !== job.scheduledDate ? { serviceWindowStart: null, serviceWindowEnd: null } : {}), updatedAt: new Date() }).where(and(eq(jobs.tenantId, actor.tenantId), eq(jobs.id, jobId)));
     await recordJobReschedule(tx, actor, job, date);
-    if (next !== job.status) await tx.insert(jobStatusEvents).values({ tenantId: actor.tenantId, jobId, fromStatus: job.status, toStatus: next, actorType: "staff", actorId: actor.userId });
+    if (date === job.scheduledDate) await suppressJobReminders(tx, actor, jobId, "visit_rescheduled");
+    if (next !== withdrawn.status) await tx.insert(jobStatusEvents).values({ tenantId: actor.tenantId, jobId, fromStatus: withdrawn.status, toStatus: next, actorType: "staff", actorId: actor.userId });
     await recordEvent(actor, { type: "job.assigned", entityType: "job", entityId: jobId, payload: { customerId: job.customerId, technicianId: technician.id, scheduledDate: date }, auditAction: "job.assign", locationId: job.organizationLocationId }, tx);
   });
-  return json({ item: normalized({ ...job, scheduledDate: date, status: next, technicianId: technician.id }) });
+  return json({ item: normalized({ ...job, assignedRouteId: null, scheduledDate: date, status: next, technicianId: technician.id }) });
 }
 
 type JobTransitionTransaction = Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0];
@@ -264,6 +266,7 @@ export async function transitionJob(actor: SessionActor, jobId: string, next: st
       return { job, invoice: priorInvoice ?? null, duplicate: true, replay: false, resultState: "completed" };
     }
     assertTransition("job", job.status, next, { reason: context.reason, requiredChecklist: next === "completed", completedChecklist: context.completedChecklist, proofRequired: false, proofProvided: context.proofProvided });
+    if (job.status === "dispatched" && next === "scheduled") throw new DomainError("CONFLICT", "Use Reschedule or Reassign to return this job to scheduling.", 409);
     const completionProof = next === "completed" && context.prepareCompletionProof
       ? await context.prepareCompletionProof(tx)
       : context.completionProof;

@@ -25,6 +25,7 @@ import WebsiteDomains from "./WebsiteDomains";
 import CapabilitySetup, { type CapabilityCatalog, type CapabilityFeature } from "./CapabilitySetup";
 import CustomerPortalAccess from "./CustomerPortalAccess";
 import CustomerChangeRequests from "./CustomerChangeRequests";
+import RecordDetail from "./RecordDetail";
 
 type Entity = Record<string, any> & { id: string };
 type Field = { key: string; label: string; type?: "text" | "email" | "tel" | "date" | "number" | "money" | "textarea" | "select"; options?: string[]; required?: boolean };
@@ -109,7 +110,7 @@ export default function BusinessApp({ section }: { section: string[] }) {
         {current === "developer" && <DeveloperApp />}
         {current === "franchise" && <FranchiseApp />}
         {current === "inventory" && <><Header eyebrow="Your business" title="Inventory" subtitle="Keep supplies ready across branches, vehicles, and jobs."/><InventoryOperations permissions={access.permissions}/></>}
-        {resources[current] && current !== "inventory" && current !== "automations" && <ResourcePage resourceKey={current} resource={resources[current]} id={section[1]} features={features} permissions={identity.data.user?.permissions} />}
+        {resources[current] && current !== "inventory" && current !== "automations" && (section[1] && ["customers", "jobs", "invoices", "leads"].includes(current) ? <RecordDetail key={`${current}/${section[1]}`} resource={current} id={section[1]}/> : <ResourcePage resourceKey={current} resource={resources[current]} id={section[1]} features={features} permissions={identity.data.user?.permissions} />)}
         {!resources[current] && !["dashboard", "schedule", "routes", "sales", "billing", "connections", "website", "automations", "reports", "payroll", "import", "capabilities", "settings", "developer", "franchise", "inventory"].includes(current) && <Empty title="Page not found" description="This area is not part of your workspace." action={<Link className="btn btn-primary" href="/app/dashboard">Back to overview</Link>} />}
       </>}
     </div></main>
