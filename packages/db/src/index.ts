@@ -5,3 +5,5 @@ export * from "./seed.ts";
 export * from "./capability-access.ts";
 export * from "./initial-capability-catalog.ts";
 export * from "./health.ts";
+export * from "./email-business.ts";
+export * from "./email-unsubscribe.ts";

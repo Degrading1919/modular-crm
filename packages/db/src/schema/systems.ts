@@ -69,6 +69,7 @@ export const outboundMessages = pgTable("outbound_messages", {
   jobId: uuid("job_id").references(() => jobs.id), invoiceId: uuid("invoice_id").references(() => invoices.id), channel: text("channel").notNull(),
   templateKey: text("template_key"), templateVersion: integer("template_version"), recipient: text("recipient").notNull(),
   renderedSubject: text("rendered_subject"), renderedBody: text("rendered_body").notNull(), status: status(),
+  category: text("category").notNull().default("transactional"),
   connectorInstallationId: uuid("connector_installation_id"), providerReference: text("provider_reference"),
   idempotencyKey: text("idempotency_key").notNull(), queuedAt: timestamp("queued_at", { withTimezone: true }).notNull().defaultNow(),
   sentAt: timestamp("sent_at", { withTimezone: true }), deliveredAt: timestamp("delivered_at", { withTimezone: true }),

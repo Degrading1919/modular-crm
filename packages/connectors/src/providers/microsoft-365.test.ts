@@ -12,6 +12,22 @@ const control = (enabledCapabilities: readonly ("calendar" | "email")[], tokens:
 });
 
 describe("Microsoft 365 OAuth connector", () => {
+  it("uses Graph MIME to preserve HTML, business Reply-To and standard unsubscribe headers", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get("content-type")).toBe("text/plain");
+      const raw = Buffer.from(String(init?.body), "base64").toString("utf8");
+      expect(raw).toContain("Reply-To: owner@business.test");
+      expect(raw).toContain("List-Unsubscribe-Post: List-Unsubscribe=One-Click");
+      expect(raw).toContain("List-Unsubscribe: <https://crm.example.test/email/unsubscribe?token=signed>");
+      expect(raw).toContain("multipart/alternative");
+      expect(raw).toContain("Business address");
+      return new Response(null, { status: 202 });
+    }) as ProviderFetch;
+    const email = createMicrosoft365ConnectorDefinition(config, fetcher).oauth!.createScope(control(["email"])).email!;
+    await expect(email.sendEmail({ to: "customer@example.test", subject: "Reminder", body: "Business address", html: "<p>Business address</p>",
+      replyTo: "owner@business.test", unsubscribeUrl: "https://crm.example.test/email/unsubscribe?token=signed", idempotencyKey: "decorated" })).resolves.toEqual({ status: "sent" });
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
   it("uses tenant-scoped authorization, PKCE and only scopes for enabled capabilities", () => {
     const definition = createMicrosoft365ConnectorDefinition(config);
     expect(definition.oauth?.authorizationEndpoint).toBe("https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize");

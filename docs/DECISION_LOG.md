@@ -4,6 +4,15 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-05 — Built-in business email and purpose-scoped unsubscribe
+
+- **Status:** Accepted
+- **Area:** Connectors / UX / Implementation
+- **Decision:** Customer email defaults to provider-neutral platform SMTP without owner setup; a connected business email provider takes precedence, while SMS requires a connector and production workers do not register mocks. Use business From display name, real contact Reply-To and address footer, and signed one-click opt-out for nontransactional email that leaves receipts/account access unaffected. Track acceptance, safe failures and queue retries without claiming exactly-once SMTP delivery; dispatch domain events in bounded sequential batches to avoid a polling delay per event during normal work bursts.
+- **Rationale:** A missing owner connection should not prevent day-one customer email; scanner-safe, tenant-bound opt-out must not disable essential account or payment messages.
+- **Authoritative doc:** `docs/CONNECTOR_SYSTEM.md`, `docs/DEPLOYMENT.md`
+- **Supersedes:** Missing-connection failure for customer email in the background-message connector contract (SMS unchanged).
+
 ## 2026-10-05 — Portable images, explicit migration release step and bounded worker progress
 
 - **Status:** Accepted

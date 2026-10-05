@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   auditEvents, customerChangeRequests, customers, domainEvents, memberships, organizationLocations,
-  portalAccess, portalLocationAccess, serviceLocations, servicePlans, tenants, user, verification,
+  portalAccess, portalLocationAccess, serviceLocations, servicePlans, tenants, user, verification, loadEmailBusiness,
 } from "@modular-crm/db";
 import { DomainError, requirePermission } from "@modular-crm/domain";
 import { auth } from "../auth";
@@ -11,7 +11,7 @@ import { type SessionActor, requireStaff } from "./actor";
 import { recordEvent } from "./events";
 import { json, readBody } from "./http";
 import { normalized, uuidArray } from "./sql";
-import { sendDevelopmentEmail } from "../mail";
+import { sendPlatformEmail } from "../mail";
 import { z } from "zod";
 import { businessDate } from "../dates";
 
@@ -155,7 +155,7 @@ async function grantCustomerPortal(request: Request, actor: SessionActor, custom
       // Better Auth sends the password setup link and redirects back to this one-time activation token.
       await auth.api.requestPasswordReset({ body: { email, redirectTo: inviteUrl.toString() }, headers: request.headers });
     } else {
-      await sendDevelopmentEmail(email, "Your customer portal invitation", `Your service team invited you to the customer portal. Activate your access within 48 hours: ${inviteUrl.toString()}`);
+      await sendPlatformEmail(email, "Your customer portal invitation", `Your service team invited you to the customer portal. Activate your access within 48 hours: ${inviteUrl.toString()}`, await loadEmailBusiness(db, actor.tenantId, { customerId }));
     }
   } catch {
     await db.transaction(async (tx) => {

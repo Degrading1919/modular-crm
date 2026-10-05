@@ -115,12 +115,15 @@ describe("malformed ID route sweep (actual handlers and migrated SQL fixture)", 
 });
 
 it("maps direct and nested PostgreSQL input errors without exposing values; other errors remain 500", async () => {
+  const consoleInfo = vi.spyOn(console, "info").mockImplementation(() => undefined);
   const cause = Object.assign(new Error("invalid UUID private-record-input"), { code: "22P02" });
   for (const error of [cause, new Error("SQL private query", { cause: new Error("wrapper", { cause }) })]) {
     const response = apiError(error);
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: { code: "VALIDATION_ERROR", message: "Check the information you entered and try again." } });
   }
+  expect(consoleInfo.mock.calls).toEqual([[JSON.stringify({ event: "api.invalid_input", level: "info", code: "22P02" })], [JSON.stringify({ event: "api.invalid_input", level: "info", code: "22P02" })]]);
+  consoleInfo.mockRestore();
   const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
   try { expect(apiError(Object.assign(new Error("database offline"), { code: "08006" })).status).toBe(500); }
   finally { consoleError.mockRestore(); }

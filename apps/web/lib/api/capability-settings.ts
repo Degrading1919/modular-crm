@@ -66,6 +66,7 @@ const automationBodySchema = z.object({
 
 const messageBodySchema = z.object({
   channel: z.enum(["email", "sms"]),
+  category: z.enum(["transactional", "marketing"]).default("transactional"),
   recipient: z.string().trim().max(254).optional(),
   customerId: z.string().uuid().optional(),
   jobId: z.string().uuid().optional(),
@@ -359,6 +360,14 @@ function safeRunError(code: string | null): string | null {
   return "This action could not be completed.";
 }
 
+function safeMessageError(code: string | null, channel: string): string | null {
+  if (code === "customer_unsubscribed") return "This customer has stopped automated emails.";
+  if (code === "business_details_missing") return "Choose a customer and add the business address before sending automated emails.";
+  if (code === "not_connected" || code === "authorization_expired") return channel === "sms" ? "Connect or reconnect a texting service to send this message." : "Reconnect your email service to send this message.";
+  if (code === "provider_error" || code === "timeout") return "The message service could not complete this delivery.";
+  return safeRunError(code);
+}
+
 async function listAutomationRuns(actor: SessionActor, ruleId?: string, requestUrl = "http://localhost"): Promise<Response> {
   requirePermission(actor, "automations.runs_read");
   requireStaff(actor);
@@ -586,16 +595,20 @@ async function listCommunications(request: Request, actor: SessionActor): Promis
   const connectorKeys = new Map(installationRows.map((row) => [row.id, row.connectorKey]));
   return json({ items: messages.map(({ message, customerName, locationId }) => ({
     id: message.id, tenantId: message.tenantId, customerId: message.customerId, customerName: customerName ?? null,
-    jobId: message.jobId, locationId, recipient: message.recipient, channel: message.channel,
+    jobId: message.jobId, locationId, recipient: message.recipient, channel: message.channel, category: message.category,
     subject: message.renderedSubject ?? "", message: message.renderedBody, templateKey: message.templateKey,
     status: message.status, queuedAt: message.queuedAt.toISOString(), sentAt: message.sentAt?.toISOString() ?? null,
     deliveredAt: message.deliveredAt?.toISOString() ?? null, failureCode: message.failureCode,
-    errorMessage: message.failureCode ? safeRunError(message.failureCode) ?? "Delivery could not be completed." : null,
+    errorMessage: message.failureCode ? safeMessageError(message.failureCode, message.channel) : null,
     history: (eventsByMessage.get(message.id) ?? []).map((event) => ({ type: event.eventType, occurredAt: event.occurredAt.toISOString() })),
     mode: message.status === "queued" || message.status === "sending" || message.status === "retry" ? "pending"
+      : !message.sentAt ? "not_sent"
+      : eventsByMessage.get(message.id)?.some((event) => event.eventType === "sent" && event.payload.mode === "platform") ? "platform"
       : message.connectorInstallationId && connectorKeys.get(message.connectorInstallationId)?.startsWith("mock-") === false ? "connected" : "mock",
     environment: message.status === "queued" || message.status === "sending" || message.status === "retry" ? null
-      : message.connectorInstallationId && connectorKeys.get(message.connectorInstallationId)?.startsWith("mock-") === false ? "production" : "test",
+      : !message.sentAt ? null
+      : eventsByMessage.get(message.id)?.find((event) => event.eventType === "sent" && event.payload.mode === "platform")?.payload.environment
+      ?? (message.connectorInstallationId && connectorKeys.get(message.connectorInstallationId)?.startsWith("mock-") === false ? "production" : "test"),
   })) });
 }
 
@@ -643,6 +656,7 @@ async function queueCommunication(request: Request, actor: SessionActor): Promis
     customerId ??= job.customerId;
   }
   if (actor.role === "technician" && !job) throw new DomainError("NOT_FOUND", "Choose an assigned job for this message.", 404);
+  if (body.category === "marketing" && !customerId) throw validation("Choose a customer before sending marketing messages.");
   let locationId = job?.organizationLocationId ?? null;
   if (customerId) {
     const customer = job
@@ -667,7 +681,7 @@ async function queueCommunication(request: Request, actor: SessionActor): Promis
   const db = getDb();
   const inserted = await db.transaction(async (tx) => {
     const [created] = await tx.insert(outboundMessages).values({
-      tenantId: actor.tenantId, customerId: customerId ?? null, jobId: job?.id ?? null, channel: body.channel,
+      tenantId: actor.tenantId, customerId: customerId ?? null, jobId: job?.id ?? null, channel: body.channel, category: body.category,
       recipient, renderedSubject: body.channel === "email" ? body.subject || "Service update" : null,
       renderedBody: body.message, status: "queued", idempotencyKey, queuedAt: new Date(),
     }).onConflictDoNothing({ target: [outboundMessages.tenantId, outboundMessages.idempotencyKey] }).returning();

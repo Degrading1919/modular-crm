@@ -59,7 +59,9 @@ async function executeAction(db: Database, boss: PgBoss, snapshot: RunSnapshot, 
     const rendered = template ? renderActionConfiguration({ subject: template.subjectTemplate ?? fallback.subject, body: template.bodyTemplate }, event) : configuration;
     const subject = String(rendered.subject ?? fallback.subject);
     const body = String(rendered.body ?? fallback.body);
-    const [inserted] = await db.insert(outboundMessages).values({ tenantId, customerId, jobId: event.entityType === "job" ? event.entityId : undefined, invoiceId: event.entityType === "invoice" ? event.entityId : undefined, channel, templateKey, templateVersion: template?.version, recipient, renderedSubject: channel === "email" ? subject : null, renderedBody: body, status: "queued", idempotencyKey: executionKey, queuedAt: now }).onConflictDoNothing({ target: [outboundMessages.tenantId, outboundMessages.idempotencyKey] }).returning({ id: outboundMessages.id });
+    const category = (event.eventType === "payment.succeeded" && templateKey === "payment-receipt")
+      || (event.eventType === "payment.failed" && templateKey === "payment-failed") ? "transactional" : "automation";
+    const [inserted] = await db.insert(outboundMessages).values({ tenantId, customerId, jobId: event.entityType === "job" ? event.entityId : undefined, invoiceId: event.entityType === "invoice" ? event.entityId : undefined, channel, category, templateKey, templateVersion: template?.version, recipient, renderedSubject: channel === "email" ? subject : null, renderedBody: body, status: "queued", idempotencyKey: executionKey, queuedAt: now }).onConflictDoNothing({ target: [outboundMessages.tenantId, outboundMessages.idempotencyKey] }).returning({ id: outboundMessages.id });
     const messageId = inserted?.id ?? (await db.select({ id: outboundMessages.id }).from(outboundMessages).where(and(eq(outboundMessages.tenantId, tenantId), eq(outboundMessages.idempotencyKey, executionKey))).limit(1))[0]?.id;
     if (messageId) await enqueueOutboundMessage(boss, { tenantId, messageId });
     return;

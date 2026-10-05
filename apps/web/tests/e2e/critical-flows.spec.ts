@@ -79,7 +79,16 @@ test("technician sees only field work and can inspect assigned route", async ({ 
 test("customer can see services and submit a change request", async ({ page }) => {
   await signIn(page, "customer@happyyards.test");
   await expect(page).toHaveURL(/\/portal\/home$/);
-  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  // The loaded home has both welcome and next-visit headings; identify each
+  // explicitly instead of depending on the transient loading state having one.
+  await expect(page.getByRole("heading", { level: 1, name: "Welcome back, Alex.", exact: true })).toBeVisible();
+  const overviewResponse = await page.request.get("/api/v1/portal/overview");
+  expect(overviewResponse.ok()).toBeTruthy();
+  const overview = (await overviewResponse.json()).item;
+  const nextVisit = overview.nextService ? new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC", weekday: "long", month: "long", day: "numeric",
+  }).format(new Date(`${overview.nextService.scheduledDate}T00:00:00Z`)) : "No visit scheduled";
+  await expect(page.getByRole("heading", { level: 1, name: nextVisit, exact: true })).toBeVisible();
   await expectBoundedIdleApiGets(page);
   await page.getByRole("navigation", { name: "Customer account" }).getByRole("link", { name: "Services" }).click();
   await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();

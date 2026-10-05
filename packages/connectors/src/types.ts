@@ -91,7 +91,8 @@ export interface PaymentCapability {
   getPayment(reference: string): Promise<{ reference: string; status: "succeeded" | "failed"; amountMinor: number; currency: string } | undefined>;
 }
 /** A provider may accept a message without returning a provider-side message identifier. */
-export interface EmailCapability { sendEmail(input: { to: string; subject: string; body: string; idempotencyKey: string }): Promise<{ reference?: string; status: "sent" }> }
+export type EmailInput = { to: string; subject: string; body: string; idempotencyKey: string; html?: string; replyTo?: string; unsubscribeUrl?: string };
+export interface EmailCapability { sendEmail(input: EmailInput): Promise<{ reference?: string; status: "sent" }> }
 export interface SmsCapability { sendSms(input: { to: string; body: string; idempotencyKey: string }): Promise<{ reference: string; status: "sent" }> }
 export type Coordinates = { latitude: number; longitude: number };
 export interface GeocodingCapability { geocode(address: string): Promise<{ formattedAddress: string; coordinates: Coordinates; confidence: number }> }
