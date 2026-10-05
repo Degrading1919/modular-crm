@@ -144,6 +144,8 @@ describe("account-bound online invoice payments", () => {
     const invoice = await fixture();
     const event = await eventFor(invoice);
     await expect(handleOnlinePaymentWebhook(new Request("http://localhost/payments/webhooks/mock-payments", { method: "POST", body: JSON.stringify(event) }), ["payments", "webhooks", "mock-payments"])).rejects.toMatchObject({ status: 400 });
+    const signed = signMockPaymentEvent(event);
+    await expect(handleOnlinePaymentWebhook(new Request("http://localhost/payments/webhooks/mock-payments", { method: "POST", headers: { "payment-signature": signed.signature }, body: `\uFEFF${signed.rawBody}` }), ["payments", "webhooks", "mock-payments"])).rejects.toMatchObject({ status: 400 });
     await expect(apply({ ...event, amountMinor: 1 })).rejects.toMatchObject({ status: 409 });
     await expect(apply({ ...event, currency: "EUR" })).rejects.toMatchObject({ status: 409 });
     expect(await apply({ ...event, accountReference: "mock_acct_other_tenant" })).toMatchObject({ ignored: true });

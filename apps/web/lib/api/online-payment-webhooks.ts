@@ -112,7 +112,8 @@ export async function handleOnlinePaymentWebhook(request: Request, path: string[
     }
   }
   let rawBody: string;
-  try { rawBody = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)); }
+  // Preserve a leading BOM too: no byte may be silently removed before HMAC verification.
+  try { rawBody = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(Buffer.concat(chunks)); }
   catch { throw new DomainError("VALIDATION_ERROR", "Payment notification could not be verified.", 400); }
   const capability = provider === "mock-payments" ? createMockOnlinePayments("", () => {}) : getRegistry().getDefinition(provider)?.createConfiguredScope?.({ tenantId: "webhook", credentials: {}, now: () => new Date(), ensureAvailable: () => {} }).payments?.online;
   try {
