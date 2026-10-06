@@ -6,6 +6,7 @@ import { api, body, date, money, patch } from "./api";
 import { Badge, Loading, Modal, Notice, useResource } from "./ui";
 import { WorkspaceLink as Link, useWorkspaceAccess } from "./WorkspaceAccess";
 import { canUseAction } from "../lib/workspace-access";
+import { paymentReceiptDestination } from "../lib/resource-navigation";
 import InvoiceRefund, { type RefundPaymentContext } from "./InvoiceRefund";
 import InvoicePaymentAttention from "./InvoicePaymentAttention";
 import ManualPaymentForm from "./ManualPaymentForm";
@@ -13,6 +14,10 @@ import CustomerPortalAccess from "./CustomerPortalAccess";
 import "./record-detail.css";
 
 type Row = Record<string, any> & { id: string };
+function ReceiptLink({ payment }: { payment: Row }) {
+  const destination = paymentReceiptDestination(payment);
+  return destination ? <Link href={destination.href}>{destination.label}</Link> : null;
+}
 type Detail = { item: Row; related: Record<string, Row[]>; timeline: { id: string; title: string; description?: string; occurredAt: string }[] };
 const labels: Record<string, string> = { customers: "Customer", jobs: "Job", invoices: "Invoice", leads: "Lead" };
 const edits: Record<string, { label: string; key: string; type?: string; required?: boolean }[]> = {
@@ -103,7 +108,7 @@ export default function RecordDetail({ resource, id }: { resource: string; id: s
         <Section title="Pets & service details"><Collection items={item.pets} empty="No pets or service details recorded." render={(row) => <div><strong>{row.name}</strong><p>{row.customFields?.size || row.customFields?.species || "Pet"}{row.customFields?.safetyFlag ? ` · Safety: ${row.customFields.safetyFlag}` : ""}</p></div>}/></Section>
         {related.jobs && <Section title="Jobs"><Collection items={related.jobs} empty="No jobs in your business locations." render={(row) => <Link href={`/app/jobs/${row.id}`}>{row.serviceName} · {date(row.scheduledDate)} <Badge status={row.status}/></Link>}/></Section>}
         {related.invoices && <Section title="Invoices"><Collection items={related.invoices} empty="No invoices in your business locations." render={(row) => <Link href={`/app/invoices/${row.id}`}>{row.number} · {money(row.totalCents, row.currency)} · Balance {money(row.balanceCents, row.currency)} <Badge status={row.status}/></Link>}/></Section>}
-        {related.payments && <Section title="Payments"><Collection items={related.payments} empty="No payments in your business locations." render={(row) => <div>{money(row.amountCents, row.currency)} · {paymentMethodLabel(row.method)} <Badge status={row.status}/><Link href={`/app/documents/receipt/${row.id}`}>View receipt</Link></div>}/></Section>}
+        {related.payments && <Section title="Payments"><Collection items={related.payments} empty="No payments in your business locations." render={(row) => <div>{money(row.amountCents, row.currency)} · {paymentMethodLabel(row.method)} <Badge status={row.status}/><ReceiptLink payment={row}/></div>}/></Section>}
         {may("customers.update") && <CustomerPortalAccess customerId={id} email={item.email} locations={item.locations || []}/>}
       </>}
       {resource === "jobs" && <>
@@ -113,7 +118,7 @@ export default function RecordDetail({ resource, id }: { resource: string; id: s
       </>}
       {resource === "invoices" && <>
         <Section title="Invoice lines"><Collection items={related.lines} empty="No invoice lines recorded." render={(row) => <div><strong>{row.description}</strong><p>{row.quantity} × {money(row.unitCents, item.currency)} · {money(row.totalCents, item.currency)}</p></div>}/></Section>
-        {related.payments && <Section title="Payment history"><Collection items={related.payments} empty="No payments have been recorded for this invoice." render={(row) => <div><strong>{money(row.amountCents, item.currency)}</strong><p>{paymentMethodLabel(row.method, row.sourceType)}{row.reference ? ` · Reference: ${row.reference}` : ""} · {date(row.createdAt)}</p><Badge status={row.status}/><p>Refunded {money(row.refundedCents, item.currency)}</p><Link href={`/app/documents/receipt/${row.id}`}>View receipt</Link></div>}/>{may("payments.refund", "payment_collection") && <InvoiceRefund invoiceId={id} balanceCents={Number(item.balanceCents)} currency={item.currency} payments={payments.filter((payment) => payment.method !== "card" || access.role === "owner")} onRefunded={() => detail.reload()}/>}</Section>}
+        {related.payments && <Section title="Payment history"><Collection items={related.payments} empty="No payments have been recorded for this invoice." render={(row) => <div><strong>{money(row.amountCents, item.currency)}</strong><p>{paymentMethodLabel(row.method, row.sourceType)}{row.reference ? ` · Reference: ${row.reference}` : ""} · {date(row.createdAt)}</p><Badge status={row.status}/><p>Refunded {money(row.refundedCents, item.currency)}</p><ReceiptLink payment={row}/></div>}/>{may("payments.refund", "payment_collection") && <InvoiceRefund invoiceId={id} balanceCents={Number(item.balanceCents)} currency={item.currency} payments={payments.filter((payment) => payment.method !== "card" || access.role === "owner")} onRefunded={() => detail.reload()}/>}</Section>}
         {related.refunds && <Section title="Refunds"><Collection items={related.refunds} empty="No refunds recorded." render={(row) => <div>{money(row.amountCents, row.currency)} <Badge status={row.status}/><p>{row.reason || "No reason recorded"}</p></div>}/></Section>}
       </>}
       {resource === "leads" && <Section title="Related customer"><Collection items={related.customer} empty="This lead has not been linked to an accessible customer." render={(row) => <Link href={`/app/customers/${row.id}`}>{row.name}</Link>}/></Section>}

@@ -7,9 +7,11 @@ import { and, eq } from "drizzle-orm";
 import { schema, seedDevelopment, seedIds, type Database } from "@modular-crm/db";
 import { permissionsForRole } from "@modular-crm/domain";
 import type { SessionActor } from "../lib/api/actor";
+import { businessDate } from "../lib/dates";
 
-const { getDbMock } = vi.hoisted(() => ({ getDbMock: vi.fn() }));
+const { getDbMock, getCapabilityMock } = vi.hoisted(() => ({ getDbMock: vi.fn(), getCapabilityMock: vi.fn() }));
 vi.mock("../lib/db", () => ({ getDb: getDbMock }));
+vi.mock("../lib/connectors", () => ({ getCapability: getCapabilityMock }));
 process.env.DATABASE_URL ??= "postgres://localhost:5433/modular_crm_test";
 const { handleJobPlanning } = await import("../lib/api/job-planning");
 const { handleRecordDetails } = await import("../lib/api/record-details");
@@ -60,6 +62,63 @@ it("rejects started work, stale updates, missing permission, wrong tenant and wr
   await expect(action(job, "cancel", { reason: "Requested" }, { ...owner, tenantId: seedIds.cleanTenant })).rejects.toMatchObject({ status: 404 });
   const fresh = await createJob(); await db.update(schema.jobs).set({ updatedAt: new Date(fresh.updatedAt.getTime() + 1000) }).where(eq(schema.jobs.id, fresh.id));
   await expect(action(fresh, "reschedule", { scheduledDate: "2026-11-10" })).rejects.toMatchObject({ status: 409 });
+});
+it("keeps a rescheduled-and-returned visit out of both field route queries until publication", async () => {
+  const date = businessDate(new Date(), "America/New_York");
+  await db.update(schema.routePlans).set({ status: "draft" }).where(eq(schema.routePlans.membershipId, seedIds.terryMembership));
+  const withdrawn = await createJob("scheduled", date), remaining = await createJob("scheduled", date);
+  const [route] = await db.insert(schema.routePlans).values({ tenantId: owner.tenantId, organizationLocationId: seedIds.augusta, membershipId: seedIds.terryMembership, routeDate: date, status: "draft" }).returning();
+  await db.insert(schema.routeStops).values([withdrawn,remaining].map((job,index) => ({ tenantId: owner.tenantId, routePlanId: route!.id, jobId: job.id, sequence: index+1, status: "planned" })));
+  await handleRoutesField(request({}), ["routes",route!.id,"publish"],office);
+  const [published] = await db.select().from(schema.jobs).where(eq(schema.jobs.id,withdrawn.id));
+  await action(published!,"reschedule",{ scheduledDate: "2099-11-08" });
+  const [away] = await db.select().from(schema.jobs).where(eq(schema.jobs.id,withdrawn.id));
+  await action(away!,"reschedule",{ scheduledDate: date });
+  const tech: SessionActor = { ...office, role: "technician", userId: "demo-happy-tech", membershipId: seedIds.terryMembership, permissions: permissionsForRole("technician") };
+  for (const view of ["today","route"]) {
+    const data = await (await handleRoutesField(new Request("http://localhost"),["field",view],tech))!.json();
+    expect(data.item.route.id).toBe(route!.id);
+    expect(data.item.jobs.map((job: {id:string}) => job.id)).toEqual([remaining.id]);
+  }
+  const [last] = await db.select().from(schema.jobs).where(eq(schema.jobs.id,remaining.id));
+  await action(last!,"reschedule",{ scheduledDate: "2099-11-08" });
+  for (const view of ["today","route"]) {
+    const data = await (await handleRoutesField(new Request("http://localhost"),["field",view],tech))!.json();
+    expect(data.item.route).toBeNull(); expect(data.item.jobs).toEqual([]);
+  }
+});
+it("rejects same-technician reassignment without withdrawing published work or emitting events", async () => {
+  const job = await createJob();
+  const [route] = await db.insert(schema.routePlans).values({ tenantId: owner.tenantId, organizationLocationId: seedIds.augusta, membershipId: seedIds.terryMembership, routeDate: job.scheduledDate!, status: "draft" }).returning();
+  await db.insert(schema.routeStops).values({ tenantId: owner.tenantId,routePlanId: route!.id,jobId: job.id,sequence: 1,status: "planned" });
+  await handleRoutesField(request({}),["routes",route!.id,"publish"],office);
+  const [published] = await db.select().from(schema.jobs).where(eq(schema.jobs.id,job.id));
+  await expect(action(published!,"reassign",{ technicianId: seedIds.terryMembership })).rejects.toMatchObject({ status: 422 });
+  expect((await db.select().from(schema.jobs).where(eq(schema.jobs.id,job.id)))[0]).toEqual(published);
+  expect((await db.select().from(schema.routeStops).where(eq(schema.routeStops.routePlanId,route!.id)))[0]!.status).toBe("planned");
+  expect(await db.select().from(schema.domainEvents).where(and(eq(schema.domainEvents.entityId,job.id),eq(schema.domainEvents.eventType,"job.assigned")))).toHaveLength(0);
+});
+it("optimizes only active stops and preserves the withdrawn stop's sequence and history", async () => {
+  const withdrawn = await createJob(), active = await createJob();
+  const locations = await db.insert(schema.serviceLocations).values(["Withdrawn", "Active"].map((name,index) => ({ tenantId: owner.tenantId,customerId: seedIds.carter,organizationLocationId: seedIds.augusta,name,addressLine1: `${index+1} ${name} Street`,city: "Augusta",region: "GA",postalCode: "30901" }))).returning();
+  await db.update(schema.jobs).set({ serviceLocationId: locations[0]!.id }).where(eq(schema.jobs.id,withdrawn.id));
+  await db.update(schema.jobs).set({ serviceLocationId: locations[1]!.id }).where(eq(schema.jobs.id,active.id));
+  const [route] = await db.insert(schema.routePlans).values({ tenantId: owner.tenantId, organizationLocationId: seedIds.augusta, membershipId: seedIds.terryMembership, routeDate: active.scheduledDate!, status: "draft" }).returning();
+  const stopRows = await db.insert(schema.routeStops).values([withdrawn,active].map((job,index) => ({ tenantId: owner.tenantId,routePlanId: route!.id,jobId: job.id,sequence: index+1,status: "planned" }))).returning();
+  await action(withdrawn,"reschedule",{ scheduledDate: "2026-11-08" });
+  const [historical] = await db.select().from(schema.routeStops).where(eq(schema.routeStops.id,stopRows[0]!.id));
+  const geocode = vi.fn(async () => ({ coordinates: { latitude: 33.4,longitude: -82 } }));
+  const optimizeRoute = vi.fn(async (input: {stops:{id:string}[]}) => ({ stopIds: input.stops.map(stop => stop.id),distanceKm: 7,durationMinutes: 12 }));
+  getCapabilityMock.mockImplementation(async (_tenant,capability) => capability === "routing" ? { optimizeRoute } : { geocode });
+  await handleRoutesField(request({}),["routes",route!.id,"optimize"],office);
+  expect(optimizeRoute).toHaveBeenCalledWith(expect.objectContaining({ stops: [expect.objectContaining({id: stopRows[1]!.id})] }));
+  expect(geocode).toHaveBeenCalledTimes(1);
+  expect(geocode).toHaveBeenCalledWith("2 Active Street, Augusta, GA");
+  expect((await db.select().from(schema.serviceLocations).where(eq(schema.serviceLocations.id,locations[0]!.id)))[0]!.latitude).toBeNull();
+  expect((await db.select().from(schema.routeStops).where(eq(schema.routeStops.id,historical!.id)))[0]).toEqual(historical);
+  expect((await db.select().from(schema.routeStops).where(eq(schema.routeStops.id,stopRows[1]!.id)))[0]!.sequence).toBe(2);
+  expect((await db.select().from(schema.routePlans).where(eq(schema.routePlans.id,route!.id)))[0]).toMatchObject({ estimatedDistanceMeters: 7000,estimatedDriveSeconds: 720 });
+  expect((await db.select().from(schema.routeOptimizationRuns).where(eq(schema.routeOptimizationRuns.routePlanId,route!.id)))[0]!.inputSnapshot).toMatchObject({ stopIds: [stopRows[1]!.id] });
 });
 it("reassigns within the job's business only, retaining assignment history", async () => {
   const job = await createJob();

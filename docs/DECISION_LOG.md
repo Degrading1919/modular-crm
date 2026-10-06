@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-05 — Withdrawn route stops remain history-only
+
+- **Status:** Accepted
+- **Area:** Product / UX
+- **Decision:** Removed stops cannot select a technician route, appear as current field work, enter optimization, or receive optimization sequence writes. Reject reassignment to the current primary technician without changing the job, route or assignment history.
+- **Rationale:** Returning a withdrawn visit to its former calendar day must not restore dispatch implicitly; historical sequence positions must not collide with reordered active stops.
+- **Authoritative doc:** `docs/PRODUCT_SCOPE.md`
+
 ## 2026-10-05 — Actionable record pages and safe job planning changes
 
 - **Status:** Accepted

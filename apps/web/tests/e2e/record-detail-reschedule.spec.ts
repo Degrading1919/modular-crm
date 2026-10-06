@@ -6,6 +6,26 @@ async function signIn(page: Page, email: string) {
   await page.goto("/login"); await page.getByLabel("Email address").fill(email); await page.getByLabel("Password").fill("Demo12345!");
   await page.getByRole("button", { name: "Sign in", exact: true }).click(); await expect(page).toHaveURL(/\/app\/dashboard$/);
 }
+test("customer payment history offers receipts only for settled payments", async ({ page }) => {
+  const db = createDatabase(process.env.DATABASE_URL!);
+  const ownedPayments: string[] = [];
+  try {
+    for (const status of ["pending", "failed"]) {
+      const [payment] = await db.insert(schema.payments).values({ tenantId: seedIds.happyTenant, customerId: seedIds.carter,status,amountMinor: status === "pending" ? 123n : 234n,currency: "USD",sourceType: "mock",idempotencyKey: crypto.randomUUID(),recordedByActorType: "staff" }).returning();
+      ownedPayments.push(payment!.id);
+    }
+    await signIn(page,"owner@happyyards.test");
+    await page.goto(`/app/customers/${seedIds.carter}`);
+    const payments = page.getByRole("region",{ name: "Payments",exact: true });
+    await expect(payments).toContainText("Pending"); await expect(payments).toContainText("Failed");
+    await expect(payments).toContainText("$1.23"); await expect(payments).toContainText("$2.34");
+    for (const id of ownedPayments) await expect(payments.locator(`a[href='/app/documents/receipt/${id}']`)).toHaveCount(0);
+    await expect(payments.locator(`a[href='/app/documents/receipt/${seedIds.happyPayment}']`)).toHaveText("View receipt");
+  } finally {
+    for (const id of ownedPayments) await db.delete(schema.payments).where(and(eq(schema.payments.tenantId,seedIds.happyTenant),eq(schema.payments.id,id)));
+    await closeDatabase(db);
+  }
+});
 for (const role of ["owner", "office"] as const) {
   for (const resource of ["customers", "jobs", "invoices", "leads"] as const) {
     test(`${role} opens and edits the ${resource} full detail page in its permitted scope`, async ({ page }, testInfo) => {

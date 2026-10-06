@@ -90,6 +90,8 @@ export async function handleJobPlanning(request: Request, path: string[], actor:
         await recordJobReschedule(tx, actor, job, body.scheduledDate!);
       } else {
         const technician = await assignableTechnician(tx, actor, job, body.technicianId!);
+        const [currentAssignment] = await tx.select({ id: jobAssignments.id }).from(jobAssignments).where(and(eq(jobAssignments.tenantId,actor.tenantId),eq(jobAssignments.jobId,id),eq(jobAssignments.membershipId,technician.id),eq(jobAssignments.assignmentRole,"primary"),isNull(jobAssignments.removedAt)));
+        if (currentAssignment) throw new DomainError("VALIDATION_ERROR","This job is already assigned to this technician. Choose a different technician.",422);
         await suppressJobReminders(tx, actor, id, "visit_rescheduled");
         await tx.update(jobAssignments).set({ removedAt: now }).where(and(eq(jobAssignments.tenantId, actor.tenantId), eq(jobAssignments.jobId, id), isNull(jobAssignments.removedAt)));
         await tx.insert(jobAssignments).values({ tenantId: actor.tenantId, jobId: id, membershipId: technician.id, assignmentRole: "primary" });

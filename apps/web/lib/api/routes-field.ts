@@ -177,7 +177,7 @@ async function mutateRoute(request: Request, actor: SessionActor, id: string, ac
     const addresses = await rows(sql`select rs.id as stop_id, sl.id as location_id, sl.address_line1, sl.city, sl.region, sl.latitude, sl.longitude
       from route_stops rs join jobs j on j.id=rs.job_id and j.tenant_id=rs.tenant_id
       join service_locations sl on sl.id=j.service_location_id and sl.tenant_id=j.tenant_id
-      where rs.tenant_id=${actor.tenantId} and rs.route_plan_id=${id} order by rs.sequence`);
+      where rs.tenant_id=${actor.tenantId} and rs.route_plan_id=${id} and rs.status <> 'removed' order by rs.sequence`);
     const points = await Promise.all(addresses.map(async (row) => {
       const coordinates = row.latitude && row.longitude ? { latitude: Number(row.latitude), longitude: Number(row.longitude) } : (await geocoding.geocode(`${row.address_line1}, ${row.city}, ${row.region}`)).coordinates;
       await db.update(serviceLocations).set({ latitude: String(coordinates.latitude), longitude: String(coordinates.longitude), geocodeStatus: "complete", updatedAt: new Date() }).where(and(eq(serviceLocations.tenantId, actor.tenantId), eq(serviceLocations.id, String(row.location_id))));
@@ -186,8 +186,17 @@ async function mutateRoute(request: Request, actor: SessionActor, id: string, ac
     if (points.length) {
       const outcome = await routing.optimizeRoute({ start: points[0]!.coordinates, stops: points });
       await db.transaction(async (tx) => {
-        for (let i = 0; i < outcome.stopIds.length; i++) await tx.update(routeStops).set({ sequence: -(i + 1), updatedAt: new Date() }).where(and(eq(routeStops.id, outcome.stopIds[i]!), eq(routeStops.tenantId, actor.tenantId)));
-        for (let i = 0; i < outcome.stopIds.length; i++) await tx.update(routeStops).set({ sequence: i + 1, updatedAt: new Date() }).where(and(eq(routeStops.id, outcome.stopIds[i]!), eq(routeStops.tenantId, actor.tenantId)));
+        const [currentRoute] = await tx.select().from(routePlans).where(and(eq(routePlans.id,id),eq(routePlans.tenantId,actor.tenantId))).for("update");
+        if (!currentRoute) throw new DomainError("NOT_FOUND", "Route not found.", 404);
+        assertTransition("route",currentRoute.status,"optimized");
+        const currentStops = await tx.select().from(routeStops).where(and(eq(routeStops.tenantId,actor.tenantId),eq(routeStops.routePlanId,id),sql`${routeStops.status} <> 'removed'`)).orderBy(routeStops.sequence).for("update");
+        const expectedIds = new Set(points.map(point => point.id));
+        if (currentStops.length !== points.length || currentStops.some(stop => !expectedIds.has(stop.id))) throw new DomainError("CONFLICT","The route changed. Review it and plan the route again.",409);
+        if (outcome.stopIds.length !== currentStops.length || new Set(outcome.stopIds).size !== currentStops.length || outcome.stopIds.some(stopId => !expectedIds.has(stopId))) throw new DomainError("EXTERNAL_SERVICE_ERROR","Route planning returned an incomplete stop order. Try planning the route again.",503);
+        // Reuse active sequence slots: removed historical rows keep their own positions.
+        const stopScope = (stopId: string) => and(eq(routeStops.id,stopId),eq(routeStops.tenantId,actor.tenantId),eq(routeStops.routePlanId,id),sql`${routeStops.status} <> 'removed'`);
+        for (let i = 0; i < outcome.stopIds.length; i++) await tx.update(routeStops).set({ sequence: -(i + 1), updatedAt: new Date() }).where(stopScope(outcome.stopIds[i]!));
+        for (let i = 0; i < outcome.stopIds.length; i++) await tx.update(routeStops).set({ sequence: currentStops[i]!.sequence, updatedAt: new Date() }).where(stopScope(outcome.stopIds[i]!));
         const [run] = await tx.insert(routeOptimizationRuns).values({ tenantId: actor.tenantId, routePlanId: id, status: "completed", inputSnapshot: { stopIds: points.map((point) => point.id) }, outputSnapshot: { stopIds: outcome.stopIds }, completedAt: new Date() }).returning();
         await tx.update(routePlans).set({ estimatedDistanceMeters: Math.round(outcome.distanceKm * 1000), estimatedDriveSeconds: Math.round(outcome.durationMinutes * 60), currentOptimizationRunId: run?.id, status: "optimized", updatedAt: new Date() }).where(and(eq(routePlans.id, id), eq(routePlans.tenantId, actor.tenantId)));
       });
@@ -214,7 +223,7 @@ async function fieldRouteData(actor: SessionActor, dateMode: "today" | "nearest"
     and ${routeDateCondition} and rp.status in ('published','started','completed')
     and (${actor.allLocations} or rp.organization_location_id = any(${uuidArray(actor.locationIds)}))
     and exists (select 1 from route_stops rs join jobs j on j.id=rs.job_id and j.tenant_id=rs.tenant_id
-      where rs.tenant_id=rp.tenant_id and rs.route_plan_id=rp.id and j.scheduled_date=rp.route_date
+      where rs.tenant_id=rp.tenant_id and rs.route_plan_id=rp.id and rs.status <> 'removed' and j.scheduled_date=rp.route_date
       and (${actor.allLocations} or j.organization_location_id = any(${uuidArray(actor.locationIds)}))
       and exists (select 1 from job_assignments ja where ja.tenant_id=j.tenant_id and ja.job_id=j.id
         and ja.membership_id=rp.membership_id and ja.removed_at is null))
@@ -225,7 +234,7 @@ async function fieldRouteData(actor: SessionActor, dateMode: "today" | "nearest"
     join customers c on c.id=j.customer_id and c.tenant_id=j.tenant_id
     join services s on s.id=j.service_id and s.tenant_id=j.tenant_id
     join service_locations sl on sl.id=j.service_location_id and sl.tenant_id=j.tenant_id
-    where rs.tenant_id=${actor.tenantId} and rs.route_plan_id=${route[0].id} and j.scheduled_date=${route[0].route_date}
+    where rs.tenant_id=${actor.tenantId} and rs.route_plan_id=${route[0].id} and rs.status <> 'removed' and j.scheduled_date=${route[0].route_date}
       and (${actor.allLocations} or j.organization_location_id = any(${uuidArray(actor.locationIds)}))
       and exists (select 1 from job_assignments ja where ja.tenant_id=j.tenant_id and ja.job_id=j.id
         and ja.membership_id=${actor.membershipId} and ja.removed_at is null)
