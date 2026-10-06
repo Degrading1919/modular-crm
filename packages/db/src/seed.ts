@@ -1,4 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
+import { PET_WASTE_REMOVAL_PACK } from "@modular-crm/industry-packs";
 import type { Database } from "./client.ts";
 import { permissionsForRole, type Permission } from "@modular-crm/domain";
 import {
@@ -441,6 +442,10 @@ export async function seedDevelopment(db: Database, actorIds: Partial<Record<See
     await tx.insert(automationRules).values([
       { id: uuid(800), tenantId: seedIds.happyTenant, name: "Completion thank-you", source: "industry_pack", sourceKey: "completion-thank-you", status: "active", version: 1, triggerConfig: { event: "job.completed" }, conditions: { field: "job.status", operator: "equals", value: "completed" }, actions: [{ actionType: "send_email", purpose: "service", configuration: { templateKey: "completion" } }], activeFrom: at(-30) },
     ]).onConflictDoNothing();
+    for (const recipe of PET_WASTE_REMOVAL_PACK.defaultAutomations.filter(r => ["quote-follow-up", "visit-review-request"].includes(r.sourceKey))) {
+      const [existing] = await tx.select({ id: automationRules.id }).from(automationRules).where(and(eq(automationRules.tenantId, seedIds.happyTenant), eq(automationRules.sourceKey, recipe.sourceKey))).limit(1);
+      if (!existing) await tx.insert(automationRules).values({ tenantId: seedIds.happyTenant, name: recipe.name, description: recipe.description, source: "industry_pack", sourceKey: recipe.sourceKey, status: "draft", triggerConfig: { event: recipe.event, ...(recipe.filters ? { filters: recipe.filters } : {}) }, actions: [...recipe.actions] });
+    }
     await tx.insert(domainEvents).values([
       { id: uuid(801), tenantId: seedIds.happyTenant, eventType: "job.completed", eventVersion: 1, actorType: "staff", actorId: seedIds.terryMembership, entityType: "job", entityId: seedIds.completedJob, organizationId: seedIds.happyOrganization, locationId: seedIds.augusta, payload: { customerId: seedIds.carter }, occurredAt: at(-7, 15), publishedAt: at(-7, 15) },
     ]).onConflictDoNothing();

@@ -42,8 +42,8 @@ export async function processWebhookDelivery(db: Database, boss: PgBoss, input: 
 /** Poll durable delivery rows so a failed pg-boss enqueue or worker crash is recovered. */
 export async function enqueuePendingWebhookDeliveries(db: Database, boss: PgBoss, now = new Date()): Promise<number> {
   await db.update(webhookDeliveries).set({ status: "retry", nextRetryAt: now, updatedAt: now }).where(and(eq(webhookDeliveries.status, "sending"), lt(webhookDeliveries.lastAttemptAt, new Date(now.getTime() - 15 * 60000))));
-  const pending = await db.select({ id: webhookDeliveries.id, tenantId: webhookDeliveries.tenantId }).from(webhookDeliveries)
+  const pending = await db.select({ id: webhookDeliveries.id, tenantId: webhookDeliveries.tenantId, requestId: webhookDeliveries.requestId }).from(webhookDeliveries)
     .where(and(inArray(webhookDeliveries.status, ["queued", "retry"]), or(isNull(webhookDeliveries.nextRetryAt), lte(webhookDeliveries.nextRetryAt, now)))).limit(100);
-  for (const item of pending) await enqueueWebhookDelivery(boss, { tenantId: item.tenantId, deliveryId: item.id });
+  for (const item of pending) await enqueueWebhookDelivery(boss, { tenantId: item.tenantId, deliveryId: item.id, ...(item.requestId ? { requestId: item.requestId } : {}) });
   return pending.length;
 }

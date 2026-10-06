@@ -1,3 +1,4 @@
+import { logJson } from "@modular-crm/config/observability";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { loadEmailBusiness, memberships, outboundMessages, portalAccess, reserveAccountEmail, sealAccountEmail, type Database } from "@modular-crm/db";
@@ -20,7 +21,7 @@ export async function sendPlatformEmail(to: string, subject: string, text: strin
   const reservation = await reserveAccountEmail(getDb(), to);
   if (!reservation.allowed) {
     // No recipient, subject, or account link belongs in this operational log.
-    console.warn("Account email suppressed: recipient sending limit reached.");
+    logJson("warn", "account_email.recipient_limit");
     return;
   }
   await createPlatformEmailSender(smtp, environment === "production", business, platformName).sendEmail({ to, subject,

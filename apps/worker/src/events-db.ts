@@ -152,13 +152,13 @@ export function normalizeAutomationRule(row: RuleRow): AutomationRule {
 
 /** Outbox sweep makes post-commit enqueue best effort rather than a correctness dependency. */
 export async function publishPendingDomainEvents(db: Database, boss: PgBoss, now = new Date(), limit = 100): Promise<number> {
-  const pending = await db.select({ id: domainEvents.id, tenantId: domainEvents.tenantId }).from(domainEvents)
+  const pending = await db.select({ id: domainEvents.id, tenantId: domainEvents.tenantId, requestId: domainEvents.requestId }).from(domainEvents)
     .where(and(isNull(domainEvents.publishedAt), isNotNull(domainEvents.tenantId)))
     .orderBy(asc(domainEvents.occurredAt)).limit(limit);
   let published = 0;
   for (const event of pending) {
     if (!event.tenantId) continue;
-    const queued = await enqueueDomainEvent(boss, { tenantId: event.tenantId, eventId: event.id });
+    const queued = await enqueueDomainEvent(boss, { tenantId: event.tenantId, eventId: event.id, ...(event.requestId ? { requestId: event.requestId } : {}) });
     if (!queued) throw new Error(`Queue did not accept domain event ${event.id}`);
     await db.update(domainEvents).set({ publishedAt: now }).where(and(eq(domainEvents.id, event.id), isNull(domainEvents.publishedAt)));
     published++;
@@ -194,24 +194,24 @@ export async function processDomainEvent(db: Database, boss: PgBoss, input: { te
       plan = planAutomationRun(rule, event);
     } catch (error) {
       const idempotencyKey = [input.tenantId, ruleRow.id, ruleRow.version, row.id].map(encodeURIComponent).join(":");
-      await db.insert(automationRuns).values({ tenantId: input.tenantId, automationRuleId: ruleRow.id, ruleVersion: ruleRow.version, triggeringEventId: row.id, idempotencyKey, status: "failed", errorCode: "invalid_rule", errorMessage: error instanceof Error ? error.message.slice(0, 300) : "Invalid rule" }).onConflictDoNothing();
+      await db.insert(automationRuns).values({ requestId: row.requestId, tenantId: input.tenantId, automationRuleId: ruleRow.id, ruleVersion: ruleRow.version, triggeringEventId: row.id, idempotencyKey, status: "failed", errorCode: "invalid_rule", errorMessage: error instanceof Error ? error.message.slice(0, 300) : "Invalid rule" }).onConflictDoNothing();
       continue;
     }
     if (!plan) continue;
     const key = automationRunKey(event, rule);
     const snapshot = JSON.parse(JSON.stringify({ rule, event, plan, completedActionKeys: [] })) as Record<string, unknown>;
-    const [inserted] = await db.insert(automationRuns).values({ tenantId: input.tenantId, automationRuleId: rule.id, ruleVersion: rule.version, triggeringEventId: row.id, idempotencyKey: key, status: "queued", contextSnapshot: snapshot }).onConflictDoNothing().returning({ id: automationRuns.id });
+    const [inserted] = await db.insert(automationRuns).values({ requestId: row.requestId, tenantId: input.tenantId, automationRuleId: rule.id, ruleVersion: rule.version, triggeringEventId: row.id, idempotencyKey: key, status: "queued", contextSnapshot: snapshot }).onConflictDoNothing().returning({ id: automationRuns.id });
     const existing = inserted ? undefined : (await db.select({ id: automationRuns.id, status: automationRuns.status }).from(automationRuns).where(and(eq(automationRuns.tenantId, input.tenantId), eq(automationRuns.idempotencyKey, key))).limit(1))[0];
     const runId = inserted?.id ?? existing?.id;
-    if (runId && existing?.status !== "completed" && existing?.status !== "failed") { await enqueueAutomationRun(boss, { tenantId: input.tenantId, runId }); automationCount++; }
+    if (runId && existing?.status !== "completed" && existing?.status !== "failed") { await enqueueAutomationRun(boss, { tenantId: input.tenantId, runId, ...(row.requestId ? { requestId: row.requestId } : {}) }); automationCount++; }
   }
   const subscriptions = await db.select().from(webhookSubscriptions).where(and(eq(webhookSubscriptions.tenantId, input.tenantId), eq(webhookSubscriptions.status, "active")));
   let deliveryCount = 0;
   for (const subscription of subscriptions) {
     if (!subscription.eventPatterns.some((pattern) => matchesEventPattern(event.eventType, pattern))) continue;
-    const [inserted] = await db.insert(webhookDeliveries).values({ tenantId: input.tenantId, webhookSubscriptionId: subscription.id, domainEventId: row.id, status: "queued" }).onConflictDoNothing().returning({ id: webhookDeliveries.id });
+    const [inserted] = await db.insert(webhookDeliveries).values({ requestId: row.requestId, tenantId: input.tenantId, webhookSubscriptionId: subscription.id, domainEventId: row.id, status: "queued" }).onConflictDoNothing().returning({ id: webhookDeliveries.id });
     const delivery = inserted ?? (await db.select({ id: webhookDeliveries.id, status: webhookDeliveries.status }).from(webhookDeliveries).where(and(eq(webhookDeliveries.webhookSubscriptionId, subscription.id), eq(webhookDeliveries.domainEventId, row.id))).limit(1))[0];
-    if (delivery && (!("status" in delivery) || delivery.status === "queued" || delivery.status === "retry")) { await enqueueWebhookDelivery(boss, { tenantId: input.tenantId, deliveryId: delivery.id }); deliveryCount++; }
+    if (delivery && (!("status" in delivery) || delivery.status === "queued" || delivery.status === "retry")) { await enqueueWebhookDelivery(boss, { tenantId: input.tenantId, deliveryId: delivery.id, ...(row.requestId ? { requestId: row.requestId } : {}) }); deliveryCount++; }
   }
   return { automationRuns: automationCount, webhookDeliveries: deliveryCount };
 }

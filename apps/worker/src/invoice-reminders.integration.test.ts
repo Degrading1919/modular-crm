@@ -102,3 +102,17 @@ it("uses the shared currency exponent for reminder balances", async () => {
   const body = await invoiceReminderBody(db, (await messages(row.id))[0]!, now);
   expect(body).toContain("¥3,000"); expect(body).not.toContain("30.00");
 });
+it("shows one missing-email prompt per invoice across spaced suppressed attempts", async () => {
+  await schedule();
+  const [customer] = await db.insert(schema.customers).values({ tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, owningLocationId: seedIds.augusta, displayName: "Missing email", billingEmail: null }).returning();
+  const row = await invoice({ customerId: customer!.id });
+  await enqueueInvoiceReminders(db, now);
+  expect(await deliver((await messages(row.id))[0]!)).toBe("suppressed");
+  const later = new Date("2026-10-18T12:00:00Z");
+  await enqueueInvoiceReminders(db, later);
+  expect(await messages(row.id)).toHaveLength(2);
+  expect(await deliver((await messages(row.id))[1]!, later)).toBe("suppressed");
+  const prompts = await db.select().from(schema.domainEvents).where(and(eq(schema.domainEvents.entityId, row.id), eq(schema.domainEvents.eventType, "invoice.reminder_not_sent")));
+  expect(prompts).toHaveLength(1);
+  expect(prompts[0]!.payload.reason).toBe("Add an email for this customer to send reminders");
+});

@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import { requestContext } from "@modular-crm/config/observability";
 import { bigint, boolean, date, foreignKey, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { active, currency, jsonObject, money, record, status } from "./columns.ts";
 import { memberships, organizationLocations, organizations, tenants } from "./identity.ts";
@@ -66,6 +67,8 @@ export const messageTemplates = pgTable("message_templates", {
 });
 
 export const outboundMessages = pgTable("outbound_messages", {
+  requestId: uuid("request_id").$defaultFn(() => requestContext()?.requestId ?? sql`null`),
+  sendGuard: jsonObject("send_guard"),
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), customerId: uuid("customer_id").references(() => customers.id),
   jobId: uuid("job_id").references(() => jobs.id), invoiceId: uuid("invoice_id").references(() => invoices.id), channel: text("channel").notNull(),
   templateKey: text("template_key"), templateVersion: integer("template_version"), recipient: text("recipient").notNull(),
@@ -154,6 +157,7 @@ export const automationRules = pgTable("automation_rules", {
 ]);
 
 export const automationRuns = pgTable("automation_runs", {
+  requestId: uuid("request_id").$defaultFn(() => requestContext()?.requestId ?? sql`null`),
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), automationRuleId: uuid("automation_rule_id").notNull().references(() => automationRules.id),
   ruleVersion: integer("rule_version").notNull(), triggeringEventId: uuid("triggering_event_id").notNull(), idempotencyKey: text("idempotency_key").notNull(),
   status: status(), attempts: integer("attempts").notNull().default(0), startedAt: timestamp("started_at", { withTimezone: true }),

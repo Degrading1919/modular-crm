@@ -159,7 +159,7 @@ async function estimateAction(request: Request, actor: SessionActor, estimateId:
       await tx.update(secureEstimateTokens).set({ revokedAt: now, updatedAt: now }).where(and(eq(secureEstimateTokens.tenantId, actor.tenantId), eq(secureEstimateTokens.estimateId, current.id), isNull(secureEstimateTokens.consumedAt), isNull(secureEstimateTokens.revokedAt)));
       await tx.insert(secureEstimateTokens).values({ tenantId: actor.tenantId, estimateId: current.id, estimateRevisionId: revision.id, tokenHash: actionTokenHash, expiresAt });
     }
-    await recordEvent(actor, { type: `estimate.${to}`, entityType: "estimate", entityId: current.id, auditAction: `estimate.${to}`, before: { status: current.status }, after: { status: to, customerId,revisionId:revision.id,totalMinor:pricing?.totalMinor }, payload:{revisionId:revision.id,totalMinor:pricing?.totalMinor}, locationId: current.organizationLocationId }, tx);
+    await recordEvent(actor, { type: `estimate.${to}`, entityType: "estimate", entityId: current.id, auditAction: `estimate.${to}`, before: { status: current.status }, after: { status: to, customerId,revisionId:revision.id,totalMinor:pricing?.totalMinor }, payload:{customerId, estimate: { status: to, currentRevision: current.currentRevision }, revisionId:revision.id,totalMinor:pricing?.totalMinor}, locationId: current.organizationLocationId }, tx);
     return saved;
   });
   return json({ item: normalized(result), ...(rawActionToken ? { actionUrl: `/estimate/${rawActionToken}` } : {}) });

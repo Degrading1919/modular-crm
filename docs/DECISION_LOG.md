@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-06 — Production hardening for the first paid pilot
+
+- **Status:** Accepted
+- **Area:** Architecture / Industry Packs / UX
+- **Decision:** Replace process-local security counters with atomic shared PostgreSQL windows and expiry cleanup. Add redacted structured logs, request IDs through durable events/jobs, and a provider-neutral error reporter with optional OTLP configuration. Offer unanswered-quote and post-visit-review recipes as opt-in drafts with consent, quiet hours and current-state rechecks; clarify active-rule edit cutoffs and deduplicate missing-email invoice prompts.
+- **Rationale:** Multiple app instances must enforce the same budgets, owner actions must be traceable without leaking customer data, and optional follow-ups must remain safe after delays or outages.
+- **Authoritative docs:** docs/ARCHITECTURE.md, docs/INDUSTRY_PACKS.md, docs/PRODUCT_SCOPE.md
+
 ## 2026-10-06 — Automation activation excludes historical outbox backlog
 
 - **Status:** Accepted

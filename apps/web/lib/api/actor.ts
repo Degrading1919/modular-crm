@@ -1,3 +1,4 @@
+import { identifyTenant } from "@modular-crm/config/observability";
 import { and, eq, inArray, notInArray } from "drizzle-orm";
 import { membershipLocationScopes, memberships, organizationLocations, portalAccess, portalLocationAccess, rolePermissions, roleTemplates, serviceLocations, tenants } from "@modular-crm/db";
 import { DomainError, permissionsForRole, type Actor, type Permission, type RoleTemplate } from "@modular-crm/domain";
@@ -79,6 +80,7 @@ export async function resolveActor(request: Request): Promise<SessionActor | nul
 export async function requireActor(request: Request): Promise<SessionActor> {
   const actor = await resolveActor(request);
   if (!actor) throw new DomainError("UNAUTHENTICATED", "Sign in to continue.", 401);
+  identifyTenant(actor.tenantId);
   return actor;
 }
 

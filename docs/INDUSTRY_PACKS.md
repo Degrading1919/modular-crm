@@ -8,6 +8,8 @@ An Industry Pack should primarily be configuration.
 
 ## Industry Pack responsibilities
 
+Pet-waste pack 1.2 offers two additional recipes, both drafts until an owner enables them: **Follow up on unanswered quotes** (default seven days after estimate.sent, configurable waiting period) and **Ask for a review after a completed visit** (the following day). Existing delayed actions express these; no scheduled stale-estimate trigger is needed. Quote status, expiration and current revision are rechecked at execution and again at delivery after quiet-hours deferral. Both recipes require promotional consent, honor preferences/unsubscribe, and defer during business-timezone quiet hours (default 8pm–8am; tenant quietHours start/end may configure them). Existing pack tenants receive drafts without changing active rules, overrides or archived choices.
+
 A pack may define:
 
 - terminology

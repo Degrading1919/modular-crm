@@ -117,6 +117,8 @@ It includes:
 - predefined automation recipes
 - user-configurable automation rules
 - Turning on or editing an active automation applies it to new business events from that activation/edit onward, not older queued activity. Pausing or archiving preserves history; turning it back on starts a new cutoff.
+- The active-rule editor states “Changes apply to new activity from now on.” Owners can choose a waiting period in days for delayed actions.
+- Missing customer email produces one invoice timeline prompt, “Add an email for this customer to send reminders”, not a repeated prompt per attempt. Other not-sent reasons retain their existing per-message history and suppressed attempts remain spaced and bounded.
 - payroll/time tracking
 - inventory and parts tracking
 - advanced reporting

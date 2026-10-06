@@ -8,7 +8,7 @@ This document defines product engineering requirements, not legal certification.
 - require secure session cookies
 - support email verification and password reset
 - support session revocation
-- rate-limit authentication attempts
+- rate-limit authentication attempts with the shared atomic PostgreSQL budget, including direct authentication-library routes
 - preserve room for future MFA
 
 ## Authorization
@@ -113,6 +113,8 @@ Continuous tracking should not be an invisible default.
 ## Logging
 
 Production logs should prefer identifiers and correlation IDs over private record contents.
+
+Web requests and worker jobs emit structured JSON with time, level, safe request UUID, tenant UUID when known, route group, status and duration. Only allowlisted operational metadata may be logged or exported to an optional collector. See [ARCHITECTURE.md](ARCHITECTURE.md#pilot-security-and-observability) for the shared rate-limit and error-reporting boundary.
 
 Do not intentionally include:
 

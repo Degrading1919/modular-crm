@@ -6,7 +6,9 @@ export async function register() {
     catch (error) {
       // Next catches a rejected hook without terminating its HTTP listener.
       // Configuration rejection is fatal, not a recoverable request error.
-      console.error(error instanceof Error ? error.message : "Invalid server configuration.");
+      const { ServerConfigurationError } = await import("@modular-crm/config");
+      const { logJson } = await import("@modular-crm/config/observability");
+      logJson("error", "configuration.invalid", { status: 500, errorCode: "invalid_server_configuration", configurationKeys: error instanceof ServerConfigurationError ? error.configurationKeys : [] });
       process.exit(1);
     }
   }

@@ -1,4 +1,5 @@
 import type { PgBoss } from "pg-boss";
+import { requestContext } from "@modular-crm/config/observability";
 
 export const QUEUES = {
   publishOutbox: "mcrm.publish-outbox",
@@ -9,9 +10,9 @@ export const QUEUES = {
   webhookDelivery: "mcrm.webhook-delivery",
 } as const;
 
-export type TenantJob = { tenantId: string };
+export type TenantJob = { tenantId: string; requestId?: string };
 export type DomainEventJob = TenantJob & { eventId: string };
-export type RecurringGenerationJob = { tenantId?: string; planId?: string; through?: string };
+export type RecurringGenerationJob = { tenantId?: string; planId?: string; through?: string; requestId?: string };
 export type AutomationRunJob = TenantJob & { runId: string };
 export type OutboundMessageJob = TenantJob & { messageId: string };
 export type WebhookDeliveryJob = TenantJob & { deliveryId: string };
@@ -28,26 +29,30 @@ export async function registerWorkerQueues(boss: PgBoss): Promise<void> {
 }
 
 function required(value: string, label: string): void { if (!value?.trim()) throw new Error(`${label} is required`); }
+function traced<T extends { requestId?: string }>(job: T): T {
+  const id = job.requestId ?? requestContext()?.requestId;
+  return id ? { ...job, requestId: id } : job;
+}
 
 /** Call these only after the business transaction commits. The database outbox recovers missed sends. */
 export function enqueueDomainEvent(boss: PgBoss, job: DomainEventJob): Promise<string | null> {
   required(job.tenantId, "tenantId"); required(job.eventId, "eventId");
   // The database outbox is authoritative; downstream handlers are idempotent.
-  return boss.send(QUEUES.domainEvent, job);
+  return boss.send(QUEUES.domainEvent, traced(job));
 }
 export function enqueueRecurringGeneration(boss: PgBoss, job: RecurringGenerationJob & TenantJob): Promise<string | null> {
   required(job.tenantId, "tenantId");
-  return boss.send(QUEUES.recurringGeneration, job, { singletonKey: `${job.tenantId}:${job.planId ?? "all"}:${job.through ?? "default"}`, singletonSeconds: 300 });
+  return boss.send(QUEUES.recurringGeneration, traced(job), { singletonKey: `${job.tenantId}:${job.planId ?? "all"}:${job.through ?? "default"}`, singletonSeconds: 300 });
 }
 export function enqueueAutomationRun(boss: PgBoss, job: AutomationRunJob, startAfter?: string): Promise<string | null> {
   required(job.tenantId, "tenantId"); required(job.runId, "runId");
-  return boss.send(QUEUES.automationRun, job, { ...(startAfter ? { startAfter } : {}), singletonKey: `${job.tenantId}:${job.runId}`, singletonSeconds: 60 });
+  return boss.send(QUEUES.automationRun, traced(job), { ...(startAfter ? { startAfter } : {}), singletonKey: `${job.tenantId}:${job.runId}`, singletonSeconds: 60 });
 }
 export function enqueueOutboundMessage(boss: PgBoss, job: OutboundMessageJob, purpose = "marketing"): Promise<string | null> {
   required(job.tenantId, "tenantId"); required(job.messageId, "messageId");
-  return boss.send(QUEUES.outboundMessage, job, { priority: purpose === "account" ? 20 : ["service", "transactional"].includes(purpose) ? 10 : 0, singletonKey: `${job.tenantId}:${job.messageId}`, singletonSeconds: 60 });
+  return boss.send(QUEUES.outboundMessage, traced(job), { priority: purpose === "account" ? 20 : ["service", "transactional"].includes(purpose) ? 10 : 0, singletonKey: `${job.tenantId}:${job.messageId}`, singletonSeconds: 60 });
 }
 export function enqueueWebhookDelivery(boss: PgBoss, job: WebhookDeliveryJob, startAfter?: string): Promise<string | null> {
   required(job.tenantId, "tenantId"); required(job.deliveryId, "deliveryId");
-  return boss.send(QUEUES.webhookDelivery, job, { ...(startAfter ? { startAfter } : {}), singletonKey: `${job.tenantId}:${job.deliveryId}`, singletonSeconds: 60 });
+  return boss.send(QUEUES.webhookDelivery, traced(job), { ...(startAfter ? { startAfter } : {}), singletonKey: `${job.tenantId}:${job.deliveryId}`, singletonSeconds: 60 });
 }

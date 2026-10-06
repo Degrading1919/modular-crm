@@ -1,3 +1,4 @@
+import { observeRequest, identifyTenant } from "@modular-crm/config/observability";
 import { DomainError } from "@modular-crm/domain";
 import { requireActor } from "./actor";
 import { handleAdminOperations } from "./admin-operations";
@@ -38,7 +39,7 @@ import { handleOnlinePaymentSession } from "./online-payment-sessions";
 import { handleOnlinePaymentRefund } from "./online-payment-refunds";
 import { handleMockHostedPayment } from "./mock-hosted-payments";
 
-export async function handleV1(request: Request, path: string[]): Promise<Response> {
+async function dispatchV1(request: Request, path: string[]): Promise<Response> {
   try {
     const paymentWebhook = await handleOnlinePaymentWebhook(request, path);
     if (paymentWebhook) return paymentWebhook;
@@ -52,6 +53,7 @@ export async function handleV1(request: Request, path: string[]): Promise<Respon
     const publicResult = await handlePublicSite(request, path);
     if (publicResult) return publicResult;
     const actor = await requireActor(request);
+    identifyTenant(actor.tenantId);
     await requireApiCapability(actor.tenantId, path, request.method);
     const mockCheckout = await handleMockHostedPayment(request, path, actor);
     if (mockCheckout) return mockCheckout;
@@ -117,4 +119,9 @@ export async function handleV1(request: Request, path: string[]): Promise<Respon
   } catch (error) {
     return apiError(error);
   }
+}
+
+
+export async function handleV1(request: Request, path: string[]): Promise<Response> {
+  return observeRequest(request, "api.v1", () => dispatchV1(request, path));
 }

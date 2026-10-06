@@ -141,6 +141,20 @@
       "when": 1791269009377,
       "tag": "0019_automation_activation_backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1791272504600,
+      "tag": "0020_white_green_goblin",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1791272699812,
+      "tag": "0021_mute_shaman",
+      "breakpoints": true
     }
   ]
 }

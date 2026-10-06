@@ -4,6 +4,8 @@ These are operator instructions, not authorization to deploy. CI builds/tests lo
 
 ## Build once, configure at runtime
 
+Optional error reporting: set OTEL_EXPORTER_OTLP_LOGS_ENDPOINT to a trusted collector's complete HTTPS /v1/logs endpoint accepting OTLP JSON. Local console reporting needs no service. Missing external reporting produces a production startup warning, not a startup failure; exported metadata excludes raw error messages, stacks and customer data. Configure the collector through private infrastructure rather than credentials in its URL. Configure the ingress to strip incoming x-forwarded-for/x-real-ip and set the verified client IP before forwarding to the application.
+
 From the repository root with Docker/BuildKit available:
 
 ```sh

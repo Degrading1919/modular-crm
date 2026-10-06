@@ -13,6 +13,14 @@ Modular CRM should be:
 
 ## Shared core
 
+### Pilot security and observability
+
+Security rate limits use opaque, hashed PostgreSQL fixed-window counters with atomic upsert, not per-process memory. Sign-in and password reset have email/IP budgets; broad IP budgets protect malformed authentication, signup, public forms, portal invitations/estimate links and developer API traffic. The worker deletes expired counters. Rejections return 429, Retry-After and plain business copy. The trusted ingress must replace forwarded-IP headers; do not expose the app behind an ingress that accepts client-supplied forwarding headers.
+
+Web and worker logs are JSON with level, time, request ID, known tenant, route, status and duration. Only allowlisted operational metadata is logged; request/response bodies, exceptions, customer details, credentials and bearer URLs are excluded. Valid UUID request IDs are echoed or freshly generated, persisted on domain events and durable work, and propagated through recovered queues without overloading business correlation IDs.
+
+ErrorReporter is provider-neutral. Console is the local default; an optional OTLP/HTTP JSON logs collector is configured with OTEL_EXPORTER_OTLP_LOGS_ENDPOINT. Report unexpected API 5xx and worker failures, never expected 4xx. Export failures are bounded, logged without collector credentials, and cannot alter business outcomes or retry contracts. Production validation warns, but does not fail, when no external reporter is configured.
+
 The shared application should own common concepts such as:
 
 - tenants/businesses

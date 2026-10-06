@@ -1,8 +1,10 @@
+import { logJson } from "@modular-crm/config/observability";
+import { observeJob } from "./observability.js";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { PgBoss } from "pg-boss";
 import { readServerConfig, type ServerConfig } from "@modular-crm/config";
-import { closeDatabase, createDatabase, type Database } from "@modular-crm/db";
+import { cleanupRateLimits, closeDatabase, createDatabase, type Database } from "@modular-crm/db";
 import { isSecretEnvelope, openSecret } from "@modular-crm/domain";
 import { createConnectorRegistry } from "@modular-crm/connectors";
 import { enqueuePendingAutomationRuns, processAutomationRun } from "./automations-db.js";
@@ -14,7 +16,7 @@ import { generateRecurringJobs } from "./recurring-db.js";
 import { enqueueInvoiceReminders } from "./invoice-reminders-db.js";
 import { enqueuePendingWebhookDeliveries, processWebhookDelivery, type WebhookSecretResolver } from "./webhooks-db.js";
 
-function log(event: string, fields: Record<string, unknown> = {}): void { console.log(JSON.stringify({ at: new Date().toISOString(), component: "worker", event, ...fields })); }
+function log(event: string, fields: Record<string, unknown> = {}): void { logJson(event.endsWith("error") || event.endsWith("failed") ? "error" : "info", event, { component: "worker", ...fields }); }
 
 export function environmentSecretResolver(env: Record<string, string | undefined>): WebhookSecretResolver {
   let entries: Record<string, string> = {};
@@ -35,33 +37,39 @@ export function environmentSecretResolver(env: Record<string, string | undefined
 }
 
 export async function registerWorkerHandlers(db: Database, boss: PgBoss, resolveSecret: WebhookSecretResolver, config: ServerConfig = readServerConfig(process.env)): Promise<void> {
-  await boss.work(QUEUES.publishOutbox, async () => {
-    await enqueueInvoiceReminders(db);
-    const [events, messages, automations, webhooks] = await Promise.all([
-      publishPendingDomainEvents(db, boss), enqueuePendingMessages(db, boss),
-      enqueuePendingAutomationRuns(db, boss), enqueuePendingWebhookDeliveries(db, boss),
-    ]);
-    if (events || messages || automations || webhooks) log("outbox.published", { events, messages, automations, webhooks });
+  await boss.work(QUEUES.publishOutbox, async (jobs) => {
+    for (const job of jobs) await observeJob(QUEUES.publishOutbox, job.data, async () => {
+      await cleanupRateLimits(db);
+      await enqueueInvoiceReminders(db);
+      const [events, messages, automations, webhooks] = await Promise.all([
+        publishPendingDomainEvents(db, boss), enqueuePendingMessages(db, boss),
+        enqueuePendingAutomationRuns(db, boss), enqueuePendingWebhookDeliveries(db, boss),
+      ]);
+      if (events || messages || automations || webhooks) log("outbox.published", { events, messages, automations, webhooks });
+    });
   });
   await boss.work<RecurringGenerationJob>(QUEUES.recurringGeneration, async (jobs) => {
     for (const job of jobs) {
-      const result = await generateRecurringJobs(db, { tenantId: job.data.tenantId, planId: job.data.planId, through: job.data.through });
-      log("recurring.generated", { tenantId: job.data.tenantId ?? "all", ...result });
+      await observeJob(QUEUES.recurringGeneration, job.data, async () => {
+        const result = await generateRecurringJobs(db, { tenantId: job.data.tenantId, planId: job.data.planId, through: job.data.through });
+        log("recurring.generated", { tenantId: job.data.tenantId, ...result });
+        return result;
+      });
     }
   });
   // One poll per event can strand customer mail behind ordinary work bursts.
   // Drain a bounded batch serially; tenant claims and replay protection remain.
   await boss.work<DomainEventJob>(QUEUES.domainEvent, { batchSize: 10 }, async (jobs) => {
-    for (const job of jobs) await processDomainEvent(db, boss, job.data);
+    for (const job of jobs) await observeJob(QUEUES.domainEvent, job.data, () => processDomainEvent(db, boss, job.data));
   });
   await boss.work<AutomationRunJob>(QUEUES.automationRun, async (jobs) => {
-    for (const job of jobs) await processAutomationRun(db, boss, job.data);
+    for (const job of jobs) await observeJob(QUEUES.automationRun, job.data, () => processAutomationRun(db, boss, job.data));
   });
   await boss.work<OutboundMessageJob>(QUEUES.outboundMessage, async (jobs) => {
-    for (const job of jobs) await processOutboundMessage(db, createConnectorRegistry({ mockConnectors: config.mockConnectors, includePlannedProviders: true }), job.data, new Date(), config);
+    for (const job of jobs) await observeJob(QUEUES.outboundMessage, job.data, () => processOutboundMessage(db, createConnectorRegistry({ mockConnectors: config.mockConnectors, includePlannedProviders: true }), job.data, new Date(), config));
   });
   await boss.work<WebhookDeliveryJob>(QUEUES.webhookDelivery, async (jobs) => {
-    for (const job of jobs) await processWebhookDelivery(db, boss, job.data, resolveSecret);
+    for (const job of jobs) await observeJob(QUEUES.webhookDelivery, job.data, () => processWebhookDelivery(db, boss, job.data, resolveSecret));
   });
 }
 
@@ -73,7 +81,7 @@ export async function startWorker(env: Record<string, string | undefined> = proc
   const boss = new PgBoss({ connectionString, migrate: config.environment !== "production", createSchema: config.environment !== "production" });
   let stopping = false;
   let health: Awaited<ReturnType<typeof startHealthServer>> | undefined;
-  boss.on("error", (error) => log("queue.error", { message: error.message }));
+  boss.on("error", () => log("queue.error"));
   try {
     await boss.start();
     await registerWorkerQueues(boss);
@@ -102,8 +110,8 @@ const calledAsEntry = process.argv[1] && import.meta.url === pathToFileURL(resol
 if (calledAsEntry) {
   startWorker().then(({ stop }) => {
     let stopping = false;
-    const shutdown = () => { if (stopping) return; stopping = true; void stop().then(() => process.exit(0), (error) => { log("shutdown.error", { message: error instanceof Error ? error.message : "unknown" }); process.exit(1); }); };
+    const shutdown = () => { if (stopping) return; stopping = true; void stop().then(() => process.exit(0), () => { log("shutdown.error"); process.exit(1); }); };
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
-  }).catch((error) => { log("startup.error", { message: error instanceof Error ? error.message : "unknown" }); process.exitCode = 1; });
+  }).catch(() => { log("startup.error"); process.exitCode = 1; });
 }

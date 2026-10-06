@@ -1,3 +1,4 @@
+import { logJson } from "@modular-crm/config/observability";
 import { PgBoss } from "pg-boss";
 import { migrateDatabase } from "../../../packages/db/src/migrate.ts";
 import { registerWorkerQueues } from "./queues.js";
@@ -7,9 +8,9 @@ const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("DATABASE_URL is required for migrations");
 await migrateDatabase(connectionString);
 const boss = new PgBoss({ connectionString, schedule: false, supervise: false });
-boss.on("error", () => { process.exitCode = 1; console.error("Queue schema initialization failed"); });
+boss.on("error", () => { process.exitCode = 1; logJson("error", "queue.migration_failed"); });
 try {
   await boss.start();
   await registerWorkerQueues(boss);
-  console.info("Application and queue migrations applied");
+  logJson("info", "queue.migrations_applied");
 } finally { await boss.stop(); }

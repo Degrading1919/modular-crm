@@ -70,6 +70,24 @@ async function sendMalformedAuth(path: string[], rawBody: string, ip: string) {
 }
 
 describe("public and authentication rate limits", () => {
+  it("shares credential budgets with direct Better Auth HTTP sign-in and bounds password reset", async () => {
+    const { handleAuthHttp } = await import("../lib/api/auth-http.ts");
+    const handler = vi.fn(async () => new Response(null, { status: 401 }));
+    const ip = "198.51.100.240", email = "direct-auth@example.test";
+    for (let i = 0; i < 3; i++) expect((await send(["auth", "login"], "POST", { email, password: "wrong" }, ip)).status).toBe(401);
+    for (let i = 0; i < 2; i++) expect((await handleAuthHttp(request(["auth", "sign-in", "email"], "POST", { email, password: "wrong" }, ip), handler)).status).toBe(401);
+    expect((await handleAuthHttp(request(["auth", "sign-in", "email"], "POST", { email, password: "wrong" }, ip), handler)).status).toBe(429);
+    for (let i = 0; i < 5; i++) expect((await handleAuthHttp(request(["auth", "request-password-reset"], "POST", { email }, ip), handler)).status).toBe(401);
+    const limited = await handleAuthHttp(request(["auth", "request-password-reset"], "POST", { email: email.toUpperCase() }, ip), handler);
+    expect(limited.status).toBe(429); expect(Number(limited.headers.get("retry-after"))).toBeGreaterThan(0);
+  });
+  it("does not fail open when shared credential storage fails", async () => {
+    const { handleAuthHttp } = await import("../lib/api/auth-http.ts");
+    const handler = vi.fn(async () => new Response(null, { status: 200 }));
+    getDbMock.mockImplementationOnce(() => { throw new Error("storage unavailable"); });
+    await expect(handleAuthHttp(request(["auth", "request-password-reset"], "POST", { email: "closed@example.test" }, "198.51.100.242"), handler)).rejects.toThrow("storage unavailable");
+    expect(handler).not.toHaveBeenCalled();
+  });
   it("bounds invalid sign-in attempts on the V1 route that calls Better Auth directly", async () => {
     const ip = "198.51.100.202";
     const body = { email: "nobody@example.test", password: "incorrect-password" };

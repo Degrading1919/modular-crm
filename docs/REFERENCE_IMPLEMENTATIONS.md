@@ -71,6 +71,12 @@ Study for:
 
 Webstudio is currently AGPL-3.0. Architectural concepts may be studied, but source reuse must be evaluated carefully before any code is copied.
 
+## Pilot hardening references (2026-10-06)
+
+- [Better Auth rate limiting](https://better-auth.com/docs/concepts/rate-limit): its default process-memory storage cannot share a guessing budget across app servers. Modular CRM applies its own atomic PostgreSQL limiter to both V1 and direct authentication HTTP routes.
+- [OpenTelemetry OTLP specification](https://opentelemetry.io/docs/specs/otlp/): the optional collector adapter uses OTLP/HTTP JSON log envelopes, lower-camel-case fields and string-encoded nanosecond timestamps. The deployment setting is the complete trusted logs endpoint.
+- [Jobber review marketing tools](https://help.getjobber.com/en/articles/reviews-marketing-tools/): completed-visit follow-up and owner-controlled activation inform the pack's draft review-request recipe. No vendor source code was copied; implementations are original and no new third-party runtime dependency was introduced.
+
 ## Research rule
 
 For every major integration or subsystem:

@@ -1,3 +1,4 @@
+import { logJson } from "@modular-crm/config/observability";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { invoices, onlinePaymentAccounts, onlinePaymentSessions } from "@modular-crm/db";
 import { getDb } from "../db";
@@ -24,7 +25,7 @@ export async function expireExcessHostedPages(tenantId: string, invoiceId: strin
       if (session.expiresAt > new Date()) await (await onlineForAccount(account, true)).expireHostedPage(session.providerReference);
       await db.update(onlinePaymentSessions).set({ status: "expired" }).where(and(eq(onlinePaymentSessions.id, session.id), eq(onlinePaymentSessions.tenantId, tenantId), eq(onlinePaymentSessions.status, "expire_pending")));
     } catch {
-      console.warn(JSON.stringify({ event: "payment.page_expiry_pending", invoiceId, sessionId: session.id }));
+      logJson("warn", "payment.page_expiry_pending", { invoiceId, sessionId: session.id });
     }
   }
 }

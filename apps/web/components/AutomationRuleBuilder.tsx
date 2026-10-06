@@ -14,7 +14,7 @@ export type AutomationRuleBuilderRule = {
   trigger?: string;
   triggerConfig?: { event?: string };
   conditions?: unknown;
-  actions?: readonly { actionType?: string; configuration?: Record<string, unknown>; purpose?: "service" | "marketing" | "account" }[];
+  actions?: readonly { actionType?: string; configuration?: Record<string, unknown>; purpose?: "service" | "marketing" | "account"; delay?: { afterEventMinutes?: number } }[];
   status?: string;
 };
 
@@ -27,6 +27,7 @@ export type AutomationRuleBuilderProps = {
 };
 
 const TRIGGERS: readonly TriggerOption[] = [
+  { event: "estimate.sent", label: "A quote is sent", fields: [{ path: "estimate.status", label: "Quote status", kind: "text" }] },
   { event: "job.completed", label: "A service visit is completed", fields: [
     { path: "job.status", label: "Visit status", kind: "text" }, { path: "job.service_id", label: "Service", kind: "text" },
   ] },
@@ -77,6 +78,7 @@ export function buildAutomationRulePayload(input: {
   name: string; description: string; trigger: string; conditions: readonly ConditionDraft[];
   action: AutomationActionType; subject: string; message: string; ticketTitle: string; ticketDescription: string; status: "draft" | "active";
   purpose?: "service" | "marketing";
+  waitDays?: number; templateKey?: string;
 }) {
   const numericFields = new Set(triggerFor(input.trigger).fields.filter((field) => field.kind === "number").map((field) => field.path));
   const conditions = input.conditions.filter((condition) => condition.operator === "exists" || condition.operator === "not_exists" || condition.value.trim())
@@ -85,16 +87,17 @@ export function buildAutomationRulePayload(input: {
   if (input.action === "send_email") configuration = { subject: input.subject.trim(), body: input.message.trim() };
   else if (input.action === "send_sms") configuration = { body: input.message.trim() };
   else configuration = { type: "general", title: input.ticketTitle.trim(), description: input.ticketDescription.trim() };
+  if (input.templateKey && input.action !== "create_ticket") configuration.templateKey = input.templateKey;
   return {
     name: input.name.trim(), description: input.description.trim() || undefined,
     triggerConfig: { event: input.trigger },
     conditions: conditions.length ? { all: conditions } : {},
-    actions: [{ actionType: input.action, configuration, ...(["send_email", "send_sms"].includes(input.action) ? { purpose: input.purpose ?? "marketing" } : {}) }], status: input.status,
+    actions: [{ actionType: input.action, configuration, ...(input.waitDays ? { delay: { afterEventMinutes: Math.round(input.waitDays * 1440) } } : {}), ...(["send_email", "send_sms"].includes(input.action) ? { purpose: input.purpose ?? "marketing" } : {}) }], status: input.status,
   };
 }
 
 export default function AutomationRuleBuilder({ canActivate = true, initialRule, endpoint = "/automations", onSaved, onCancel }: AutomationRuleBuilderProps) {
-  const initialEvent = initialRule?.triggerConfig?.event ?? initialRule?.trigger ?? TRIGGERS[0]!.event;
+  const initialEvent = initialRule?.triggerConfig?.event ?? initialRule?.trigger ?? "job.completed";
   const initialAction = ACTIONS.some((option) => option.value === initialRule?.actions?.[0]?.actionType)
     ? initialRule!.actions![0]!.actionType as AutomationActionType : "send_email";
   const initialConfiguration = initialRule?.actions?.[0]?.configuration ?? {};
@@ -106,6 +109,7 @@ export default function AutomationRuleBuilder({ canActivate = true, initialRule,
   const [purpose, setPurpose] = useState<"service" | "marketing">(initialRule?.actions?.[0]?.purpose === "service" ? "service" : "marketing");
   const [subject, setSubject] = useState(asText(initialConfiguration.subject));
   const [message, setMessage] = useState(asText(initialConfiguration.body));
+  const [waitDays, setWaitDays] = useState((initialRule?.actions?.[0]?.delay?.afterEventMinutes ?? 0) / 1440);
   const [ticketTitle, setTicketTitle] = useState(asText(initialConfiguration.title));
   const [ticketDescription, setTicketDescription] = useState(asText(initialConfiguration.description));
   const [error, setError] = useState("");
@@ -132,7 +136,7 @@ export default function AutomationRuleBuilder({ canActivate = true, initialRule,
     if (action === "create_ticket" && !ticketTitle.trim()) { setError("Add a title for the office follow-up."); return; }
     setSaving(true);
     try {
-      const payload = buildAutomationRulePayload({ name, description, trigger, conditions, action, purpose, subject, message, ticketTitle, ticketDescription, status });
+      const payload = buildAutomationRulePayload({ name, description, trigger, conditions, action, purpose, subject, message, ticketTitle, ticketDescription, status, waitDays, templateKey: initialAction === action ? asText(initialConfiguration.templateKey) : undefined });
       const path = initialRule ? `${endpoint.replace(/\/$/, "")}/${encodeURIComponent(initialRule.id)}` : endpoint;
       const result = await api<{ item: AutomationRuleBuilderRule }>(path, initialRule ? patch(payload) : body(payload));
       onSaved?.(unwrapItem(result));
@@ -142,6 +146,7 @@ export default function AutomationRuleBuilder({ canActivate = true, initialRule,
   }
 
   return <form className="stack" onSubmit={(event) => void save("draft", event)}>
+    {initialRule?.status === "active" && <p className="subtle">Changes apply to new activity from now on.</p>}
     <section className="card card-pad stack" aria-labelledby="automation-trigger-heading">
       <div><p className="eyebrow">Step 1</p><h2 id="automation-trigger-heading">When this happens</h2><p className="subtle">Choose the business moment that should start this rule.</p></div>
       <div className="form-grid">
@@ -174,6 +179,7 @@ export default function AutomationRuleBuilder({ canActivate = true, initialRule,
     <section className="card card-pad stack" aria-labelledby="automation-action-heading">
       <div><p className="eyebrow">Step 3</p><h2 id="automation-action-heading">Then do this</h2><p className="subtle">Messages go to the customer connected to the event. You can review the rule before turning it on.</p></div>
       <div className="field"><label htmlFor="automation-action">What should happen?</label><select id="automation-action" value={action} onChange={(event) => setAction(event.target.value as AutomationActionType)}>{ACTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
+      <div className="field"><label htmlFor="automation-wait-days">Wait this many days</label><input id="automation-wait-days" type="number" min="0" max="365" step="0.5" value={waitDays} onChange={(event) => setWaitDays(Number(event.target.value))}/><p className="subtle">Use 0 to act right away. Messages always respect customer preferences.</p></div>
       {(action === "send_email" || action === "send_sms") && <div className="form-grid">
         <div className="field full"><label htmlFor="automation-purpose">Message purpose</label><select id="automation-purpose" value={purpose} onChange={(event) => setPurpose(event.target.value as "service" | "marketing")}><option value="service">Service update</option><option value="marketing">Promotion or follow-up</option></select><p className="subtle">Service updates cover appointments, completed work and bills. Promotions and follow-ups respect promotional email preferences.</p></div>
         {action === "send_email" && <div className="field full"><label htmlFor="automation-email-subject">Email subject</label><input id="automation-email-subject" value={subject} onChange={(event) => setSubject(event.target.value)} maxLength={180} required /></div>}

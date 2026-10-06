@@ -1,3 +1,5 @@
+import { identifyTenant } from "@modular-crm/config/observability";
+import { limitRequest, limitKey } from "./rate-limits";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, eq, isNull, sql, type SQL } from "drizzle-orm";
 import { auditEvents, customerContacts, customers, domainEvents, leads, organizations, serviceLocations } from "@modular-crm/db";
@@ -535,8 +537,13 @@ export async function handlePublicApi(request: Request, path: string[]): Promise
     || path.length === 3 && (request.method === "GET" || request.method === "PATCH");
   if (!validOperation) throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
 
+  const ipLimited = await limitRequest(request, "developer.ip", 600, 60_000);
+  if (ipLimited) return ipLimited;
   const credential = await resolveApiCredentialFromRequest(request);
   if (!credential) throw new DomainError("UNAUTHENTICATED", "A valid API credential is required.", 401);
+  identifyTenant(credential.tenantId);
+  const credentialLimited = await limitKey(`developer:${credential.tenantId}:${credential.credentialId}`, 300, 60_000);
+  if (credentialLimited) return credentialLimited;
   const access = request.method === "GET" ? "read" : "write";
   requireScope(credential, config.scope, access);
 

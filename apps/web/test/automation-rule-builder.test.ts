@@ -9,6 +9,9 @@ const base = {
 };
 
 describe("plain-language automation builder payload", () => {
+  it("retains recipe safety identity and an owner-selected waiting period", () => {
+    expect(buildAutomationRulePayload({ ...base, trigger: "estimate.sent", templateKey: "quote-follow-up", waitDays: 9 }).actions[0]).toMatchObject({ configuration: { templateKey: "quote-follow-up" }, delay: { afterEventMinutes: 12960 } });
+  });
   it("preserves an owner's explicit service purpose and defaults unclassified messages to promotions", () => {
     expect(buildAutomationRulePayload({ ...base, purpose: "service" }).actions[0]).toMatchObject({ purpose: "service" });
     expect(buildAutomationRulePayload(base).actions[0]).toMatchObject({ purpose: "marketing" });

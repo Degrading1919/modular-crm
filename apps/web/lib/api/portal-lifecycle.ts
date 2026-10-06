@@ -1,3 +1,5 @@
+import { identifyTenant } from "@modular-crm/config/observability";
+import { limitRequest } from "./rate-limits";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
@@ -235,6 +237,7 @@ async function activateInvite(request: Request) {
     await tx.insert(auditEvents).values({ tenantId: activated.tenantId, actorType: "customer", actorId: activated.userId, action: "customer.portal_access_activate", entityType: "portal_access", entityId: activated.id, afterData: { status: "active", customerId: activated.customerId } });
     return [activated];
   });
+  identifyTenant(access!.tenantId);
   return json({ item: { id: access!.id, status: access!.status } });
 }
 
@@ -352,7 +355,8 @@ async function resolveRequest(request: Request, actor: SessionActor, requestId: 
 export async function handlePortalActivation(request: Request, path: string[]): Promise<Response | null> {
   if (path[0] !== "auth" || path[1] !== "portal-activate") return null;
   if (request.method !== "POST") throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
-  return activateInvite(request);
+  const limited = await limitRequest(request, "portal.activation", 30, 600_000);
+  return limited ?? activateInvite(request);
 }
 
 export async function handlePortalLifecycle(request: Request, path: string[], actor: SessionActor): Promise<Response | null> {
