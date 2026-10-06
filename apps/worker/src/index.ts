@@ -11,6 +11,7 @@ import { jobLoopRunning, startHealthServer } from "./health.js";
 import { enqueuePendingMessages, processOutboundMessage } from "./messages-db.js";
 import { QUEUES, registerWorkerQueues, type AutomationRunJob, type DomainEventJob, type OutboundMessageJob, type RecurringGenerationJob, type WebhookDeliveryJob } from "./queues.js";
 import { generateRecurringJobs } from "./recurring-db.js";
+import { enqueueInvoiceReminders } from "./invoice-reminders-db.js";
 import { enqueuePendingWebhookDeliveries, processWebhookDelivery, type WebhookSecretResolver } from "./webhooks-db.js";
 
 function log(event: string, fields: Record<string, unknown> = {}): void { console.log(JSON.stringify({ at: new Date().toISOString(), component: "worker", event, ...fields })); }
@@ -35,6 +36,7 @@ export function environmentSecretResolver(env: Record<string, string | undefined
 
 export async function registerWorkerHandlers(db: Database, boss: PgBoss, resolveSecret: WebhookSecretResolver, config: ServerConfig = readServerConfig(process.env)): Promise<void> {
   await boss.work(QUEUES.publishOutbox, async () => {
+    await enqueueInvoiceReminders(db);
     const [events, messages, automations, webhooks] = await Promise.all([
       publishPendingDomainEvents(db, boss), enqueuePendingMessages(db, boss),
       enqueuePendingAutomationRuns(db, boss), enqueuePendingWebhookDeliveries(db, boss),

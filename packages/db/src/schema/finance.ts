@@ -137,6 +137,16 @@ export const taxRules = pgTable("tax_rules", {
   externalTaxCode: text("external_tax_code"), priority: integer("priority").notNull().default(0), active: active(),
 });
 
+// Billing ownership survives line edits and is claimed while holding the job lock.
+export const jobInvoiceLinks = pgTable("job_invoice_links", {
+  ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
+  customerId: uuid("customer_id").notNull(), jobId: uuid("job_id").notNull(), invoiceId: uuid("invoice_id").notNull(),
+}, (t) => [
+  uniqueIndex("job_invoice_links_job_ux").on(t.tenantId, t.jobId),
+  foreignKey({ columns: [t.tenantId, t.customerId, t.jobId], foreignColumns: [jobs.tenantId, jobs.customerId, jobs.id], name: "job_invoice_links_job_customer_fk" }),
+  foreignKey({ columns: [t.tenantId, t.customerId, t.invoiceId], foreignColumns: [invoices.tenantId, invoices.customerId, invoices.id], name: "job_invoice_links_invoice_customer_fk" }),
+]);
+
 export const billingSchedules = pgTable("billing_schedules", {
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), servicePlanId: uuid("service_plan_id").notNull().references(() => servicePlans.id),
   billingType: text("billing_type").notNull(), intervalConfig: jsonObject("interval_config"), autopay: boolean("autopay").notNull().default(false),

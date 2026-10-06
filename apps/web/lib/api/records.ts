@@ -157,6 +157,7 @@ async function readResource(resource: RecordResource, actor: SessionActor, id?: 
         const items = await getDb().select({
           id: estimateItems.id,
           serviceId: estimateItems.serviceId,
+          serviceType: services.serviceType,
           description: estimateItems.description,
           quantity: estimateItems.quantity,
           unitAmountMinor: estimateItems.unitAmountMinor,
@@ -164,7 +165,7 @@ async function readResource(resource: RecordResource, actor: SessionActor, id?: 
           sortOrder: estimateItems.sortOrder,
           metadata: estimateItems.metadata,
           discountMinor: estimateItems.discountMinor,
-        }).from(estimateItems).where(and(
+        }).from(estimateItems).leftJoin(services, and(eq(services.tenantId, estimateItems.tenantId), eq(services.id, estimateItems.serviceId))).where(and(
           eq(estimateItems.tenantId, actor.tenantId), eq(estimateItems.estimateRevisionId, revision.id),
         )).orderBy(asc(estimateItems.sortOrder));
         const snapshot = revision.snapshot && typeof revision.snapshot === "object" ? revision.snapshot as Record<string, unknown> : {};
@@ -474,9 +475,13 @@ async function patchResource(resource: RecordResource, id: string, request: Requ
       assertLocationAccess(actor, invoice.organizationLocationId);
       if (invoice.status !== "draft") throw new DomainError("CONFLICT", "Issued invoices keep their original details. Use a billing correction instead.", 409);
       if (invoice.updatedAt.toISOString() !== body.expectedUpdatedAt) throw new DomainError("CONFLICT", "This invoice changed. Refresh it before editing.", 409);
+      const priorLines = await tx.select().from(invoiceItems).where(and(eq(invoiceItems.tenantId, actor.tenantId), eq(invoiceItems.invoiceId, id))).orderBy(invoiceItems.sortOrder);
+      if (!body.lines && priorLines.length > 1) throw new DomainError("VALIDATION_ERROR", "Edit this invoice's lines instead of replacing its total.", 422);
+      const linkedJobs = [...new Set(priorLines.map(line => line.jobId).filter(Boolean))];
+      if (linkedJobs.length > 1) throw new DomainError("CONFLICT", "This invoice combines several visits. Keep their recorded lines; create a separate adjustment instead.", 409);
       const pricing = await documentPricing(tx,actor.tenantId,invoice.organizationId,body);
       await tx.delete(invoiceItems).where(and(eq(invoiceItems.tenantId,actor.tenantId),eq(invoiceItems.invoiceId,id)));
-      await tx.insert(invoiceItems).values(pricing.items.map(line => ({tenantId:actor.tenantId,invoiceId:id,...storedLine(line)})));
+      await tx.insert(invoiceItems).values(pricing.items.map(line => ({tenantId:actor.tenantId,invoiceId:id,jobId:linkedJobs[0] ?? null,...storedLine(line)})));
       const [saved] = await tx.update(invoices).set({ subtotalMinor: BigInt(pricing.subtotalMinor),discountMinor: BigInt(pricing.discountMinor),taxMinor: BigInt(pricing.taxMinor),totalMinor: BigInt(pricing.totalMinor), balanceMinor: BigInt(pricing.totalMinor), dueAt: body.dueDate ? new Date(`${body.dueDate}T23:59:59Z`) : null, billingSnapshot: { ...invoice.billingSnapshot,...pricing,description: body.description,totalCents:pricing.totalMinor }, updatedAt: new Date() }).where(and(eq(invoices.tenantId, actor.tenantId), eq(invoices.id, id))).returning();
       await recordEvent(actor, { type: "invoice.updated", entityType: "invoice", entityId: id, locationId: invoice.organizationLocationId, auditAction: "invoice.edit_draft", before: normalized(invoice) as Record<string, unknown>, after: normalized(saved) as Record<string, unknown> }, tx);
       return saved;

@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 import { allowedTransitions, paymentMethodLabel, type Permission } from "@modular-crm/domain";
 import { api, body, date, money, patch } from "./api";
 import { Badge, Loading, Modal, Notice, useResource } from "./ui";
@@ -38,6 +39,7 @@ function Collection({ items, empty, render }: { items?: Row[]; empty: string; re
 }
 
 export default function RecordDetail({ resource, id }: { resource: string; id: string }) {
+  const router = useRouter();
   const access = useWorkspaceAccess();
   const detail = useResource<Detail>(`/${resource}/${id}/detail`, { item: { id: "" }, related: {}, timeline: [] });
   const staff = useResource<{ items: Row[] }>(resource === "jobs" && access.permissions.includes("staff.read") ? "/staff" : null, { items: [] });
@@ -49,7 +51,7 @@ export default function RecordDetail({ resource, id }: { resource: string; id: s
   const [notice, setNotice] = useState("");
   const retry = useRef("");
   const may = (permission: Permission, feature?: string) => canUseAction(access, resource, [permission], feature);
-  const editable = resource === "invoices" ? may("invoices.adjust") && item.status === "draft" : may(`${resource}.update` as Permission);
+  const editable = resource === "invoices" ? may("invoices.adjust") && item.status === "draft" && !(item.billingSnapshot?.jobIds?.length > 1) : may(`${resource}.update` as Permission);
   const plannable = ["draft", "unscheduled", "scheduled", "dispatched", "missed"].includes(item.status);
   const payments = (related.payments ?? []) as unknown as RefundPaymentContext[];
   function open(name: string) {
@@ -72,7 +74,7 @@ export default function RecordDetail({ resource, id }: { resource: string; id: s
   }
   async function primary(action: string) {
     setSaving(true); setError("");
-    try { await api(`/${resource}/${id}/${action}`, body({})); detail.reload(); setNotice(action === "issue" ? "Invoice issued." : "Lead converted to a customer."); }
+    try { const result=await api<{item?:Row}>(`/${resource}/${id}/${action}`, body({})); if(action==="invoice"&&result.item?.id){router.push(`/app/invoices/${result.item.id}`);return;} detail.reload(); setNotice(action === "issue" ? "Invoice issued." : "Lead converted to a customer."); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "We couldn’t complete this action."); }
     finally { setSaving(false); }
   }
@@ -87,6 +89,7 @@ export default function RecordDetail({ resource, id }: { resource: string; id: s
       {editable && <button className="btn btn-secondary" onClick={() => open("edit")}>Edit {labels[resource].toLowerCase()}</button>}
       {resource === "customers" && <Link className="btn btn-secondary" href={`/app/documents/statement/${id}`}>Create account statement</Link>}
       {resource === "jobs" && item.status === "completed" && <Link className="btn btn-secondary" href={`/app/documents/completion/${id}`}>View completion report</Link>}
+      {resource === "jobs" && item.status === "completed" && !item.servicePlanId && canUseAction(access,"invoices",["invoices.create","invoices.read"]) && <button className="btn btn-primary" disabled={saving} onClick={()=>void primary("invoice")}>Create invoice</button>}
       {resource === "jobs" && plannable && may("jobs.assign", "service_scheduling") && <button className="btn btn-primary" onClick={() => open("reschedule")}>Reschedule</button>}
       {resource === "jobs" && plannable && may("jobs.assign", "service_scheduling") && access.permissions.includes("staff.read") && <button className="btn btn-secondary" onClick={() => open("reassign")}>Reassign</button>}
       {resource === "jobs" && allowedTransitions("job", item.status).includes("canceled") && may("jobs.cancel", "service_scheduling") && <button className="btn btn-secondary" onClick={() => open("cancel")}>Cancel job</button>}

@@ -127,6 +127,13 @@
       "when": 1791248880661,
       "tag": "0017_rich_rachel_grey",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1791254969262,
+      "tag": "0018_rich_tana_nile",
+      "breakpoints": true
     }
   ]
 }

@@ -2,13 +2,14 @@ import { and, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import {
   type Database, communicationEvents, consentRecords, hasUsableFeature, loadTenantCapabilities,
   notificationPreferences, outboundMessages, loadEmailBusiness, emailUnsubscribeToken, reservePlatformEmail, openAccountEmail,
-  reserveAccountEmail, REMINDER_KEYS, reminderDeadline,
+  reserveAccountEmail, REMINDER_KEYS, reminderDeadline, domainEvents, auditEvents, invoices,
 } from "@modular-crm/db";
 import { ConnectorError, type ConnectorRegistry, createPlatformEmailSender, customerEmailParts, type EmailInput } from "@modular-crm/connectors";
 import { readServerConfig, DEVELOPMENT_AUTH_SECRET, messagePurpose, type ServerConfig } from "@modular-crm/config";
 import type { PgBoss } from "pg-boss";
 import { enqueueOutboundMessage } from "./queues.js";
 import { hydrateMessagingConnector } from "./messaging-connectors.js";
+import { invoiceReminderBody } from "./invoice-reminders-db.js";
 
 type Message = typeof outboundMessages.$inferSelect;
 type Preference = typeof notificationPreferences.$inferSelect;
@@ -95,7 +96,15 @@ export async function processOutboundMessage(db: Database, registry: ConnectorRe
     }
     const unsubscribeUrl = channel === "email" && purpose === "marketing" && message.customerId
       ? new URL(`/email/unsubscribe?token=${emailUnsubscribeToken({ tenantId: input.tenantId, customerId: message.customerId, messageId: message.id }, process.env.BETTER_AUTH_SECRET ?? DEVELOPMENT_AUTH_SECRET)}`, config.appBaseUrl).toString() : undefined;
-    const renderedBody = purpose === "account" ? openAccountEmail(message.renderedBody, process.env.BETTER_AUTH_SECRET ?? DEVELOPMENT_AUTH_SECRET) : message.renderedBody;
+    const reminderBody = message.templateKey === "invoice_overdue" ? await invoiceReminderBody(db, message, now) : undefined;
+    if (reminderBody === null) {
+      await db.transaction(async tx => {
+        await tx.update(outboundMessages).set({ status: "suppressed", failureCode: "invoice_reminder_canceled", failureMessage: "This invoice no longer needs this reminder.", nextSendAt: null, updatedAt: now }).where(and(eq(outboundMessages.tenantId, message.tenantId), eq(outboundMessages.id, message.id)));
+        await tx.insert(communicationEvents).values({ tenantId: message.tenantId, outboundMessageId: message.id, eventType: "suppressed", occurredAt: now, payload: { reason: "invoice_reminder_canceled" } });
+      });
+      return "suppressed";
+    }
+    const renderedBody = reminderBody ?? (purpose === "account" ? openAccountEmail(message.renderedBody, process.env.BETTER_AUTH_SECRET ?? DEVELOPMENT_AUTH_SECRET) : message.renderedBody);
     const parts = business ? customerEmailParts(renderedBody, business, unsubscribeUrl) : { body: renderedBody };
     const request = { tenantId: input.tenantId, channel, recipient: message.recipient, subject: message.renderedSubject ?? "Service update", idempotencyKey: message.idempotencyKey, ...parts };
     if (selected.mode === "platform") {
@@ -110,8 +119,14 @@ export async function processOutboundMessage(db: Database, registry: ConnectorRe
       ? await createPlatformEmailSender(config.smtp, config.environment === "production", business, config.platformName).sendEmail({ ...parts, to: message.recipient, subject: request.subject, idempotencyKey: `${input.tenantId}:${message.idempotencyKey}` })
       : await sendThroughMessagingCapability(registry, request, false);
     await db.transaction(async (tx) => {
-      await tx.update(outboundMessages).set({ status: "sent", connectorInstallationId: selected.installationId, providerReference: sent.reference ?? null, sentAt: now, nextSendAt: null, failureCode: null, failureMessage: null, updatedAt: now }).where(and(eq(outboundMessages.id, message.id), eq(outboundMessages.tenantId, input.tenantId)));
+      await tx.update(outboundMessages).set({ status: "sent", renderedBody, connectorInstallationId: selected.installationId, providerReference: sent.reference ?? null, sentAt: now, nextSendAt: null, failureCode: null, failureMessage: null, updatedAt: now }).where(and(eq(outboundMessages.id, message.id), eq(outboundMessages.tenantId, input.tenantId)));
       await tx.insert(communicationEvents).values({ tenantId: input.tenantId, outboundMessageId: message.id, eventType: "sent", occurredAt: now, payload: { ...(sent.reference ? { reference: sent.reference } : {}), acceptedByProvider: true, mode: selected.mode, environment: selected.mode === "platform" ? config.environment : selected.mode === "mock" ? "test" : "production" } });
+      if (message.templateKey === "invoice_overdue" && message.invoiceId) {
+        const [invoice] = await tx.select({ organizationId: invoices.organizationId, locationId: invoices.organizationLocationId }).from(invoices).where(and(eq(invoices.tenantId, message.tenantId), eq(invoices.id, message.invoiceId))).limit(1);
+        const payload = { messageId: message.id, recipient: message.recipient };
+        await tx.insert(domainEvents).values({ tenantId: message.tenantId, ...invoice, eventType: "invoice.reminder_sent", actorType: "system", entityType: "invoice", entityId: message.invoiceId, occurredAt: now, payload });
+        await tx.insert(auditEvents).values({ tenantId: message.tenantId, actorType: "system", action: "invoice.reminder_sent", entityType: "invoice", entityId: message.invoiceId, afterData: payload });
+      }
     });
     return "sent";
   } catch (error) {

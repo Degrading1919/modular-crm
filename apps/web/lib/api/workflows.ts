@@ -3,10 +3,10 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   auditEvents, completionProofs, connectorInstallations, customerContacts, customers, domainEvents, estimateApprovals, estimateRevisions, estimates, hasUsableFeature, invoiceItems, invoices, jobAssignments, jobStatusEvents,
-  jobs, leads, loadTenantCapabilities, paymentAllocations, payments, recurrenceRules, serviceLocations, servicePlans, services, tenants,
+  jobs, jobInvoiceLinks, leads, loadTenantCapabilities, paymentAllocations, payments, recurrenceRules, serviceLocations, servicePlans, services, tenants,
   secureEstimateTokens, organizations,
 } from "@modular-crm/db";
-import { assertTransition, DomainError, manualPaymentMethods, requirePermission, type Permission } from "@modular-crm/domain";
+import { assertTransition, documentCharges, frozenDocument, DomainError, manualPaymentMethods, requirePermission, type Permission } from "@modular-crm/domain";
 import { updateInvoiceFinancialPosition } from "./invoice-payment-ledger";
 import { expireExcessHostedPages } from "./hosted-page-expiry";
 import { getCapability } from "../connectors";
@@ -23,6 +23,7 @@ import { recordJobReschedule, suppressJobReminders } from "./job-reschedule";
 import { assignableTechnician, lockJobForPlanning, withdrawJobFromRoutes } from "./job-planning";
 import { approvedPricing } from "./estimate-pricing";
 import { estimateInvoice } from "./estimate-invoice";
+import { finishedWork, jobInvoice } from "./job-billing";
 import { storedLine } from "./document-lines";
 import type { DocumentPricing } from "@modular-crm/domain";
 
@@ -106,9 +107,10 @@ async function createEstimateDownstreamInTransaction(
     const [tenant] = await tx.select({ timezone: tenants.defaultTimezone }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
     const [rule] = await tx.insert(recurrenceRules).values({ tenantId, frequencyType: "weekly", timezone: location.timezone ?? tenant?.timezone ?? "UTC" }).returning();
     if (!rule) throw new Error("Could not create the service schedule.");
-    await tx.insert(servicePlans).values({ tenantId, customerId, serviceLocationId: location.id, organizationLocationId: location.organizationLocationId, serviceId: service.id, recurrenceRuleId: rule.id, effectiveFrom: businessDate(new Date(), location.timezone ?? tenant?.timezone ?? "UTC"), status: "active", pricingSnapshot: { ...pricing,currency:current.currency,amountMinor:pricing.totalMinor,estimateRevisionId: revision.id }, billingConfiguration: { type: "per_job" } });
+    const visits = documentCharges(pricing, "every_visit"), once = documentCharges(pricing, "once");
+    await tx.insert(servicePlans).values({ tenantId, customerId, serviceLocationId: location.id, organizationLocationId: location.organizationLocationId, serviceId: service.id, recurrenceRuleId: rule.id, effectiveFrom: businessDate(new Date(), location.timezone ?? tenant?.timezone ?? "UTC"), status: "active", pricingSnapshot: { ...visits,currency:current.currency,amountMinor:visits.totalMinor,estimateId:current.id,estimateRevisionId: revision.id }, billingConfiguration: { type: "per_job", oneTimePricingSnapshot: once } });
   } else {
-    await tx.insert(jobs).values({ tenantId, organizationId: customer.organizationId, organizationLocationId: location.organizationLocationId, customerId, serviceLocationId: location.id, serviceId: service.id, status: "unscheduled", priceSnapshot: { ...pricing,currency:current.currency,amountMinor:pricing.totalMinor,estimateRevisionId: revision.id } });
+    await tx.insert(jobs).values({ tenantId, organizationId: customer.organizationId, organizationLocationId: location.organizationLocationId, customerId, serviceLocationId: location.id, serviceId: service.id, status: "unscheduled", priceSnapshot: { ...pricing,currency:current.currency,amountMinor:pricing.totalMinor,estimateId:current.id,estimateRevisionId: revision.id } });
   }
 }
 
@@ -329,16 +331,22 @@ async function issueCompletionInvoice(
   issuedAt: Date,
 ): Promise<{ id: string; invoiceNumber: string; status: string } | null> {
   if (!job.servicePlanId) return null;
-  const [plan] = await tx.select().from(servicePlans).where(and(eq(servicePlans.tenantId, actor.tenantId), eq(servicePlans.id, job.servicePlanId))).limit(1);
+  const [plan] = await tx.select().from(servicePlans).where(and(eq(servicePlans.tenantId, actor.tenantId), eq(servicePlans.id, job.servicePlanId))).for("update");
   if (!plan || plan.customerId !== job.customerId || plan.serviceId !== job.serviceId || !configuredForCompletionBilling(plan.billingConfiguration)) return null;
-  const amountMinor = snapshotAmount(job.priceSnapshot) ?? snapshotAmount(plan.pricingSnapshot);
-  if (amountMinor === null || amountMinor <= 0) return null;
+  let amountMinor = snapshotAmount(job.priceSnapshot) ?? snapshotAmount(plan.pricingSnapshot);
   const [customer] = await tx.select().from(customers).where(and(eq(customers.tenantId, actor.tenantId), eq(customers.id, job.customerId))).limit(1);
   const [service] = await tx.select().from(services).where(and(eq(services.tenantId, actor.tenantId), eq(services.id, job.serviceId))).limit(1);
   const [tenant] = await tx.select({ name: tenants.name, currency: tenants.defaultCurrency }).from(tenants).where(eq(tenants.id, actor.tenantId)).limit(1);
   if (!customer || !service || !tenant) return null;
   const snapshot = snapshotAmount(job.priceSnapshot) !== null ? job.priceSnapshot : plan.pricingSnapshot;
-  const itemized = snapshot?.version === 1 && Array.isArray(snapshot.items) ? snapshot as unknown as DocumentPricing : null;
+  let itemized = snapshot?.version === 1 && Array.isArray(snapshot.items) ? snapshot as unknown as DocumentPricing : null;
+  const once = plan.billingConfiguration.oneTimePricingSnapshot as DocumentPricing | undefined;
+  const claimOnce = !plan.billingConfiguration.oneTimeInvoiceId && once?.version === 1 && !!once.items?.length;
+  if (claimOnce && itemized) {
+    itemized = frozenDocument([...once.items, ...itemized.items], itemized.taxRateBasisPoints);
+    amountMinor = itemized.totalMinor;
+  }
+  if (amountMinor === null || amountMinor <= 0) return null;
   const priceResult = snapshot?.result && typeof snapshot.result === "object" ? snapshot.result as Record<string, unknown> : null;
   const subtotalMinor = itemized ? itemized.subtotalMinor : typeof priceResult?.subtotalMinor === "number" && Number.isSafeInteger(priceResult.subtotalMinor)
     && priceResult.subtotalMinor >= 0 && priceResult.subtotalMinor + Number(priceResult.taxMinor) === amountMinor
@@ -367,6 +375,8 @@ async function issueCompletionInvoice(
     },
   }).returning({ id: invoices.id, invoiceNumber: invoices.invoiceNumber, status: invoices.status });
   if (!invoice) throw new Error("Could not issue completion invoice");
+  await tx.insert(jobInvoiceLinks).values({ tenantId: actor.tenantId, customerId: job.customerId, jobId: job.id, invoiceId: invoice.id });
+  if (claimOnce && itemized) await tx.update(servicePlans).set({ billingConfiguration: { ...plan.billingConfiguration, oneTimeInvoiceId: invoice.id }, updatedAt: issuedAt }).where(and(eq(servicePlans.tenantId, actor.tenantId), eq(servicePlans.id, plan.id)));
   await tx.insert(invoiceItems).values(itemized ? itemized.items.map(line=>({tenantId:actor.tenantId,invoiceId:invoice.id,jobId:job.id,...storedLine(line)})) : [{ tenantId: actor.tenantId, invoiceId: invoice.id, jobId: job.id, serviceId: job.serviceId, description, quantity: "1", unitAmountMinor: BigInt(subtotalMinor), taxMinor: BigInt(taxMinor), totalMinor: BigInt(amountMinor) }]);
   await recordEvent(actor, { type: "invoice.created", entityType: "invoice", entityId: invoice.id, payload: { jobId: job.id, invoiceNumber, totalMinor: amountMinor }, auditAction: "invoice.create_from_job", after: { jobId: job.id, invoiceNumber, totalMinor: amountMinor }, locationId: job.organizationLocationId }, tx);
   await recordEvent(actor, { type: "invoice.issued", entityType: "invoice", entityId: invoice.id, payload: { jobId: job.id, invoiceNumber, totalMinor: amountMinor }, auditAction: "invoice.issue", before: { status: "draft" }, after: { status: "issued", invoiceNumber, totalMinor: amountMinor }, locationId: job.organizationLocationId }, tx);
@@ -477,6 +487,7 @@ async function servicePlanAction(actor: SessionActor, planId: string, action: st
 }
 
 export async function handleWorkflow(request: Request, path: string[], actor: SessionActor): Promise<Response | null> {
+  if (path.join("/") === "billing/finished-work" && ["GET", "POST"].includes(request.method)) return finishedWork(request, actor);
   if (request.method === "GET" && path.join("/") === "billing/defaults") {
     requireStaff(actor);
     if (!actor.permissions.has("estimates.read") && !actor.permissions.has("invoices.read")) throw new DomainError("FORBIDDEN","Billing access is required.",403);
@@ -499,6 +510,7 @@ export async function handleWorkflow(request: Request, path: string[], actor: Se
   if (resource === "estimates" && action === "invoice" && request.method === "POST") return estimateInvoice(actor,id);
   if (resource === "estimates" && ["send", "approve", "decline"].includes(action)) return estimateAction(request, actor, id, action);
   if (resource === "jobs" && action === "assign") return assignJob(request, actor, id);
+  if (resource === "jobs" && action === "invoice") return jobInvoice(actor, id);
   if (resource === "jobs" && action === "transition") {
     const body = await readBody(request, z.object({ status: z.string(), reason: z.string().optional(), note: z.string().optional(), completedChecklist: z.boolean().optional(), proofProvided: z.boolean().optional(), clientOperationId: z.uuid().optional(), deviceTimestamp: z.iso.datetime({ offset: true }).optional(), expectedPriorState: z.string().min(1).max(40).optional() }));
     if (body.status === "completed") throw new DomainError("VALIDATION_ERROR", "Complete the job using the field checklist.", 422);

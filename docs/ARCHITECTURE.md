@@ -82,6 +82,10 @@ Isolation should be enforced at the data-access layer. UI filtering alone is not
 
 Customer portal access must additionally enforce the relationship between the authenticated customer identity and the customer/location records explicitly available to that identity.
 
+## Durable job billing ownership
+
+`job_invoice_links` owns the once-per-job billing claim independently of editable invoice lines. Its tenant/customer composite foreign keys bind the job and invoice to the same customer; its tenant/job unique key prevents double billing. Invoice lines retain their job references for existing document/property authorization. Estimate conversion and manual/batch billing lock source estimates before jobs; recurring completion also locks the plan while claiming its once-only charges. Batch replay receipts persist with domain events under tenant/user-scoped idempotency keys. Historical invoice links are backfilled without repricing records. See [PRODUCT_SCOPE.md](PRODUCT_SCOPE.md#automatic-billing-and-unpaid-invoice-reminders) for the user-facing contract.
+
 ## Technology direction
 
 Current preferred direction:

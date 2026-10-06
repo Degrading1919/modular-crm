@@ -1,9 +1,21 @@
 import { DomainError } from "./errors.ts";
 
-export type DocumentLineInput = { description: string; quantity: string; unitAmountMinor: number; discountMinor?: number; taxable?: boolean; optional?: boolean; serviceId?: string | null };
+export type DocumentLineInput = { description: string; quantity: string; unitAmountMinor: number; discountMinor?: number; taxable?: boolean; optional?: boolean; serviceId?: string | null; charge?: "once" | "every_visit" };
 export type DocumentDiscount = { type: "amount" | "percent"; value: number };
 export type PricedLine = DocumentLineInput & { subtotalMinor: number; discountMinor: number; documentDiscountMinor: number; taxMinor: number; totalMinor: number; sortOrder: number };
 export type DocumentPricing = { version: 1; taxRateBasisPoints: number; discount: DocumentDiscount; items: PricedLine[]; subtotalMinor: number; discountMinor: number; taxMinor: number; totalMinor: number };
+
+/** Partition accepted prices without repricing their frozen discounts or tax. */
+export function documentCharges(pricing: DocumentPricing, charge: "once" | "every_visit"): DocumentPricing {
+  const items = pricing.items.filter(line => (line.charge ?? "every_visit") === charge);
+  return frozenDocument(items, pricing.taxRateBasisPoints);
+}
+
+/** Combining finished work copies each visit's exact recorded amounts. */
+export function frozenDocument(items: PricedLine[], taxRateBasisPoints = 0): DocumentPricing {
+  const sum = (field: "subtotalMinor" | "taxMinor" | "totalMinor") => safe(items.reduce((total, line) => total + BigInt(line[field]), 0n));
+  return { version: 1, taxRateBasisPoints, discount: { type: "amount", value: 0 }, items: items.map((line, sortOrder) => ({ ...line, discountMinor: line.discountMinor + line.documentDiscountMinor, documentDiscountMinor: 0, sortOrder })), subtotalMinor: sum("subtotalMinor"), discountMinor: safe(items.reduce((total, line) => total + BigInt(line.discountMinor + line.documentDiscountMinor), 0n)), taxMinor: sum("taxMinor"), totalMinor: sum("totalMinor") };
+}
 const invalid = (message: string): never => { throw new DomainError("VALIDATION_ERROR", message, 422); };
 const integer = (value: number) => Number.isSafeInteger(value) && value >= 0;
 const safe = (value: bigint): number => value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : invalid("This amount is too large. Reduce the quantity or price.");
