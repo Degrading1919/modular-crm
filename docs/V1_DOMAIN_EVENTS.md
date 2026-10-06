@@ -23,6 +23,8 @@ Every meaningful domain event should expose a normalized envelope similar to:
 
 Events are immutable facts. Consumers must tolerate repeated delivery by using event_id/idempotency.
 
+Itemized estimate approval stores its accepted-line pricing on the immutable approval record tied to the revision. Approval event/audit facts identify that revision and accepted total. Estimate conversion emits `invoice.created` once with its source estimate and total; completion billing retains existing `invoice.created`/`invoice.issued` facts. New line editing does not change payment/refund event meanings or permit issued-price mutations.
+
 ## Required event families
 
 ### Leads

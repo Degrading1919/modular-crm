@@ -228,6 +228,7 @@ export const estimateApprovals = pgTable("estimate_approvals", {
   actorType: text("actor_type").notNull(), actorUserId: text("actor_user_id").references(() => user.id), secureTokenId: uuid("secure_token_id"),
   occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(), ipAddress: text("ip_address"),
   userAgent: text("user_agent"), termsVersion: text("terms_version"), comment: text("comment"),
+  pricingSnapshot: jsonObject("pricing_snapshot"),
 }, (t) => [
   foreignKey({ columns: [t.tenantId, t.estimateId, t.secureTokenId], foreignColumns: [secureEstimateTokens.tenantId, secureEstimateTokens.estimateId, secureEstimateTokens.id], name: "estimate_approvals_secure_token_fk" }),
 ]);

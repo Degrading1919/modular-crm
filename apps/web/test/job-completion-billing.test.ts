@@ -5,7 +5,7 @@ import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import { and, eq } from "drizzle-orm";
 import { invoices, invoiceItems, jobs, schema, seedDevelopment, seedIds, servicePlans, type Database } from "@modular-crm/db";
-import { permissionsForRole } from "@modular-crm/domain";
+import { permissionsForRole, priceDocument } from "@modular-crm/domain";
 import type { SessionActor } from "../lib/api/actor.ts";
 
 const { getDbMock } = vi.hoisted(() => ({ getDbMock: vi.fn() }));
@@ -46,6 +46,15 @@ async function addJob(input: { customerId: string; serviceId: string; locationId
 }
 
 describe("job completion billing", () => {
+  it("copies accepted itemized job prices and tax without repricing or duplicate lines",async()=>{
+    const pricing=priceDocument([{description:"Work",serviceId:seedIds.weeklyService,quantity:"2",unitAmountMinor:1000,taxable:true},{description:"Supplies",quantity:"1",unitAmountMinor:500}],750,{type:"percent",value:1000});
+    const job=await addJob({customerId:seedIds.carter,serviceId:seedIds.weeklyService,locationId:seedIds.augusta,planId:seedIds.carterPlan,priceSnapshot:{...pricing,currency:"USD"}});
+    const response=await transitionJob(owner,job.id,"completed",{completedChecklist:true});const id=(await response.json()).invoice.id;
+    expect((await db.select().from(invoices).where(eq(invoices.id,id)))[0]).toMatchObject({subtotalMinor:2500n,discountMinor:250n,taxMinor:135n,totalMinor:2385n});
+    const lines=await db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId,id)).orderBy(invoiceItems.sortOrder);
+    expect(lines.map(line=>line.description)).toEqual(["Work","Supplies"]);expect(lines.reduce((sum,line)=>sum+line.totalMinor,0n)).toBe(2385n);
+    await transitionJob(owner,job.id,"completed",{completedChecklist:true});expect(await db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId,id))).toHaveLength(2);
+  });
   it("rejects completion through the generic status route and uses state-specific permissions", async () => {
     const job = await addJob({ customerId: seedIds.carter, serviceId: seedIds.weeklyService, locationId: seedIds.augusta, planId: null });
     const request = new Request(`http://localhost/api/v1/jobs/${job.id}/transition`, {

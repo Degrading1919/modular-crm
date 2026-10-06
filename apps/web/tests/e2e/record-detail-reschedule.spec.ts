@@ -49,7 +49,7 @@ for (const role of ["owner", "office"] as const) {
       if (resource === "customers") await dialog.getByLabel("Name", { exact: true }).fill(`${marker} revised`);
       else if (resource === "jobs") await dialog.getByRole("textbox", { name: "Office notes", exact: true }).fill(`${marker} revised`);
       else if (resource === "leads") await dialog.getByLabel("Source", { exact: true }).fill("Customer referral");
-      else { await dialog.getByLabel("Description", { exact: true }).fill(`${marker} revised`); await dialog.getByLabel("Amount", { exact: true }).fill("125.50"); }
+      else { await dialog.getByLabel("Description", { exact: true }).fill(`${marker} revised`); await dialog.getByLabel("Line description", { exact: true }).fill(`${marker} revised`); await dialog.getByLabel("Unit price", { exact: true }).fill("125.50"); }
       const saved = page.waitForResponse((response) => response.url().endsWith(`/api/v1/${resource}/${record.id}`) && response.request().method() === "PATCH");
       await dialog.getByRole("button", { name: "Save changes", exact: true }).click(); expect((await saved).status()).toBe(200);
       await expect(dialog).toHaveCount(0); await expect(page.getByRole("region", { name: "History", exact: true })).toContainText("Details updated");

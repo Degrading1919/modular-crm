@@ -76,6 +76,7 @@ const messageBodySchema = z.object({
 });
 
 const settingsBodySchema = z.object({
+  defaultTaxRateBasisPoints: z.number().int().min(0).max(10000).optional(),
   businessName: z.string().trim().min(2).max(160).optional(),
   phone: z.string().trim().max(40).optional(),
   email: z.union([z.email().max(254), z.literal("")]).optional(),
@@ -736,6 +737,7 @@ async function getSettings(request: Request, actor: SessionActor): Promise<Respo
   const orgSettings = objectValue(organization.settings);
   return json({ item: {
     id: tenant.id, businessName: organization.displayName || tenant.name,
+    defaultTaxRateBasisPoints: Number(orgSettings.defaultTaxRateBasisPoints ?? 0),
     locationName: location?.name,
     phone: organization.phone ?? location?.phone ?? "", email: organization.email ?? location?.email ?? "",
     timezone: organization.timezone || tenant.defaultTimezone,
@@ -762,6 +764,7 @@ async function patchSettings(request: Request, actor: SessionActor): Promise<Res
     const location = await primaryLocation(actor, tx, requestedLocationId);
     const priorSettings = objectValue(organization.settings);
     const before = {
+      defaultTaxRateBasisPoints: Number(priorSettings.defaultTaxRateBasisPoints ?? 0),
       businessName: organization.displayName || tenant.name, phone: organization.phone ?? location?.phone ?? "",
       email: organization.email ?? location?.email ?? "", timezone: organization.timezone || tenant.defaultTimezone,
       address: location?.addressLine1 ?? (requestedLocationId ? "" : String(priorSettings.businessAddress ?? "")),
@@ -777,7 +780,7 @@ async function patchSettings(request: Request, actor: SessionActor): Promise<Res
       phone: body.phone === undefined ? organization.phone : nextPhone || null,
       email: body.email === undefined ? organization.email : nextEmail || null,
       timezone: body.timezone ?? organization.timezone,
-      settings: { ...priorSettings, ...(!requestedLocationId ? { businessAddress: nextAddress } : {}) }, updatedAt: now,
+      settings: { ...priorSettings, defaultTaxRateBasisPoints: body.defaultTaxRateBasisPoints ?? before.defaultTaxRateBasisPoints, ...(!requestedLocationId ? { businessAddress: nextAddress } : {}) }, updatedAt: now,
     }).where(and(eq(organizations.id, organization.id), eq(organizations.tenantId, actor.tenantId)));
     await tx.update(tenants).set({ name: nextName, defaultTimezone: nextTimezone, updatedAt: now }).where(eq(tenants.id, actor.tenantId));
     if (location) await tx.update(organizationLocations).set({
@@ -786,7 +789,7 @@ async function patchSettings(request: Request, actor: SessionActor): Promise<Res
       email: body.email === undefined ? location.email : nextEmail || null,
       timezone: body.timezone ?? location.timezone, updatedAt: now,
     }).where(and(eq(organizationLocations.id, location.id), eq(organizationLocations.tenantId, actor.tenantId), eq(organizationLocations.organizationId, organization.id)));
-    const after = { businessName: nextName, phone: nextPhone, email: nextEmail, timezone: nextTimezone, address: nextAddress };
+    const after = { businessName: nextName, phone: nextPhone, email: nextEmail, timezone: nextTimezone, address: nextAddress,defaultTaxRateBasisPoints:body.defaultTaxRateBasisPoints ?? before.defaultTaxRateBasisPoints };
     await recordEvent(actor, { type: "tenant.settings_updated", entityType: "tenant", entityId: tenant.id, auditAction: "tenant.settings_update", before, after }, tx);
     return after;
   });

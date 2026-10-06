@@ -2,9 +2,9 @@ import { createHash, randomBytes } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
-  auditEvents, completionProofs, connectorInstallations, customerContacts, customers, domainEvents, estimateApprovals, estimateItems, estimateRevisions, estimates, hasUsableFeature, invoiceItems, invoices, jobAssignments, jobStatusEvents,
+  auditEvents, completionProofs, connectorInstallations, customerContacts, customers, domainEvents, estimateApprovals, estimateRevisions, estimates, hasUsableFeature, invoiceItems, invoices, jobAssignments, jobStatusEvents,
   jobs, leads, loadTenantCapabilities, paymentAllocations, payments, recurrenceRules, serviceLocations, servicePlans, services, tenants,
-  secureEstimateTokens,
+  secureEstimateTokens, organizations,
 } from "@modular-crm/db";
 import { assertTransition, DomainError, manualPaymentMethods, requirePermission, type Permission } from "@modular-crm/domain";
 import { updateInvoiceFinancialPosition } from "./invoice-payment-ledger";
@@ -21,6 +21,10 @@ import { claimFieldOperation, completeFieldOperation, type FieldOperationInput }
 import { businessDate } from "../dates";
 import { recordJobReschedule, suppressJobReminders } from "./job-reschedule";
 import { assignableTechnician, lockJobForPlanning, withdrawJobFromRoutes } from "./job-planning";
+import { approvedPricing } from "./estimate-pricing";
+import { estimateInvoice } from "./estimate-invoice";
+import { storedLine } from "./document-lines";
+import type { DocumentPricing } from "@modular-crm/domain";
 
 export async function getAssignedJob(actor: SessionActor, jobId: string, permission: Permission = "jobs.read") {
   const db = getDb();
@@ -84,8 +88,9 @@ async function createEstimateDownstreamInTransaction(
   revision: typeof estimateRevisions.$inferSelect,
   customerId: string,
   convertedLocationId: string | null,
+  pricing: DocumentPricing,
 ): Promise<void> {
-  const [line] = await tx.select().from(estimateItems).where(and(eq(estimateItems.tenantId, tenantId), eq(estimateItems.estimateRevisionId, revision.id))).orderBy(estimateItems.sortOrder).limit(1);
+  const line = pricing.items.find(item => item.serviceId);
   if (!line?.serviceId) return;
   const [service] = await tx.select().from(services).where(and(eq(services.tenantId, tenantId), eq(services.id, line.serviceId))).limit(1);
   const [customer] = await tx.select().from(customers).where(and(eq(customers.tenantId, tenantId), eq(customers.id, customerId))).limit(1);
@@ -101,13 +106,14 @@ async function createEstimateDownstreamInTransaction(
     const [tenant] = await tx.select({ timezone: tenants.defaultTimezone }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
     const [rule] = await tx.insert(recurrenceRules).values({ tenantId, frequencyType: "weekly", timezone: location.timezone ?? tenant?.timezone ?? "UTC" }).returning();
     if (!rule) throw new Error("Could not create the service schedule.");
-    await tx.insert(servicePlans).values({ tenantId, customerId, serviceLocationId: location.id, organizationLocationId: location.organizationLocationId, serviceId: service.id, recurrenceRuleId: rule.id, effectiveFrom: businessDate(new Date(), location.timezone ?? tenant?.timezone ?? "UTC"), status: "active", pricingSnapshot: { totalMinor: Number(revision.totalMinor), estimateRevisionId: revision.id }, billingConfiguration: { type: "per_job" } });
+    await tx.insert(servicePlans).values({ tenantId, customerId, serviceLocationId: location.id, organizationLocationId: location.organizationLocationId, serviceId: service.id, recurrenceRuleId: rule.id, effectiveFrom: businessDate(new Date(), location.timezone ?? tenant?.timezone ?? "UTC"), status: "active", pricingSnapshot: { ...pricing,currency:current.currency,amountMinor:pricing.totalMinor,estimateRevisionId: revision.id }, billingConfiguration: { type: "per_job" } });
   } else {
-    await tx.insert(jobs).values({ tenantId, organizationId: customer.organizationId, organizationLocationId: location.organizationLocationId, customerId, serviceLocationId: location.id, serviceId: service.id, status: "unscheduled", priceSnapshot: { totalMinor: Number(revision.totalMinor), estimateRevisionId: revision.id } });
+    await tx.insert(jobs).values({ tenantId, organizationId: customer.organizationId, organizationLocationId: location.organizationLocationId, customerId, serviceLocationId: location.id, serviceId: service.id, status: "unscheduled", priceSnapshot: { ...pricing,currency:current.currency,amountMinor:pricing.totalMinor,estimateRevisionId: revision.id } });
   }
 }
 
 async function estimateAction(request: Request, actor: SessionActor, estimateId: string, action: string): Promise<Response> {
+  const decision = action === "approve" ? await readBody(request,z.object({acceptedOptionalIds:z.array(z.uuid()).max(100).optional()}).strict()) : {};
   await requireTenantFeature(actor.tenantId, "estimate_management");
   const db = getDb();
   const [estimate] = await db.select().from(estimates).where(and(eq(estimates.id, estimateId), eq(estimates.tenantId, actor.tenantId))).limit(1);
@@ -139,17 +145,18 @@ async function estimateAction(request: Request, actor: SessionActor, estimateId:
       convertedLocationId = converted.serviceLocationId;
     }
     if (to === "approved" && !customerId) throw new DomainError("VALIDATION_ERROR", "A customer is needed before this estimate can be approved.", 422);
-    if (to === "approved" && customerId) await createEstimateDownstreamInTransaction(tx, actor.tenantId, current, revision, customerId, convertedLocationId);
-    const [saved] = await tx.update(estimates).set({ status: to, customerId, approvedAt: to === "approved" ? new Date() : undefined, declinedAt: to === "declined" ? new Date() : undefined, updatedAt: new Date() }).where(and(eq(estimates.id, current.id), eq(estimates.tenantId, actor.tenantId))).returning();
+    const pricing = to === "approved" ? await approvedPricing(tx,actor.tenantId,revision,decision.acceptedOptionalIds) : undefined;
+    if (pricing && customerId) await createEstimateDownstreamInTransaction(tx, actor.tenantId, current, revision, customerId, convertedLocationId,pricing);
+    const [saved] = await tx.update(estimates).set({ status: to, customerId,totalMinor:pricing ? BigInt(pricing.totalMinor) : undefined, approvedAt: to === "approved" ? new Date() : undefined, declinedAt: to === "declined" ? new Date() : undefined, updatedAt: new Date() }).where(and(eq(estimates.id, current.id), eq(estimates.tenantId, actor.tenantId))).returning();
     if (to === "sent") await tx.update(estimateRevisions).set({ sentAt: new Date(), updatedAt: new Date() }).where(and(eq(estimateRevisions.id, revision.id), eq(estimateRevisions.tenantId, actor.tenantId)));
-    if (to === "approved" || to === "declined") await tx.insert(estimateApprovals).values({ tenantId: actor.tenantId, estimateId: current.id, estimateRevisionId: revision.id, decision: to, actorType: actor.kind, actorUserId: actor.userId, termsVersion: revision.termsVersion ?? "demo-v1", userAgent: request.headers.get("user-agent") });
+    if (to === "approved" || to === "declined") await tx.insert(estimateApprovals).values({ tenantId: actor.tenantId, estimateId: current.id, estimateRevisionId: revision.id, decision: to,pricingSnapshot:pricing ? {...pricing,acceptedOptionalIds:decision.acceptedOptionalIds ?? []} : {}, actorType: actor.kind, actorUserId: actor.userId, termsVersion: revision.termsVersion ?? "demo-v1", userAgent: request.headers.get("user-agent") });
     if (to === "sent" && rawActionToken && actionTokenHash) {
       const now = new Date();
       const expiresAt = current.expiresAt && current.expiresAt > now ? current.expiresAt : new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
       await tx.update(secureEstimateTokens).set({ revokedAt: now, updatedAt: now }).where(and(eq(secureEstimateTokens.tenantId, actor.tenantId), eq(secureEstimateTokens.estimateId, current.id), isNull(secureEstimateTokens.consumedAt), isNull(secureEstimateTokens.revokedAt)));
       await tx.insert(secureEstimateTokens).values({ tenantId: actor.tenantId, estimateId: current.id, estimateRevisionId: revision.id, tokenHash: actionTokenHash, expiresAt });
     }
-    await recordEvent(actor, { type: `estimate.${to}`, entityType: "estimate", entityId: current.id, auditAction: `estimate.${to}`, before: { status: current.status }, after: { status: to, customerId }, locationId: current.organizationLocationId }, tx);
+    await recordEvent(actor, { type: `estimate.${to}`, entityType: "estimate", entityId: current.id, auditAction: `estimate.${to}`, before: { status: current.status }, after: { status: to, customerId,revisionId:revision.id,totalMinor:pricing?.totalMinor }, payload:{revisionId:revision.id,totalMinor:pricing?.totalMinor}, locationId: current.organizationLocationId }, tx);
     return saved;
   });
   return json({ item: normalized(result), ...(rawActionToken ? { actionUrl: `/estimate/${rawActionToken}` } : {}) });
@@ -157,7 +164,7 @@ async function estimateAction(request: Request, actor: SessionActor, estimateId:
 
 export async function applySecureEstimateDecisionInTransaction(
   tx: DbTransaction,
-  input: { request: Request; tenantId: string; estimateId: string; tokenId: string; action: "approve" | "decline"; comment: string | null },
+  input: { request: Request; tenantId: string; estimateId: string; tokenId: string; action: "approve" | "decline"; comment: string | null; acceptedOptionalIds?: string[] },
 ) {
   const { request, tenantId, estimateId, tokenId, action, comment } = input;
   const to = action === "approve" ? "approved" : "declined";
@@ -180,12 +187,13 @@ export async function applySecureEstimateDecisionInTransaction(
     convertedLocationId = converted.serviceLocationId;
   }
   if (to === "approved" && !customerId) throw new DomainError("VALIDATION_ERROR", "A customer is needed before this estimate can be approved.", 422);
-  if (to === "approved" && customerId) await createEstimateDownstreamInTransaction(tx, tenantId, current, revision, customerId, convertedLocationId);
-  const [saved] = await tx.update(estimates).set({ status: to, customerId, approvedAt: to === "approved" ? now : undefined, declinedAt: to === "declined" ? now : undefined, updatedAt: now }).where(and(eq(estimates.id, current.id), eq(estimates.tenantId, tenantId))).returning();
+  const pricing = to === "approved" ? await approvedPricing(tx,tenantId,revision,input.acceptedOptionalIds) : undefined;
+  if (pricing && customerId) await createEstimateDownstreamInTransaction(tx, tenantId, current, revision, customerId, convertedLocationId,pricing);
+  const [saved] = await tx.update(estimates).set({ status: to, customerId,totalMinor:pricing ? BigInt(pricing.totalMinor) : undefined, approvedAt: to === "approved" ? now : undefined, declinedAt: to === "declined" ? now : undefined, updatedAt: now }).where(and(eq(estimates.id, current.id), eq(estimates.tenantId, tenantId))).returning();
   if (!saved) throw new Error("Could not save estimate decision.");
-  await tx.insert(estimateApprovals).values({ tenantId, estimateId: current.id, estimateRevisionId: revision.id, decision: to, actorType: "secure_estimate_link", actorUserId: null, secureTokenId: tokenId, ipAddress, userAgent, termsVersion: revision.termsVersion ?? "demo-v1", comment });
-  await tx.insert(domainEvents).values({ tenantId, eventType: `estimate.${to}`, actorType: "secure_estimate_link", actorId: tokenId, entityType: "estimate", entityId: current.id, locationId: current.organizationLocationId, payload: { status: to, customerId } });
-  await tx.insert(auditEvents).values({ tenantId, actorType: "secure_estimate_link", actorId: tokenId, action: `estimate.${to}`, entityType: "estimate", entityId: current.id, beforeData: { status: current.status }, afterData: { status: to, customerId }, ipAddress, userAgent });
+  await tx.insert(estimateApprovals).values({ tenantId, estimateId: current.id, estimateRevisionId: revision.id, decision: to,pricingSnapshot:pricing ? {...pricing,acceptedOptionalIds:input.acceptedOptionalIds ?? []} : {}, actorType: "secure_estimate_link", actorUserId: null, secureTokenId: tokenId, ipAddress, userAgent, termsVersion: revision.termsVersion ?? "demo-v1", comment });
+  await tx.insert(domainEvents).values({ tenantId, eventType: `estimate.${to}`, actorType: "secure_estimate_link", actorId: tokenId, entityType: "estimate", entityId: current.id, locationId: current.organizationLocationId, payload: { status: to, customerId,revisionId:revision.id,totalMinor:pricing?.totalMinor } });
+  await tx.insert(auditEvents).values({ tenantId, actorType: "secure_estimate_link", actorId: tokenId, action: `estimate.${to}`, entityType: "estimate", entityId: current.id, beforeData: { status: current.status }, afterData: { status: to, customerId,revisionId:revision.id,totalMinor:pricing?.totalMinor }, ipAddress, userAgent });
   return saved;
 }
 
@@ -329,12 +337,14 @@ async function issueCompletionInvoice(
   const [service] = await tx.select().from(services).where(and(eq(services.tenantId, actor.tenantId), eq(services.id, job.serviceId))).limit(1);
   const [tenant] = await tx.select({ name: tenants.name, currency: tenants.defaultCurrency }).from(tenants).where(eq(tenants.id, actor.tenantId)).limit(1);
   if (!customer || !service || !tenant) return null;
-  const snapshot = job.priceSnapshot ?? plan.pricingSnapshot;
+  const snapshot = snapshotAmount(job.priceSnapshot) !== null ? job.priceSnapshot : plan.pricingSnapshot;
+  const itemized = snapshot?.version === 1 && Array.isArray(snapshot.items) ? snapshot as unknown as DocumentPricing : null;
   const priceResult = snapshot?.result && typeof snapshot.result === "object" ? snapshot.result as Record<string, unknown> : null;
-  const subtotalMinor = typeof priceResult?.subtotalMinor === "number" && Number.isSafeInteger(priceResult.subtotalMinor)
+  const subtotalMinor = itemized ? itemized.subtotalMinor : typeof priceResult?.subtotalMinor === "number" && Number.isSafeInteger(priceResult.subtotalMinor)
     && priceResult.subtotalMinor >= 0 && priceResult.subtotalMinor + Number(priceResult.taxMinor) === amountMinor
     ? priceResult.subtotalMinor : amountMinor;
-  const taxMinor = amountMinor - subtotalMinor;
+  const taxMinor = itemized ? itemized.taxMinor : amountMinor - subtotalMinor;
+  const discountMinor = itemized?.discountMinor ?? 0;
   const snapshotCurrency = typeof (snapshot?.currency ?? priceResult?.currency) === "string" ? String(snapshot?.currency ?? priceResult?.currency).toUpperCase() : "";
   const currency = /^[A-Z]{3}$/.test(snapshotCurrency) ? snapshotCurrency : tenant.currency ?? "USD";
   const configuration = plan.billingConfiguration ?? {};
@@ -348,16 +358,16 @@ async function issueCompletionInvoice(
   const [invoice] = await tx.insert(invoices).values({
     tenantId: actor.tenantId, organizationId: job.organizationId, organizationLocationId: job.organizationLocationId,
     customerId: job.customerId, status: "issued", invoiceNumber, currency,
-    issuedAt, dueAt, subtotalMinor: BigInt(subtotalMinor), discountMinor: 0n, taxMinor: BigInt(taxMinor),
+    issuedAt, dueAt, subtotalMinor: BigInt(subtotalMinor), discountMinor: BigInt(discountMinor), taxMinor: BigInt(taxMinor),
     totalMinor: BigInt(amountMinor), paidMinor: 0n, balanceMinor: BigInt(amountMinor),
     billingSnapshot: {
-      businessName: tenant.name, customerName: customer.displayName, description, serviceId: job.serviceId,
+      ...itemized, businessName: tenant.name, customerName: customer.displayName, description, serviceId: job.serviceId,
       jobId: job.id, servicePlanId: plan.id, billingConfiguration: configuration, priceSnapshot: snapshot,
-      currency, subtotalMinor, taxMinor, totalMinor: amountMinor,
+      currency, subtotalMinor, discountMinor, taxMinor, totalMinor: amountMinor,
     },
   }).returning({ id: invoices.id, invoiceNumber: invoices.invoiceNumber, status: invoices.status });
   if (!invoice) throw new Error("Could not issue completion invoice");
-  await tx.insert(invoiceItems).values({ tenantId: actor.tenantId, invoiceId: invoice.id, jobId: job.id, serviceId: job.serviceId, description, quantity: "1", unitAmountMinor: BigInt(subtotalMinor), taxMinor: BigInt(taxMinor), totalMinor: BigInt(amountMinor) });
+  await tx.insert(invoiceItems).values(itemized ? itemized.items.map(line=>({tenantId:actor.tenantId,invoiceId:invoice.id,jobId:job.id,...storedLine(line)})) : [{ tenantId: actor.tenantId, invoiceId: invoice.id, jobId: job.id, serviceId: job.serviceId, description, quantity: "1", unitAmountMinor: BigInt(subtotalMinor), taxMinor: BigInt(taxMinor), totalMinor: BigInt(amountMinor) }]);
   await recordEvent(actor, { type: "invoice.created", entityType: "invoice", entityId: invoice.id, payload: { jobId: job.id, invoiceNumber, totalMinor: amountMinor }, auditAction: "invoice.create_from_job", after: { jobId: job.id, invoiceNumber, totalMinor: amountMinor }, locationId: job.organizationLocationId }, tx);
   await recordEvent(actor, { type: "invoice.issued", entityType: "invoice", entityId: invoice.id, payload: { jobId: job.id, invoiceNumber, totalMinor: amountMinor }, auditAction: "invoice.issue", before: { status: "draft" }, after: { status: "issued", invoiceNumber, totalMinor: amountMinor }, locationId: job.organizationLocationId }, tx);
   return invoice;
@@ -467,10 +477,26 @@ async function servicePlanAction(actor: SessionActor, planId: string, action: st
 }
 
 export async function handleWorkflow(request: Request, path: string[], actor: SessionActor): Promise<Response | null> {
+  if (request.method === "GET" && path.join("/") === "billing/defaults") {
+    requireStaff(actor);
+    if (!actor.permissions.has("estimates.read") && !actor.permissions.has("invoices.read")) throw new DomainError("FORBIDDEN","Billing access is required.",403);
+    const db=getDb();
+    let organizationId=actor.organizationId;
+    const customerId=new URL(request.url).searchParams.get("customerId");
+    if(customerId){
+      const id=z.uuid().parse(customerId);
+      const [customer]=await db.select().from(customers).where(and(eq(customers.tenantId,actor.tenantId),eq(customers.id,id))).limit(1);
+      if(!customer || !actor.allLocations && (!customer.owningLocationId || !actor.locationIds.has(customer.owningLocationId))) throw new DomainError("NOT_FOUND","Customer not found.",404);
+      organizationId=customer.organizationId;
+    }
+    const [org] = await db.select().from(organizations).where(and(eq(organizations.tenantId,actor.tenantId),eq(organizations.id,organizationId))).limit(1);
+    return json({item:{defaultTaxRateBasisPoints:Number(org?.settings.defaultTaxRateBasisPoints ?? 0)}});
+  }
   if (request.method !== "POST" || path.length !== 3) return null;
   const [resource, id, action] = path;
   if (!id || !action) return null;
   if (resource === "leads" && action === "convert") return json({ item: normalized(await convertLead(actor, id)) });
+  if (resource === "estimates" && action === "invoice" && request.method === "POST") return estimateInvoice(actor,id);
   if (resource === "estimates" && ["send", "approve", "decline"].includes(action)) return estimateAction(request, actor, id, action);
   if (resource === "jobs" && action === "assign") return assignJob(request, actor, id);
   if (resource === "jobs" && action === "transition") {

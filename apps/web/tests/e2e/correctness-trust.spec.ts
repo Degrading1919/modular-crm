@@ -124,7 +124,9 @@ test("record details, portal estimates and payment confirmation use the record c
     await route.fulfill({ response, json: { ...payload, item: { ...payload.item, currency: "EUR" } } });
   });
   await page.goto(`/app/invoices/${invoice.id}`);
-  await expect(page.locator(".detail-list").filter({ has: page.getByText("Total", { exact: true }) }).locator("dd"))
+  await expect(page.getByRole("region", { name: "Record summary", exact:true }).locator(".detail-list").filter({ has: page.getByText("Total", { exact: true }) }).locator("dd"))
+    .toHaveText(money(invoice.totalCents, "EUR"));
+  await expect(page.getByRole("region", { name:"Price breakdown", exact:true }).locator(".detail-list").filter({ has: page.getByText("Total", { exact: true }) }).locator("dd"))
     .toHaveText(money(invoice.totalCents, "EUR"));
   await expect(page.getByText("Total Cents", { exact: true })).toHaveCount(0);
 

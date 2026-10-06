@@ -1,4 +1,5 @@
 "use client";
+import { EstimateChoice } from "./EstimateChoice";
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -89,10 +90,15 @@ function ServiceFeedback({ visit, onSubmitted }: { visit: Item; onSubmitted: () 
 }
 
 function Estimates({ onAction }: { onAction: (message: string) => void }) {
-  const result = useResource<{ items: Item[] }>("/portal/estimates", { items: [] });
-  const [busy, setBusy] = useState(""); const [error, setError] = useState("");
-  async function decide(estimate: Item, choice: "approve" | "decline") { if (!window.confirm(`${choice === "approve" ? "Approve" : "Decline"} estimate ${estimate.number || ""}?`)) return; setBusy(estimate.id); setError(""); try { await api(`/portal/estimates/${estimate.id}/${choice}`, body({})); onAction(choice === "approve" ? "Estimate approved. Your service team will take it from here." : "Estimate declined. Your service team has been notified."); result.reload(); } catch (issue) { setError((issue as Error).message); } finally { setBusy(""); } }
-  return <><PortalHeader eyebrow="Decisions" title="Estimates" subtitle="Review prices and approve work when you’re ready."/>{result.error && <Notice kind="error" text={result.error}/>} {error && <Notice kind="error" text={error}/>} {result.loading ? <Loading/> : unwrapItems(result.data).length ? <div className="stack">{unwrapItems(result.data).map((estimate) => <div className="card card-pad" key={estimate.id}><div className="card-heading"><div><h2>{estimate.title || `Estimate ${estimate.number || ""}`}</h2><p className="subtle" style={{ fontSize: ".82rem", margin: "5px 0 0" }}>Sent {date(estimate.sentAt || estimate.createdAt)}{estimate.expiresAt ? ` · Expires ${date(estimate.expiresAt)}` : ""}</p></div><Badge status={estimate.status}/></div><p style={{ fontSize: ".87rem" }}>{estimate.description || estimate.notes || "Review the proposed service and price below."}</p><div className="inline-actions" style={{ justifyContent: "space-between" }}><strong className="amount" style={{ fontSize: "1.45rem" }}>{money(estimate.totalCents, estimate.currency)}</strong>{["sent", "viewed"].includes(estimate.status) && <div className="inline-actions"><button className="btn btn-secondary btn-sm" type="button" disabled={busy === estimate.id} onClick={() => decide(estimate, "decline")}>Decline</button><button className="btn btn-primary btn-sm" type="button" disabled={busy === estimate.id} onClick={() => decide(estimate, "approve")}>Approve estimate</button></div>}</div></div>)}</div> : <div className="card"><Empty title="No estimates waiting" description="When your service team sends a proposal, you can review it here."/></div>}</>;
+  const result = useResource<{items:Item[]}>("/portal/estimates",{items:[]});
+  const estimates=unwrapItems(result.data);
+  return <><PortalHeader eyebrow="Decisions" title="Estimates" subtitle="Review prices and approve work when you’re ready."/>
+    {result.error&&<Notice kind="error" text={result.error}/>}
+    {result.loading?<Loading/>:result.error?null:!estimates.length?<Empty title="No estimates" description="Your service team will share proposed work here."/>:<div className="stack">{estimates.map(estimate=><section className="card card-pad" key={estimate.id} aria-label={estimate.title||"Estimate"}>
+      <h2>{estimate.title||estimate.number}</h2><Badge status={estimate.status}/>
+      {["sent","viewed"].includes(estimate.status)?<EstimateChoice estimate={estimate} onDone={()=>{onAction("Estimate decision saved. Your service team has been notified.");result.reload();}}/>:<><p>{money(estimate.totalCents,estimate.currency)}</p><Link href={`/portal/documents/estimate/${estimate.id}`}>View estimate</Link></>}
+    </section>)}</div>}
+  </>;
 }
 
 function Billing({ onAction, requestedInvoice }: { onAction: (message: string) => void; requestedInvoice?: string }) {

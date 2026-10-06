@@ -41,7 +41,7 @@ export async function handleRecordDetails(request: Request, path: string[], acto
     related.photos = normalized(await rows(sql`select f.id,f.original_name,f.created_at from file_links fl join files f on f.tenant_id=fl.tenant_id and f.id=fl.file_id where fl.tenant_id=${tenant} and fl.entity_type='job' and fl.entity_id=${id} and f.mime_type like 'image/%' order by f.created_at desc,f.id limit 100`));
   }
   if (resource === "invoices") {
-    related.lines = normalized(await rows(sql`select id,description,quantity,unit_amount_minor as unit_cents,total_minor as total_cents from invoice_items where tenant_id=${tenant} and invoice_id=${id} order by sort_order,id`));
+    related.lines = normalized(await rows(sql`select id,service_id,description,quantity,unit_amount_minor as unit_cents,total_minor as total_cents,discount_minor,metadata from invoice_items where tenant_id=${tenant} and invoice_id=${id} order by sort_order,id`));
     if (actor.permissions.has("payments.read")) {
       const payments = await handleInvoiceRefund(request, ["invoices", id, "payments"], actor);
       related.payments = (await payments!.json()).items;

@@ -36,8 +36,8 @@ test("an issued invoice triggers an active automation and records its action", a
   await page.goto("/app/invoices");
   await page.getByRole("button", { name: "New invoice" }).click();
   await chooseStaffRecord(page, "Customer", "Carter Household");
-  await page.getByLabel("Description").fill(`Automation acceptance invoice ${suffix}`);
-  await page.getByLabel("Amount").fill("72.00");
+  await page.getByLabel("Description", { exact:true }).fill(`Automation acceptance invoice ${suffix}`); await page.getByLabel("Line description").fill(`Automation acceptance invoice ${suffix}`);
+  await page.getByLabel("Unit price").fill("72.00");
 
   const createResponse = page.waitForResponse((response) => response.request().method() === "POST" && /\/api\/v1\/invoices$/.test(response.url()));
   await page.getByRole("button", { name: "Create invoice" }).click();

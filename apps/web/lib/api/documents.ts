@@ -6,7 +6,7 @@ import {
   payments, payrollCalculations, payrollComponents, payrollPeriods, refunds, royaltyStatements,
   serviceLocations, servicePlans, services, user,
 } from "@modular-crm/db";
-import { DomainError, paymentMethodLabel, requirePermission } from "@modular-crm/domain";
+import { DomainError, paymentMethodLabel, requirePermission, type DocumentPricing } from "@modular-crm/domain";
 import { getDb } from "../db";
 import { assertCustomerDocumentAccess, assertCustomerServiceLocationAccess, requireStaff, type SessionActor } from "./actor";
 import { apiError, json } from "./http";
@@ -81,6 +81,8 @@ async function authorizeInvoice(actor: SessionActor, invoiceId: string, customer
     if (location.customerId !== customerId) notFound();
     await authorizeCustomer(actor, customerId, location.organizationLocationId, location.serviceLocationId);
   }
+  const serviceLocationId = str(obj(billingSnapshot).serviceLocationId);
+  if (serviceLocationId) await authorizeCustomer(actor,customerId,branchId,serviceLocationId);
   const servicePlanId = str(obj(billingSnapshot).servicePlanId);
   if (servicePlanId) {
     const [plan] = await db.select({ customerId: servicePlans.customerId, serviceLocationId: servicePlans.serviceLocationId, organizationLocationId: servicePlans.organizationLocationId })
@@ -297,12 +299,15 @@ async function estimateDocument(actor: SessionActor, id: string): Promise<Custom
   const [revision] = await db.select().from(estimateRevisions).where(and(eq(estimateRevisions.tenantId, actor.tenantId), eq(estimateRevisions.estimateId, id), eq(estimateRevisions.revisionNumber, revisionNumber))).limit(1);
   if (!revision) notFound();
   const lines = await db.select().from(estimateItems).where(and(eq(estimateItems.tenantId, actor.tenantId), eq(estimateItems.estimateRevisionId, revision.id))).orderBy(asc(estimateItems.sortOrder));
+  const approved = approval?.pricingSnapshot as unknown as DocumentPricing | undefined;
+  const amounts = approved?.items?.length ? approved : revision;
+  const displayLines = approved?.items?.length ? approved.items : lines;
   const [customer] = await db.select().from(customers).where(and(eq(customers.tenantId, actor.tenantId), eq(customers.id, customerId))).limit(1);
   const [org] = await db.select().from(organizations).where(and(eq(organizations.tenantId, actor.tenantId))).limit(1);
   return { kind: "estimate", title: "Estimate", number: `EST-${id.slice(0, 8).toUpperCase()} · Revision ${revision.revisionNumber}`, date: dateText(revision.sentAt ?? revision.createdAt), status: approval ? "approved" : estimate.status,
     business: branding(org?.displayName ?? actor.tenantName, org?.email, org?.phone), customer: { name: str(obj(revision.snapshot).customerName) ?? customer?.displayName ?? "Customer" },
-    summary: str(obj(revision.snapshot).service), lines: lines.map((line) => ({ description: line.description, quantity: line.quantity, amountMinor: line.unitAmountMinor, totalMinor: line.totalMinor })),
-    totals: [{ label: "Subtotal", amountMinor: revision.subtotalMinor ?? 0, currency: estimate.currency }, ...(amount(revision.discountMinor) ? [{ label: "Discount", amountMinor: -amount(revision.discountMinor), currency: estimate.currency }] : []), ...(amount(revision.taxMinor) ? [{ label: "Tax", amountMinor: revision.taxMinor ?? 0, currency: estimate.currency }] : []), { label: "Total", amountMinor: revision.totalMinor ?? 0, currency: estimate.currency }], terms: revision.termsText };
+    summary: str(obj(revision.snapshot).service), lines: displayLines.map((line) => ({ description: line.description + (!approval && "metadata" in line && line.metadata.optional === true ? " (optional add-on)" : ""), quantity: line.quantity, amountMinor: line.unitAmountMinor, totalMinor: line.totalMinor })),
+    totals: [{ label: "Subtotal", amountMinor: amounts.subtotalMinor ?? 0, currency: estimate.currency }, ...(amount(amounts.discountMinor) ? [{ label: "Discount", amountMinor: -amount(amounts.discountMinor), currency: estimate.currency }] : []), ...(amount(amounts.taxMinor) ? [{ label: "Tax", amountMinor: amounts.taxMinor ?? 0, currency: estimate.currency }] : []), { label: "Total", amountMinor: amounts.totalMinor ?? 0, currency: estimate.currency }], terms: revision.termsText };
 }
 
 async function payStatement(actor: SessionActor, id: string): Promise<CustomerDocument> {

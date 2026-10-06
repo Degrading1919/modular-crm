@@ -99,8 +99,8 @@ test("staff search by contact details, select saved addresses and create real jo
   const invoiceDialog = page.getByRole("dialog", { name: "New invoice" });
   await invoiceDialog.getByRole("combobox", { name: "Customer", exact: true }).fill(`74 Saved Lane ${suffix}`);
   await invoiceDialog.getByRole("option", { name: new RegExp(`Saved address ${suffix}`) }).click();
-  await invoiceDialog.getByLabel("Description", { exact: true }).fill("Saved-address work");
-  await invoiceDialog.getByLabel("Amount", { exact: true }).fill("32.50");
+  await invoiceDialog.getByLabel("Description", { exact: true }).fill("Saved-address work"); await invoiceDialog.getByLabel("Line description", { exact: true }).fill("Saved-address work");
+  await invoiceDialog.getByLabel("Unit price", { exact: true }).fill("32.50");
   await invoiceDialog.getByRole("button", { name: "Create invoice", exact: true }).click();
   await expect(page.getByText("Invoice created.", { exact: true })).toBeVisible();
   await page.goto("/app/tickets?new=1");

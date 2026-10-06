@@ -48,8 +48,8 @@ test("owner records inventory movements and refunds a collected invoice payment"
   await page.getByRole("button", { name: "New invoice" }).click();
   await chooseStaffRecord(page, "Customer", "Carter Household");
   const description = `E2E refundable invoice ${suffix}`;
-  await page.getByLabel("Description").fill(description);
-  await page.getByLabel("Amount").fill("32.50");
+  await page.getByLabel("Description", { exact:true }).fill(description); await page.getByLabel("Line description").fill(description);
+  await page.getByLabel("Unit price").fill("32.50");
   const createdResponse = page.waitForResponse((response) =>
     response.url().includes("/api/v1/invoices") && response.request().method() === "POST",
   );

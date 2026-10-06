@@ -39,7 +39,7 @@ test("V1 lifecycle: estimate approval through field work, billing, and feedback"
   await page.goto("/app/services");
   await page.getByRole("button", { name: "New service" }).click();
   await page.getByLabel("Service name").fill(serviceName);
-  await page.getByLabel("Description").fill(`One-time service for lifecycle ${suffix}.`);
+  await page.getByLabel("Description", { exact:true }).fill(`One-time service for lifecycle ${suffix}.`);
   await page.getByLabel("Starting price").fill("36");
   await page.getByLabel("Expected minutes").fill("30");
   await page.getByRole("button", { name: "Create service" }).click();
@@ -50,8 +50,8 @@ test("V1 lifecycle: estimate approval through field work, billing, and feedback"
   await chooseStaffRecord(page, "Customer", "Carter Household");
   await chooseStaffRecord(page, "Service", serviceName);
   await page.getByLabel("What is included?").fill(estimateTitle);
-  await page.getByLabel("Total price").fill("36");
-  await page.getByLabel("Description").fill(`Approved estimate ${suffix}.`);
+  await page.getByLabel("Unit price").fill("36");
+  await page.getByLabel("Description", { exact:true }).fill(`Approved estimate ${suffix}.`);
   const estimateCreatedResponse = page.waitForResponse((response) =>
     response.url().includes("/api/v1/estimates") && response.request().method() === "POST",
   );
@@ -170,8 +170,8 @@ test("V1 lifecycle: estimate approval through field work, billing, and feedback"
   await page.goto("/app/invoices");
   await page.getByRole("button", { name: "New invoice" }).click();
   await chooseStaffRecord(page, "Customer", "Carter Household");
-  await page.getByLabel("Description").fill(invoiceDescription);
-  await page.getByLabel("Amount").fill("36");
+  await page.getByLabel("Description", { exact:true }).fill(invoiceDescription); await page.getByLabel("Line description").fill(invoiceDescription);
+  await page.getByLabel("Unit price").fill("36");
   const invoiceCreatedResponse = page.waitForResponse((response) =>
     response.url().includes("/api/v1/invoices") && response.request().method() === "POST",
   );

@@ -46,6 +46,14 @@ function invoiceLocationPredicate(actor: SessionActor, invoiceAlias: string) {
     where ii.tenant_id=${alias}.tenant_id and ii.invoice_id=${alias}.id and ii.job_id is not null
       and (j.customer_id <> ${alias}.customer_id or not ${customerLocationPredicate(actor, "j.customer_id", "j.service_location_id")})
   )`;
+  const fallback = customerBranchPredicate(actor,invoiceAlias);
+  return sql`(((${jobLines} and ${visibleJobLines}) or (not ${jobLines} and ((${hasServicePlan} and ${visibleServicePlan}) or (not ${hasServicePlan} and ${fallback}))))
+    and (not ${hasServicePlan} or ${visibleServicePlan}))`;
+}
+
+function customerBranchPredicate(actor:SessionActor,recordAlias:string) {
+  customerActor(actor);
+  const alias=sql.raw(recordAlias);
   const branchLocation = [...actor.customerLocationIds].map(([customerId, locationIds]) => sql`(
     ${alias}.customer_id=${customerId} and exists (select 1 from service_locations sl
       where sl.tenant_id=${alias}.tenant_id and sl.customer_id=${alias}.customer_id
@@ -56,9 +64,7 @@ function invoiceLocationPredicate(actor: SessionActor, invoiceAlias: string) {
           and hidden_sl.organization_location_id=${alias}.organization_location_id
           and not hidden_sl.id=any(${uuidArray([...locationIds])}))
   )`);
-  const fallback = branchLocation.length ? sql`(${sql.join(branchLocation, sql` or `)})` : sql`false`;
-  return sql`(((${jobLines} and ${visibleJobLines}) or (not ${jobLines} and ((${hasServicePlan} and ${visibleServicePlan}) or (not ${hasServicePlan} and ${fallback}))))
-    and (not ${hasServicePlan} or ${visibleServicePlan}))`;
+  return branchLocation.length ? sql`(${sql.join(branchLocation, sql` or `)})` : sql`false`;
 }
 
 async function notificationPreferenceState(actor: SessionActor, customerId: string) {
@@ -159,9 +165,10 @@ async function portalList(actor: SessionActor, resource: string): Promise<Respon
       left join service_feedback sf on sf.job_id=j.id and sf.tenant_id=j.tenant_id and sf.customer_id=j.customer_id and sf.source='portal'
       where j.tenant_id=${actor.tenantId} and ${customerLocationPredicate(actor, "j.customer_id", "j.service_location_id")} and j.status='completed'
       order by coalesce(j.actual_completed_at,j.scheduled_date::timestamp at time zone ${businessTimeZone()}) desc,j.id limit 100`); break;
-    case "estimates": items = await rows(sql`select e.*,('EST-' || left(e.id::text,8)) as number,e.total_minor as total_cents,er.snapshot->>'title' as title,er.notes
+    case "estimates": items = await rows(sql`select e.*,('EST-' || left(e.id::text,8)) as number,e.total_minor as total_cents,er.snapshot->>'title' as title,er.notes,er.snapshot->'pricingSnapshot' as pricing,
+      (select jsonb_agg(jsonb_build_object('id',ei.id,'description',ei.description,'quantity',ei.quantity,'unitAmountMinor',ei.unit_amount_minor,'discountMinor',coalesce(ei.metadata->'lineDiscountMinor',to_jsonb(ei.discount_minor)),'taxable',ei.metadata->'taxable','optional',ei.metadata->'optional') order by ei.sort_order,ei.id) from estimate_items ei where ei.tenant_id=e.tenant_id and ei.estimate_revision_id=er.id) as lines
       from estimates e join estimate_revisions er on er.estimate_id=e.id and er.tenant_id=e.tenant_id and er.revision_number=e.current_revision
-      where e.tenant_id=${actor.tenantId} and ${customerLocationPredicate(actor, "e.customer_id", "e.service_location_id")} and e.status<>'draft'
+      where e.tenant_id=${actor.tenantId} and (${customerLocationPredicate(actor, "e.customer_id", "e.service_location_id")} or (e.service_location_id is null and ${customerBranchPredicate(actor,"e")})) and e.status<>'draft'
       order by e.created_at desc`); break;
     case "invoices": items = await rows(sql`select i.*,i.invoice_number as number,i.total_minor as total_cents,i.paid_minor as paid_cents,
       i.balance_minor as balance_cents,${openInvoiceBalance()} as open_balance_cents,${invoiceOverpayment()} as overpayment_cents,i.due_at as due_date,

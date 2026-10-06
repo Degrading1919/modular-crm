@@ -11,6 +11,7 @@ import InvoiceRefund, { type RefundPaymentContext } from "./InvoiceRefund";
 import InvoicePaymentAttention from "./InvoicePaymentAttention";
 import ManualPaymentForm from "./ManualPaymentForm";
 import CustomerPortalAccess from "./CustomerPortalAccess";
+import { DocumentEditor, MoneyTotals } from "./DocumentEditor";
 import "./record-detail.css";
 
 type Row = Record<string, any> & { id: string };
@@ -24,7 +25,6 @@ const edits: Record<string, { label: string; key: string; type?: string; require
   customers: [{ label: "Name", key: "name", required: true }, { label: "Email", key: "email", type: "email" }, { label: "Phone", key: "phone", type: "tel" }],
   leads: [{ label: "Email", key: "email", type: "email" }, { label: "Phone", key: "phone", type: "tel" }, { label: "Source", key: "source" }],
   jobs: [{ label: "Office notes", key: "notes", type: "textarea" }, { label: "Customer summary", key: "customerSummary", type: "textarea" }],
-  invoices: [{ label: "Description", key: "description", required: true }, { label: "Amount", key: "amount", type: "number", required: true }, { label: "Due date", key: "dueDate", type: "date" }],
 };
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -49,7 +49,7 @@ export default function RecordDetail({ resource, id }: { resource: string; id: s
   const [notice, setNotice] = useState("");
   const retry = useRef("");
   const may = (permission: Permission, feature?: string) => canUseAction(access, resource, [permission], feature);
-  const editable = resource === "invoices" ? may("invoices.adjust") && item.status === "draft" && related.lines?.length === 1 && !Number(item.taxMinor) && !Number(item.discountMinor) : may(`${resource}.update` as Permission);
+  const editable = resource === "invoices" ? may("invoices.adjust") && item.status === "draft" : may(`${resource}.update` as Permission);
   const plannable = ["draft", "unscheduled", "scheduled", "dispatched", "missed"].includes(item.status);
   const payments = (related.payments ?? []) as unknown as RefundPaymentContext[];
   function open(name: string) {
@@ -61,11 +61,6 @@ export default function RecordDetail({ resource, id }: { resource: string; id: s
     try {
       if (panel === "edit") {
         const changes: Record<string, unknown> = Object.fromEntries(edits[resource].map((field) => [field.key, values[field.key] ?? ""]));
-        if (resource === "invoices") {
-          if (!/^\d+(\.\d{1,2})?$/.test(values.amount)) throw new Error("Enter an amount with no more than two decimal places.");
-          delete changes.amount;
-          changes.totalCents = Math.round(Number(values.amount) * 100); changes.dueDate = values.dueDate || null; changes.expectedUpdatedAt = item.updatedAt;
-        }
         await api(`/${resource}/${id}`, patch(changes));
       } else {
         if (!retry.current) retry.current = crypto.randomUUID();
@@ -117,13 +112,14 @@ export default function RecordDetail({ resource, id }: { resource: string; id: s
         <Section title="Photos"><Collection items={related.photos} empty="No photos recorded." render={(row) => <a className="link" href={`/api/v1/files/${row.id}/download`} target="_blank" rel="noreferrer">{row.originalName}</a>}/></Section>
       </>}
       {resource === "invoices" && <>
+        <Section title="Price breakdown"><MoneyTotals pricing={{subtotalMinor:Number(item.subtotalMinor),discountMinor:Number(item.discountMinor),taxMinor:Number(item.taxMinor),totalMinor:Number(item.totalMinor)}} currency={item.currency}/></Section>
         <Section title="Invoice lines"><Collection items={related.lines} empty="No invoice lines recorded." render={(row) => <div><strong>{row.description}</strong><p>{row.quantity} × {money(row.unitCents, item.currency)} · {money(row.totalCents, item.currency)}</p></div>}/></Section>
         {related.payments && <Section title="Payment history"><Collection items={related.payments} empty="No payments have been recorded for this invoice." render={(row) => <div><strong>{money(row.amountCents, item.currency)}</strong><p>{paymentMethodLabel(row.method, row.sourceType)}{row.reference ? ` · Reference: ${row.reference}` : ""} · {date(row.createdAt)}</p><Badge status={row.status}/><p>Refunded {money(row.refundedCents, item.currency)}</p><ReceiptLink payment={row}/></div>}/>{may("payments.refund", "payment_collection") && <InvoiceRefund invoiceId={id} balanceCents={Number(item.balanceCents)} currency={item.currency} payments={payments.filter((payment) => payment.method !== "card" || access.role === "owner")} onRefunded={() => detail.reload()}/>}</Section>}
         {related.refunds && <Section title="Refunds"><Collection items={related.refunds} empty="No refunds recorded." render={(row) => <div>{money(row.amountCents, row.currency)} <Badge status={row.status}/><p>{row.reason || "No reason recorded"}</p></div>}/></Section>}
       </>}
       {resource === "leads" && <Section title="Related customer"><Collection items={related.customer} empty="This lead has not been linked to an accessible customer." render={(row) => <Link href={`/app/customers/${row.id}`}>{row.name}</Link>}/></Section>}
     </main><aside className="stack"><Section title="History"><Collection items={timeline as Row[]} empty="No activity has been recorded yet." render={(row) => <div><strong>{row.title}</strong><p>{row.description}</p><time dateTime={row.occurredAt}>{date(row.occurredAt, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" })}</time></div>}/><p className="subtle">Showing the latest 100 activities. Related lists show recent records in your permitted business locations.</p></Section></aside></div>
-    {panel && <Modal title={panel === "edit" ? `Edit ${labels[resource].toLowerCase()}` : panel === "payment" ? "Record a payment" : panel === "cancel" ? "Cancel job" : panel === "reassign" ? "Reassign job" : "Reschedule job"} onClose={() => { if (!saving) setPanel(null); }}>
+    {panel === "edit" && resource === "invoices" ? <DocumentEditor kind="invoice" record={{...item,lines:related.lines}} onClose={()=>setPanel(null)} onSaved={()=>{setPanel(null);detail.reload();setNotice("Changes saved.");}}/> : panel && <Modal title={panel === "edit" ? `Edit ${labels[resource].toLowerCase()}` : panel === "payment" ? "Record a payment" : panel === "cancel" ? "Cancel job" : panel === "reassign" ? "Reassign job" : "Reschedule job"} onClose={() => { if (!saving) setPanel(null); }}>
       {panel === "payment" ? <ManualPaymentForm invoice={item} onClose={() => setPanel(null)} onSaved={() => { setPanel(null); detail.reload(); setNotice("Payment recorded."); }}/> : <form onSubmit={submit}>
         {panel === "edit" ? edits[resource].map((field) => <label className="field" key={field.key}>{field.label}{field.type === "textarea" ? <textarea value={values[field.key] ?? ""} onChange={(event) => setValues({ ...values, [field.key]: event.target.value })}/> : <input type={field.type || "text"} min={field.type === "number" ? "0" : undefined} step={field.type === "number" ? ".01" : undefined} minLength={field.key === "name" ? 2 : undefined} value={values[field.key] ?? ""} required={field.required} onChange={(event) => setValues({ ...values, [field.key]: event.target.value })}/>}</label>) : panel === "reschedule" ? <><p>This removes the job from its previous route. Publish a route for the new date when ready.</p><label className="field">New service date<input type="date" required value={values.scheduledDate} onChange={(event) => setValues({ ...values, scheduledDate: event.target.value })}/></label></> : panel === "reassign" ? <><p>The job returns to scheduling so the new technician receives it on a published route.</p><label className="field">Technician<select required value={values.technicianId} onChange={(event) => setValues({ ...values, technicianId: event.target.value })}><option value="">Choose a technician</option>{staff.data.items.filter((person) => person.role === "technician" && person.status === "active" && person.locationIds?.includes(item.organizationLocationId)).map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>{staff.error && <Notice kind="error" text={staff.error}/>}</> : <><p>The job will not be performed. Its history remains, and any configured cancellation notification follows your business settings.</p><label className="field">Cancellation reason<textarea required maxLength={500} value={values.reason} onChange={(event) => setValues({ ...values, reason: event.target.value })}/></label></>}
         {error && <Notice kind="error" text={error}/>}<div className="modal-footer"><button className="btn btn-secondary" type="button" disabled={saving} onClick={() => setPanel(null)}>Keep unchanged</button><button className="btn btn-primary" disabled={saving} type="submit">{saving ? "Saving…" : panel === "cancel" ? "Confirm cancellation" : "Save changes"}</button></div>

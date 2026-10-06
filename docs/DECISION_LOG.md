@@ -4,6 +4,15 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-06 — Itemized approval snapshots and per-document tax rounding
+
+- **Status:** Accepted
+- **Area:** Product / Implementation
+- **Decision:** Share an ordered line editor and integer document calculator between estimates and draft invoices. Round extended prices and percentages half-up; allocate document discounts cumulatively in stored order and round aggregate taxable-basis tax once per document half-up. Freeze chosen add-ons in a separate approval pricing snapshot and copy it to invoice/job billing; issued documents, payments, reports and refunds consume stored amounts without repricing.
+- **Rationale:** Per-line tax rounding and independently interpreted totals disagree; declining an add-on must not rewrite the customer's offered revision or bill excluded work. Legacy untaxed documents keep their totals, and existing recorded tax is preserved.
+- **Authoritative doc:** `docs/PRODUCT_SCOPE.md`, `docs/V1_PRICING_ENGINE.md`, `docs/V1_DOCUMENTS.md`
+- **Supersedes:** The one-line untaxed draft-invoice editing limit in “Actionable record pages and safe job planning changes” (2026-10-05).
+
 ## 2026-10-05 — Withdrawn route stops remain history-only
 
 - **Status:** Accepted

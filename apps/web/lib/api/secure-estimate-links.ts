@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { auditEvents, domainEvents, estimateItems, estimateRevisions, estimates, secureEstimateTokens } from "@modular-crm/db";
+import { auditEvents, domainEvents, estimateApprovals, estimateItems, estimateRevisions, estimates, secureEstimateTokens } from "@modular-crm/db";
 import { assertTransition, DomainError } from "@modular-crm/domain";
 import { getDb } from "../db";
 import { requireTenantFeature } from "./capability-enforcement";
@@ -11,7 +11,7 @@ import { z } from "zod";
 const RATE_WINDOW_MS = 10 * 60 * 1000;
 const windows = new Map<string, { startedAt: number; count: number }>();
 const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
-const decisionBodySchema = z.object({ comment: z.string().trim().max(1000).nullable().optional() }).strict();
+const decisionBodySchema = z.object({ comment: z.string().trim().max(1000).nullable().optional(),acceptedOptionalIds:z.array(z.uuid()).max(100).optional() }).strict();
 
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -108,7 +108,7 @@ async function getPublicView(request: Request, token: typeof secureEstimateToken
       await tx.insert(domainEvents).values({ tenantId: lockedToken.tenantId, eventType: "estimate.viewed", actorType: "secure_estimate_link", actorId: lockedToken.id, entityType: "estimate", entityId: estimate.id, locationId: estimate.organizationLocationId, payload: { status: "viewed" } });
       await tx.insert(auditEvents).values({ tenantId: lockedToken.tenantId, actorType: "secure_estimate_link", actorId: lockedToken.id, action: "estimate.viewed", entityType: "estimate", entityId: estimate.id, beforeData: { status: "sent" }, afterData: { status: "viewed" }, ipAddress, userAgent });
     }
-    const items = await tx.select({ description: estimateItems.description, quantity: estimateItems.quantity, unitAmountMinor: estimateItems.unitAmountMinor, totalMinor: estimateItems.totalMinor })
+    const items = await tx.select({ id:estimateItems.id,metadata:estimateItems.metadata,discountMinor:estimateItems.discountMinor,description: estimateItems.description, quantity: estimateItems.quantity, unitAmountMinor: estimateItems.unitAmountMinor, totalMinor: estimateItems.totalMinor })
       .from(estimateItems).where(and(eq(estimateItems.tenantId, lockedToken.tenantId), eq(estimateItems.estimateRevisionId, revision.id))).orderBy(estimateItems.sortOrder);
     const snapshot = (revision.snapshot ?? {}) as Record<string, unknown>;
     return { expired: false as const, item: {
@@ -116,10 +116,11 @@ async function getPublicView(request: Request, token: typeof secureEstimateToken
       contactName: typeof snapshot.contactName === "string" ? snapshot.contactName : null,
       currency: estimate.currency,
       totalMinor: Number(revision.totalMinor),
+      pricing:snapshot.pricingSnapshot,
       expiresAt: estimate.expiresAt?.toISOString() ?? lockedToken.expiresAt.toISOString(),
       termsText: revision.termsText,
       termsVersion: revision.termsVersion ?? "demo-v1",
-      items: items.map((line) => ({ description: line.description, quantity: line.quantity, unitAmountMinor: Number(line.unitAmountMinor), totalMinor: Number(line.totalMinor) })),
+      items: items.map((line) => ({ id:line.id,description: line.description, quantity: line.quantity, unitAmountMinor: Number(line.unitAmountMinor), totalMinor: Number(line.totalMinor),discountMinor:Number(line.metadata.lineDiscountMinor ?? line.discountMinor),taxable:line.metadata.taxable===true,optional:line.metadata.optional===true })),
     } };
   });
   if (outcome.expired) notAvailable();
@@ -146,12 +147,18 @@ async function decide(request: Request, tokenHash: string, action: "approve" | "
       if (token.consumedAction !== action) throw new DomainError("CONFLICT", "This estimate link has already been used.", 409);
       const expectedStatus = action === "approve" ? "approved" : "declined";
       if (estimate.status !== expectedStatus) throw new DomainError("CONFLICT", "This estimate link has already been used.", 409);
+      if (action === "approve") {
+        const [approval] = await tx.select().from(estimateApprovals).where(and(eq(estimateApprovals.tenantId,token.tenantId),eq(estimateApprovals.secureTokenId,token.id),eq(estimateApprovals.decision,"approved"))).limit(1);
+        const prior = (approval?.pricingSnapshot.acceptedOptionalIds ?? []) as string[];
+        const next = body.acceptedOptionalIds ?? [];
+        if (JSON.stringify([...prior].sort()) !== JSON.stringify([...new Set(next)].sort()) || new Set(next).size !== next.length) throw new DomainError("IDEMPOTENCY_CONFLICT","This estimate was approved with a different add-on selection.",409);
+      }
       return { expired: false as const, estimate, duplicate: true };
     }
     if (!["sent", "viewed"].includes(estimate.status)) notAvailable();
     const saved = await applySecureEstimateDecisionInTransaction(tx, {
       request, tenantId: token.tenantId, estimateId: token.estimateId, tokenId: token.id, action,
-      comment: body.comment ?? null,
+      comment: body.comment ?? null,acceptedOptionalIds:body.acceptedOptionalIds,
     });
     const now = new Date();
     await tx.update(secureEstimateTokens).set({ consumedAt: now, consumedAction: action, updatedAt: now })
