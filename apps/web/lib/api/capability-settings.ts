@@ -493,10 +493,11 @@ async function handleAutomations(request: Request, path: string[], actor: Sessio
     if (status === "active") requirePermission(actor, "automations.activate");
     const parsed = normalizeAutomationRuleInput(body, { tenantId: actor.tenantId, id, version: 1 });
     const created = await db.transaction(async (tx) => {
+      const now = new Date();
       const [row] = await tx.insert(automationRules).values({
         tenantId: actor.tenantId, name: parsed.name, description: parsed.description ?? null, source: "tenant", status: parsed.status,
         version: 1, triggerConfig: parsed.triggerConfig, conditions: parsed.conditions, actions: parsed.actions,
-        createdByMembershipId: actor.membershipId,
+        createdByMembershipId: actor.membershipId, activeFrom: parsed.status === "active" ? now : null,
       }).returning();
       if (!row) throw new Error("Automation could not be created");
       await recordEvent(actor, { type: "automation_rule.created", entityType: "automation_rule", entityId: row.id, auditAction: "automation.create", after: { name: row.name, status: row.status, version: row.version } }, tx);
@@ -528,9 +529,10 @@ async function handleAutomations(request: Request, path: string[], actor: Sessio
       if (!current) throw new DomainError("NOT_FOUND", "Automation not found.", 404);
       const nextStatus = body.status ?? current.status as ParsedRule["status"];
       const nextVersion = current.version + 1;
+      const now = new Date();
       let result: typeof current;
       if (!hasDefinitionChange) {
-        const [row] = await tx.update(automationRules).set({ status: nextStatus, archivedAt: nextStatus === "archived" ? new Date() : current.archivedAt, version: nextVersion, updatedAt: new Date() })
+        const [row] = await tx.update(automationRules).set({ status: nextStatus, activeFrom: nextStatus === "active" ? now : current.activeFrom, archivedAt: nextStatus === "archived" ? now : current.archivedAt, version: nextVersion, updatedAt: now })
           .where(and(eq(automationRules.id, current.id), eq(automationRules.tenantId, actor.tenantId))).returning();
         if (!row) throw new DomainError("NOT_FOUND", "Automation not found.", 404);
         result = row;
@@ -544,17 +546,19 @@ async function handleAutomations(request: Request, path: string[], actor: Sessio
         if (current.source === "tenant") {
           const [row] = await tx.update(automationRules).set({ name: parsed.name, description: parsed.description ?? null, status: parsed.status,
             version: nextVersion, triggerConfig: parsed.triggerConfig, conditions: parsed.conditions, actions: parsed.actions,
-            archivedAt: parsed.status === "archived" ? new Date() : null, updatedAt: new Date() })
+            activeFrom: parsed.status === "active" ? now : current.activeFrom,
+            archivedAt: parsed.status === "archived" ? now : null, updatedAt: now })
             .where(and(eq(automationRules.id, current.id), eq(automationRules.tenantId, actor.tenantId))).returning();
           if (!row) throw new DomainError("NOT_FOUND", "Automation not found.", 404);
           result = row;
         } else {
           const [copy] = await tx.insert(automationRules).values({ tenantId: actor.tenantId, name: parsed.name, description: parsed.description ?? null,
             source: "tenant", sourceKey: current.sourceKey, status: parsed.status, version: nextVersion, triggerConfig: parsed.triggerConfig,
-            conditions: parsed.conditions, actions: parsed.actions, createdByMembershipId: actor.membershipId, archivedAt: parsed.status === "archived" ? new Date() : null })
+            conditions: parsed.conditions, actions: parsed.actions, createdByMembershipId: actor.membershipId,
+            activeFrom: parsed.status === "active" ? now : current.activeFrom, updatedAt: now, archivedAt: parsed.status === "archived" ? now : null })
             .returning();
           if (!copy) throw new Error("Automation override could not be created");
-          await tx.update(automationRules).set({ status: "archived", archivedAt: new Date(), version: current.version + 1, updatedAt: new Date() })
+          await tx.update(automationRules).set({ status: "archived", archivedAt: now, version: current.version + 1, updatedAt: now })
             .where(and(eq(automationRules.id, current.id), eq(automationRules.tenantId, actor.tenantId)));
           await recordEvent(actor, { type: "automation_rule.archived", entityType: "automation_rule", entityId: current.id, auditAction: "automation.override_source_archived", before: { status: current.status, source: current.source }, after: { status: "archived" } }, tx);
           result = copy;

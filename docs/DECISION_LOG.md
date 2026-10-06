@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-06 — Automation activation excludes historical outbox backlog
+
+- **Status:** Accepted
+- **Area:** Product / Implementation
+- **Decision:** Persist a fresh activation cutoff whenever an automation is created active, activated/reactivated, or edited with an active result, including pack overrides and enabled signup recipes. Only events at or after that cutoff may match; pause/archive preserves it, and migration backfills missing cutoffs on existing active rules from their last update.
+- **Rationale:** Turning on a rule must not contact customers or create work for activity that occurred before the owner enabled it, even after a worker outage. Verification identifies runs by their actual triggering invoice, not an arbitrary first history row.
+- **Authoritative docs:** `docs/PRODUCT_SCOPE.md`, `docs/V1_AUTOMATION_ENGINE.md`
+
 ## 2026-10-06 — Week dispatch calendar and billing follow-ups
 
 - **Status:** Accepted

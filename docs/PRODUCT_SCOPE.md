@@ -116,6 +116,7 @@ It includes:
 - outbound SMS notifications
 - predefined automation recipes
 - user-configurable automation rules
+- Turning on or editing an active automation applies it to new business events from that activation/edit onward, not older queued activity. Pausing or archiving preserves history; turning it back on starts a new cutoff.
 - payroll/time tracking
 - inventory and parts tracking
 - advanced reporting

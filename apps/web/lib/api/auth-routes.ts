@@ -93,6 +93,7 @@ export async function handleAuthRoute(request: Request, path: string[]): Promise
     if (!userId) throw new DomainError("CONFLICT", "Account was created, but business setup did not finish. Sign in and contact support.", 409);
     const slug = `${slugify(body.businessName)}-${randomUUID().slice(0, 6)}`;
     await db.transaction(async (tx) => {
+      const now = new Date();
       await installInitialCapabilityCatalog(tx);
       const [tenant] = await tx.insert(tenants).values({ name: body.businessName, slug, status: "active", industryPackKey: PET_WASTE_REMOVAL_PACK.key, industryPackVersion: PET_WASTE_REMOVAL_PACK.version, settings: { onboardingComplete: false, capabilitySetupComplete: false, servicePostalCodes: [], demoMode: true } }).returning();
       if (!tenant) throw new Error("Tenant creation failed");
@@ -114,7 +115,7 @@ export async function handleAuthRoute(request: Request, path: string[]): Promise
       await tx.insert(ticketStatusDefinitions).values({ tenantId: tenant.id, key: "open", name: "Open", normalizedCategory: "open", sortOrder: 1 });
       const [site] = await tx.insert(sites).values({ tenantId: tenant.id, organizationId: organization.id, status: "draft", templateKey: PET_WASTE_REMOVAL_PACK.website.template, templateVersion: "1", slug, branding: { businessName: body.businessName }, settings: { serviceArea: [] } }).returning();
       if (site) await tx.insert(siteContents).values({ tenantId: tenant.id, siteId: site.id, contentKey: "home", content: { headline: PET_WASTE_REMOVAL_PACK.website.heroHeadline, description: PET_WASTE_REMOVAL_PACK.website.heroDescription } });
-      if (membership) await tx.insert(automationRules).values(PET_WASTE_REMOVAL_PACK.defaultAutomations.map((recipe) => ({ tenantId: tenant.id, name: recipe.name, description: recipe.description, source: "industry_pack", sourceKey: recipe.sourceKey, status: recipe.enabledByDefault ? "active" : "draft", version: 1, triggerConfig: { event: recipe.event, ...(recipe.filters ? { filters: recipe.filters } : {}) }, conditions: {}, actions: recipe.actions.map((action) => ({ actionType: action.actionType, configuration: action.configuration, ...(action.purpose ? { purpose: action.purpose } : {}) })), createdByMembershipId: membership.id })));
+      if (membership) await tx.insert(automationRules).values(PET_WASTE_REMOVAL_PACK.defaultAutomations.map((recipe) => ({ tenantId: tenant.id, name: recipe.name, description: recipe.description, source: "industry_pack", sourceKey: recipe.sourceKey, status: recipe.enabledByDefault ? "active" : "draft", activeFrom: recipe.enabledByDefault ? now : null, version: 1, triggerConfig: { event: recipe.event, ...(recipe.filters ? { filters: recipe.filters } : {}) }, conditions: {}, actions: recipe.actions.map((action) => ({ actionType: action.actionType, configuration: action.configuration, ...(action.purpose ? { purpose: action.purpose } : {}) })), createdByMembershipId: membership.id })));
     });
     return signupResponse;
   }
