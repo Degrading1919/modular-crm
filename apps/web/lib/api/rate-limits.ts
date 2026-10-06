@@ -2,10 +2,10 @@ import { createHash } from "node:crypto";
 import { consumeRateLimit } from "@modular-crm/db";
 import { getDb } from "../db";
 import { json } from "./http";
+import { clientAddress } from "./client-address";
 
 export function clientIpKey(request: Request): string {
-  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip")?.trim() || "unknown";
-  return createHash("sha256").update(ip.slice(0, 160)).digest("hex");
+  return createHash("sha256").update(clientAddress(request)).digest("hex");
 }
 export async function limitKey(key: string, limit: number, windowMs: number): Promise<Response | null> {
   const result = await consumeRateLimit(getDb(), key, limit, windowMs);

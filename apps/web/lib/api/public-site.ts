@@ -17,6 +17,8 @@ import { json } from "./http";
 import { requireTenantFeature } from "./capability-enforcement";
 import { encryptServiceAccessInstructions } from "./service-access";
 import { businessDate } from "../dates";
+import { clientAddress } from "./client-address";
+import { clientIpKey } from "./rate-limits";
 
 const PUBLIC_BODY_LIMIT = 64 * 1024;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
@@ -66,14 +68,8 @@ function publicError(status: number, code: string, message: string, retryAfterSe
   return json({ error: { code, message } }, status, retryAfterSeconds ? { "retry-after": String(retryAfterSeconds) } : undefined);
 }
 
-function remoteIp(request: Request): string {
-  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  const raw = forwarded || request.headers.get("x-real-ip")?.trim() || "unknown";
-  return createHash("sha256").update(raw.slice(0, 160)).digest("hex").slice(0, 24);
-}
-
 async function rateLimit(request: Request, slug: string, action: string, limit: number): Promise<Response | null> {
-  const result = await consumeRateLimit(getDb(), `public:${action}:${slug}:${remoteIp(request)}`, limit, RATE_WINDOW_MS);
+  const result = await consumeRateLimit(getDb(), `public:${action}:${slug}:${clientIpKey(request).slice(0, 24)}`, limit, RATE_WINDOW_MS);
   return result.allowed ? null : publicError(429, "RATE_LIMITED", "Too many requests. Please try again in a few minutes.", result.retryAfter);
 }
 
@@ -307,8 +303,8 @@ function splitName(name: string): { firstName: string; lastName: string } {
 }
 
 function requestIp(request: Request): string | null {
-  const raw = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip")?.trim();
-  return raw ? raw.slice(0, 80) : null;
+  const address = clientAddress(request);
+  return address === "local" ? null : address;
 }
 
 async function ensureForm(tx: Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0], site: typeof sites.$inferSelect, formType: "contact" | "signup") {
@@ -387,7 +383,7 @@ function duplicateSignupResult(submission: typeof siteSubmissions.$inferSelect) 
 
 async function saveContact(request: Request, site: typeof sites.$inferSelect, input: z.infer<typeof contactSchema>): Promise<Response> {
   const hash = createHash("sha256").update(JSON.stringify({
-    ip: remoteIp(request), email: input.email.trim().toLowerCase(), name: input.name.trim(), phone: input.phone.trim(), message: input.message.trim(),
+    ip: clientIpKey(request).slice(0, 24), email: input.email.trim().toLowerCase(), name: input.name.trim(), phone: input.phone.trim(), message: input.message.trim(),
   })).digest("hex");
   const idempotencyKey = request.headers.get("idempotency-key")?.trim().slice(0, 200) || `contact:${hash}`;
   const db = getDb();

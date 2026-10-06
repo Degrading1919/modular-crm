@@ -8,6 +8,8 @@ import { requireTenantFeature } from "./capability-enforcement";
 import { json, readBody } from "./http";
 import { applySecureEstimateDecisionInTransaction } from "./workflows";
 import { z } from "zod";
+import { clientAddress } from "./client-address";
+import { clientIpKey } from "./rate-limits";
 
 const RATE_WINDOW_MS = 10 * 60 * 1000;
 
@@ -18,20 +20,13 @@ function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function requestIpHash(request: Request): string {
-  const raw = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-    || request.headers.get("x-real-ip")?.trim() || "unknown";
-  return digest(raw.slice(0, 160)).slice(0, 24);
-}
-
 function requestIp(request: Request): string | null {
-  const raw = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-    || request.headers.get("x-real-ip")?.trim();
-  return raw ? raw.slice(0, 160) : null;
+  const address = clientAddress(request);
+  return address === "local" ? null : address;
 }
 
 async function rateLimited(request: Request, tokenHash: string, action: string, limit: number): Promise<Response | null> {
-  const ip = requestIpHash(request);
+  const ip = clientIpKey(request).slice(0, 24);
   const policies = [[`estimate:${action}:ip:${ip}`, limit], [`estimate:${action}:token:${tokenHash}:${ip}`, Math.max(5, Math.floor(limit / 2))]] as const;
   // Roll back both counters if either budget is exhausted.
   class Limited extends Error { constructor(readonly seconds: number) { super("Rate limited"); } }

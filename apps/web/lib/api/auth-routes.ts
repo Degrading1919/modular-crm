@@ -1,8 +1,8 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import {
-  consumeRateLimit, resetRateLimit, automationRules, grantRecommendedCapabilitySetup, installInitialCapabilityCatalog, memberships,
+  automationRules, grantRecommendedCapabilitySetup, installInitialCapabilityCatalog, memberships,
   organizationLocations, organizations, roleTemplates, services, siteContents, sites, tenants, ticketStatusDefinitions, ticketTypeDefinitions,
 } from "@modular-crm/db";
 import { DomainError } from "@modular-crm/domain";
@@ -11,6 +11,8 @@ import { auth } from "../auth";
 import { getDb } from "../db";
 import { requireActor } from "./actor";
 import { json, readBody } from "./http";
+import { clientIpKey, limitKey } from "./rate-limits";
+import { limitAuthAccount, resetSignInBudget } from "./auth-budgets";
 
 const credentials = z.object({ email: z.email(), password: z.string().min(1) });
 const registration = credentials.extend({ name: z.string().min(2).max(120), businessName: z.string().min(2).max(160) });
@@ -20,29 +22,9 @@ const registration = credentials.extend({ name: z.string().min(2).max(120), busi
 // guessing by normalized email and IP so an office NAT can share the app.
 const AUTH_RATE_WINDOW_MS = 10 * 60 * 1000;
 const AUTH_IP_RATE_LIMIT = 300;
-const AUTH_EMAIL_RATE_LIMIT = 5;
-
-
-function clientIpHash(request: Request): string {
-  const rawIp = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-    || request.headers.get("x-real-ip")?.trim() || "unknown";
-  return createHash("sha256").update(rawIp.slice(0, 160)).digest("hex").slice(0, 24);
-}
-
-async function consumeAuthRateLimit(key: string, limit: number): Promise<Response | null> {
-  const result = await consumeRateLimit(getDb(), `auth:${key}`, limit, AUTH_RATE_WINDOW_MS);
-  return result.allowed ? null : json({ error: { code: "RATE_LIMITED", message: "Too many sign-in attempts. Please try again in a few minutes." } }, 429, { "retry-after": String(result.retryAfter) });
-}
 function rateLimitAuthIp(request: Request): Promise<Response | null> {
-  return consumeAuthRateLimit(`ip:${clientIpHash(request)}`, AUTH_IP_RATE_LIMIT);
+  return limitKey(`auth:ip:${clientIpKey(request).slice(0, 24)}`, AUTH_IP_RATE_LIMIT, AUTH_RATE_WINDOW_MS);
 }
-
-function credentialRateKey(request: Request, email: string): string {
-  const normalizedEmail = email.trim().toLowerCase();
-  const digest = createHash("sha256").update(`${normalizedEmail}\0${clientIpHash(request)}`).digest("hex");
-  return `credential:${digest}`;
-}
-
 function slugify(value: string) { return value.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "business"; }
 
 export async function handleAuthRoute(request: Request, path: string[]): Promise<Response> {
@@ -51,11 +33,10 @@ export async function handleAuthRoute(request: Request, path: string[]): Promise
     const limited = await rateLimitAuthIp(request);
     if (limited) return limited;
     const body = await readBody(request, credentials);
-    const emailKey = credentialRateKey(request, body.email);
-    const credentialLimited = await consumeAuthRateLimit(emailKey, AUTH_EMAIL_RATE_LIMIT);
+    const { keys, limited: credentialLimited } = await limitAuthAccount(request, body.email, "signin");
     if (credentialLimited) return credentialLimited;
     const response = await auth.api.signInEmail({ body, headers: request.headers, asResponse: true });
-    if (response.ok) await resetRateLimit(getDb(), `auth:${emailKey}`);
+    if (response.ok) await resetSignInBudget(keys);
     return response;
   }
   if (action === "logout" && request.method === "POST") {

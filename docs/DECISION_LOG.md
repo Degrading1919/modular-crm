@@ -4,6 +4,15 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-06 — Spoof-resistant security budgets and structural error diagnostics
+
+- **Status:** Accepted
+- **Area:** Architecture
+- **Decision:** Use one validated trusted-proxy address boundary and add normalized-email-only sign-in/reset budgets independent of address changes. Preserve redaction while exposing error classes, bounded cause codes and sanitized stack-frame metadata to JSON logs and OTLP.
+- **Rationale:** Client-controlled forwarding headers must not bypass guessing limits; production failures must remain diagnosable without customer data or secrets.
+- **Authoritative doc:** docs/ARCHITECTURE.md
+- **Supersedes:** Forwarded-header replacement-only guidance in the first paid pilot hardening decision.
+
 ## 2026-10-06 — Production hardening for the first paid pilot
 
 - **Status:** Accepted

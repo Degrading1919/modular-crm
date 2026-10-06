@@ -15,7 +15,14 @@ let pg: PGlite, db: Database;
 const send = vi.fn(async (..._args: unknown[]) => "queued"), boss = { send } as unknown as PgBoss;
 const at = new Date("2026-10-06T16:00:00Z"), week = new Date("2026-10-13T16:00:00Z");
 const requestId = "11111111-1111-4111-8111-111111111111";
-beforeAll(async () => { pg = new PGlite(); const raw = drizzle(pg, { schema }); await migrate(raw, { migrationsFolder: fileURLToPath(new URL("../../../packages/db/drizzle", import.meta.url)) }); db = raw as unknown as Database; await seedDevelopment(db); }, 120_000);
+beforeAll(async () => {
+  pg = new PGlite(); const raw = drizzle(pg, { schema });
+  await migrate(raw, { migrationsFolder: fileURLToPath(new URL("../../../packages/db/drizzle", import.meta.url)) });
+  db = raw as unknown as Database; await seedDevelopment(db);
+  // These scenarios run on a fixed clock, not the wall clock used by development seeding.
+  await db.update(schema.tenantCapabilityGrants).set({ effectiveFrom: new Date("2020-01-01T00:00:00Z") })
+    .where(eq(schema.tenantCapabilityGrants.tenantId, seedIds.happyTenant));
+}, 120_000);
 afterAll(async () => { await pg?.close(); });
 async function activate(key: string) {
   await db.update(schema.automationRules).set({ status: "active", activeFrom: new Date("2020-01-01") }).where(and(eq(schema.automationRules.tenantId, seedIds.happyTenant), eq(schema.automationRules.sourceKey, key)));

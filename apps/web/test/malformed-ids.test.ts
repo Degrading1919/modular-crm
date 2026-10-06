@@ -131,8 +131,8 @@ it("maps direct and nested PostgreSQL input errors without exposing values; othe
   try { expect(apiError(Object.assign(new Error("database offline"), { code: "08006" })).status).toBe(500); }
   finally {
     expect(consoleLog.mock.calls).toHaveLength(1);
-    expect(JSON.parse(consoleLog.mock.calls[0]![0] as string)).toMatchObject({ event: "api.error", level: "error", status: 500 });
-    expect(JSON.stringify(consoleLog.mock.calls)).not.toMatch(/database offline|08006/);
+    expect(JSON.parse(consoleLog.mock.calls[0]![0] as string)).toMatchObject({ event: "api.error", level: "error", status: 500, errorClass: "Error", causeCode: "08006", stackFrames: expect.any(Array) });
+    expect(JSON.stringify(consoleLog.mock.calls)).not.toMatch(/database offline/);
     consoleLog.mockRestore();
   }
 });

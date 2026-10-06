@@ -1,8 +1,6 @@
-import { createHash } from "node:crypto";
-import { resetRateLimit } from "@modular-crm/db";
-import { getDb } from "../db";
 import { clientIpKey, limitKey } from "./rate-limits";
 import { json } from "./http";
+import { limitAuthAccount, resetSignInBudget, type authBudgetKeys } from "./auth-budgets";
 
 /** Better Auth's direct HTTP routes and V1 calls must share the same guessing budget. */
 export async function handleAuthHttp(request: Request, handler: (request: Request) => Promise<Response>): Promise<Response> {
@@ -17,7 +15,7 @@ export async function handleAuthHttp(request: Request, handler: (request: Reques
     const limitedAction = await limitKey(`auth.http:${category}:${ip}`, 30, 60_000);
     if (limitedAction) return limitedAction;
   }
-  let credentialKey: string | undefined;
+  let keys: ReturnType<typeof authBudgetKeys> | undefined;
   if (signIn || reset) {
     const reader = request.clone().body?.getReader();
     if (reader) {
@@ -33,14 +31,13 @@ export async function handleAuthHttp(request: Request, handler: (request: Reques
       try { email = (JSON.parse(Buffer.concat(chunks).toString("utf8")) as { email?: unknown })?.email; }
       catch { /* Better Auth returns its own validation response. */ }
       if (typeof email === "string" && email.length <= 254) {
-        const digest = createHash("sha256").update(`${email.trim().toLowerCase()}\0${ip}`).digest("hex");
-        credentialKey = `auth:${signIn ? "credential" : "reset"}:${digest}`;
-        const credentialLimited = await limitKey(credentialKey, 5, 600_000);
-        if (credentialLimited) return credentialLimited;
+        const budget = await limitAuthAccount(request, email, signIn ? "signin" : "reset");
+        keys = budget.keys;
+        if (budget.limited) return budget.limited;
       }
     }
   }
   const response = await handler(request);
-  if (signIn && response.ok && credentialKey) await resetRateLimit(getDb(), credentialKey);
+  if (signIn && response.ok && keys) await resetSignInBudget(keys);
   return response;
 }

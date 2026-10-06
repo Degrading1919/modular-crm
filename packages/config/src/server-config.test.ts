@@ -11,6 +11,12 @@ const healthy = {
 };
 
 describe("production startup configuration", () => {
+  it("defaults to one production proxy and none locally, and validates the fixed hop count", () => {
+    expect(readServerConfig(healthy).trustedProxyHops).toBe(1);
+    expect(readServerConfig({ NODE_ENV: "test" }).trustedProxyHops).toBe(0);
+    expect(readServerConfig({ ...healthy, TRUSTED_PROXY_HOPS: "2" }).trustedProxyHops).toBe(2);
+    for (const TRUSTED_PROXY_HOPS of ["0", "17", "-1", "1.5", "NaN", "", "1e1"]) expect(() => readServerConfig({ ...healthy, TRUSTED_PROXY_HOPS })).toThrow("TRUSTED_PROXY_HOPS");
+  });
   it("warns without failing when no reporter is configured and rejects unsafe collector URLs", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {

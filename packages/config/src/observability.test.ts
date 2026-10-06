@@ -1,6 +1,32 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { observeRequest, OtlpErrorReporter, safeLogFields, requestContext, withRequestContext, identifyTenant, logJson, reportFailure } from "./observability.ts";
+import { observeRequest, OtlpErrorReporter, ConsoleErrorReporter, errorDiagnostics, captureUnhandledError, safeLogFields, requestContext, withRequestContext, identifyTenant, logJson, reportFailure } from "./observability.ts";
 const id = "11111111-1111-4111-8111-111111111111";
+it("includes structural class, cause code and frames in console and OTLP without message text", async () => {
+  const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  const send = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 200 }));
+  const error = new Error("customer@example.com secret", { cause: Object.assign(new Error("private SQL"), { code: "23505" }) });
+  error.stack = "Error: customer@example.com secret\n    at saveCustomer (C:/private/user/apps/db.ts:42:9)\n    at customer@example.com (secret:1:1)";
+  const report = { errorCode: "unhandled_api_error" as const, status: 500, durationMs: 1 };
+  expect(errorDiagnostics(error)).toEqual({ errorClass: "Error", causeCode: "23505", stackFrames: ["saveCustomer@db.ts:42"] });
+  await new ConsoleErrorReporter().report(error, report);
+  await new OtlpErrorReporter("https://collector.example/v1/logs", send).report(error, report);
+  const line = String(log.mock.calls[0]![0]), payload = String(send.mock.calls[0]![1]!.body);
+  for (const output of [line, payload]) {
+    for (const text of ["customer@example.com", "secret", "private", "SQL"]) expect(output).not.toContain(text);
+    for (const text of ["Error", "23505", "saveCustomer@db.ts:42"]) expect(output).toContain(text);
+  }
+  expect(safeLogFields({ errorClass: "secret@example.com", causeCode: "password secret", stackFrames: ["saveCustomer@db.ts:42", "customer@example.com@secret:1"] })).toEqual({ stackFrames: ["saveCustomer@db.ts:42"] });
+});
+it("retains a swallowed API failure for the outer reporter and bounds cyclic causes", async () => {
+  const log = vi.spyOn(console, "log").mockImplementation(() => {});
+  const error = Object.assign(new TypeError("customer@example.com secret"), { code: "ECONNRESET" });
+  Object.assign(error, { cause: error });
+  await observeRequest(new Request("http://localhost"), "api.v1", async () => { captureUnhandledError(error); return new Response(null, { status: 500 }); });
+  const reported = log.mock.calls.map(c => JSON.parse(String(c[0]))).find(c => c.event === "error.reported");
+  expect(reported).toMatchObject({ errorClass: "TypeError", causeCode: "ECONNRESET" });
+  expect(JSON.stringify(log.mock.calls)).not.toContain("customer@example.com");
+  expect(JSON.stringify(log.mock.calls)).not.toContain("secret");
+});
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 it("redacts arbitrary fields, raw exceptions, bodies, PII, headers and bearer URLs by allowlist", async () => {
   const log = vi.spyOn(console, "log").mockImplementation(() => {});

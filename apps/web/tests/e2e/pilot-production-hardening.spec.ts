@@ -3,6 +3,17 @@ import { randomUUID } from "node:crypto";
 import { createDatabase, closeDatabase, consumeRateLimit, resetRateLimit, domainEvents } from "@modular-crm/db";
 import { eq } from "drizzle-orm";
 
+test("wrong passwords remain bounded when every sign-in spoofs a different forwarded address", async ({ request }) => {
+  const email = `guess-${randomUUID()}@example.test`;
+  for (let i = 0; i < 20; i++) {
+    const response = await request.post(i % 2 ? "/api/v1/auth/login" : "/api/auth/sign-in/email", {
+      headers: { "x-forwarded-for": `198.51.100.${i + 1}` }, data: { email, password: "wrong-password" },
+    });
+    if (i < 5) expect(response.status()).toBe(401);
+    if (i >= 10) { expect(response.status()).toBe(429); expect(Number(response.headers()["retry-after"])).toBeGreaterThan(0); }
+  }
+});
+
 test("two independent PostgreSQL clients share a single atomic request budget", async () => {
   const first = createDatabase(process.env.DATABASE_URL!), second = createDatabase(process.env.DATABASE_URL!);
   const key = `integration:${randomUUID()}`;

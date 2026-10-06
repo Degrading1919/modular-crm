@@ -108,6 +108,7 @@ export type ServerConfig = Readonly<{
   authBaseUrl: string;
   appBaseUrl: string;
   localSmokeTest: boolean;
+  trustedProxyHops: number;
   workerHealthPort: number;
   workerPollStaleMs: number;
   workerJobMaxMs: number;
@@ -137,7 +138,7 @@ export const SERVER_CONFIGURATION_KEYS: ReadonlySet<string> = new Set([
   "SMTP_HOST", "SMTP_PORT", "SMTP_FROM", "SMTP_USER", "SMTP_PASSWORD", "SMTP_SECURE",
   "WORKER_HEALTH_PORT", "WORKER_POLL_STALE_MS", "WORKER_JOB_MAX_MS", "PLATFORM_NAME",
   "PLATFORM_EMAIL_HOURLY_LIMIT", "PLATFORM_EMAIL_DAILY_LIMIT", "PLATFORM_EMAIL_FIRST_WEEK_HOURLY_LIMIT", "PLATFORM_EMAIL_FIRST_WEEK_DAILY_LIMIT",
-  "PAYMENTS_STRIPE_SECRET_KEY", "PAYMENTS_STRIPE_WEBHOOK_SECRET", "PAYMENTS_STRIPE_MODE", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+  "PAYMENTS_STRIPE_SECRET_KEY", "PAYMENTS_STRIPE_WEBHOOK_SECRET", "PAYMENTS_STRIPE_MODE", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "TRUSTED_PROXY_HOPS",
 ]);
 export class ServerConfigurationError extends Error {
   readonly configurationKeys: string[];
@@ -147,9 +148,21 @@ export class ServerConfigurationError extends Error {
   }
 }
 
+/** Zero means no proxy/header trust. Production requires a fixed, secured proxy path. */
+export function trustedProxyHops(env: Record<string, string | undefined>): number {
+  const production = env.NODE_ENV === "production";
+  const raw = env.TRUSTED_PROXY_HOPS ?? (production ? "1" : "0");
+  const hops = Number(raw);
+  if (!/^(0|[1-9][0-9]*)$/.test(raw) || hops < (production ? 1 : 0) || hops > 16) {
+    throw new ServerConfigurationError(["TRUSTED_PROXY_HOPS must be an integer from 1 to 16 in production, or 0 to 16 locally"]);
+  }
+  return hops;
+}
+
 export function readServerConfig(env: Record<string, string | undefined>): ServerConfig {
   const environment = env.NODE_ENV === "production" ? "production" : env.NODE_ENV === "test" ? "test" : "development";
   const problems: string[] = [];
+  const proxyHops = trustedProxyHops(env);
   const databaseUrl = env.DATABASE_URL?.trim() || undefined;
   const production = environment === "production";
   const localSmokeTest = env.LOCAL_SMOKE_TEST === "true";
@@ -220,7 +233,7 @@ export function readServerConfig(env: Record<string, string | undefined>): Serve
   } else if (production) {
     console.warn(JSON.stringify({ level: "warn", time: new Date().toISOString(), requestId: null, tenantId: null, route: "startup", status: null, durationMs: 0, event: "error.reporter_not_configured" }));
   }
-  return Object.freeze({ environment, databaseUrl, mockConnectors, publicBaseUrl, authBaseUrl, appBaseUrl, localSmokeTest, workerHealthPort, workerPollStaleMs, workerJobMaxMs,
+  return Object.freeze({ environment, databaseUrl, mockConnectors, publicBaseUrl, authBaseUrl, appBaseUrl, localSmokeTest, trustedProxyHops: proxyHops, workerHealthPort, workerPollStaleMs, workerJobMaxMs,
     smtp: Object.freeze({ host, port, secure, user: env.SMTP_USER, password: env.SMTP_PASSWORD, from }), platformName, platformEmailLimits,
     storageEndpoint: env.STORAGE_ENDPOINT?.trim() || undefined, storageBucket: env.STORAGE_BUCKET?.trim() || "modular-crm",
     ...(stripeConfigured ? { stripePayments: Object.freeze({ secretKey: env.PAYMENTS_STRIPE_SECRET_KEY!, webhookSecret: env.PAYMENTS_STRIPE_WEBHOOK_SECRET!, mode: env.PAYMENTS_STRIPE_MODE as "test" | "live" }) } : {}) });

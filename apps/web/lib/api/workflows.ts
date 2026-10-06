@@ -1,3 +1,4 @@
+import { clientAddress } from "./client-address";
 import { createHash, randomBytes } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -181,8 +182,8 @@ export async function applySecureEstimateDecisionInTransaction(
   if (!revision) throw new DomainError("CONFLICT", "Estimate revision is missing.", 409);
   let customerId = current.customerId;
   let convertedLocationId: string | null = null;
-  const ipAddress = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim().slice(0, 160)
-    || request.headers.get("x-real-ip")?.trim().slice(0, 160) || null;
+  const address = clientAddress(request);
+  const ipAddress = address === "local" ? null : address;
   const userAgent = request.headers.get("user-agent")?.slice(0, 500) ?? null;
   if (to === "approved" && !customerId && current.leadId) {
     const converted = await convertLeadCoreInTransaction(tenantId, current.leadId, tx, { secureTokenId: tokenId, ipAddress, userAgent });

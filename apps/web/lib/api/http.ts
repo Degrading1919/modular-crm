@@ -1,5 +1,5 @@
 import { DomainError } from "@modular-crm/domain";
-import { logJson } from "@modular-crm/config/observability";
+import { captureUnhandledError, errorDiagnostics, logJson } from "@modular-crm/config/observability";
 import { ZodError, type ZodType } from "zod";
 
 export function json(data: unknown, status = 200, headers?: HeadersInit): Response {
@@ -22,7 +22,8 @@ export function apiError(error: unknown): Response {
     }
     current = "cause" in current ? current.cause : undefined;
   }
-  logJson("error", "api.error", { status: 500 });
+  captureUnhandledError(error);
+  logJson("error", "api.error", { status: 500, ...errorDiagnostics(error) });
   return json({ error: { code: "INTERNAL_ERROR", message: "Something went wrong. Please try again." } }, 500);
 }
 
