@@ -74,7 +74,7 @@ export default function RecordDetail({ resource, id }: { resource: string; id: s
   }
   async function primary(action: string) {
     setSaving(true); setError("");
-    try { const result=await api<{item?:Row}>(`/${resource}/${id}/${action}`, body({})); if(action==="invoice"&&result.item?.id){router.push(`/app/invoices/${result.item.id}`);return;} detail.reload(); setNotice(action === "issue" ? "Invoice issued." : "Lead converted to a customer."); }
+    try { const result=await api<{item?:Row}>(`/${resource}/${id}/${action}`, body({})); if(action==="invoice"&&result.item?.id){router.push(`/app/invoices/${result.item.id}`);return;} detail.reload(); setNotice(action === "void" ? "Invoice voided. Its visits can be billed again." : action === "issue" ? "Invoice issued." : "Lead converted to a customer."); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "We couldn’t complete this action."); }
     finally { setSaving(false); }
   }
@@ -94,6 +94,7 @@ export default function RecordDetail({ resource, id }: { resource: string; id: s
       {resource === "jobs" && plannable && may("jobs.assign", "service_scheduling") && access.permissions.includes("staff.read") && <button className="btn btn-secondary" onClick={() => open("reassign")}>Reassign</button>}
       {resource === "jobs" && allowedTransitions("job", item.status).includes("canceled") && may("jobs.cancel", "service_scheduling") && <button className="btn btn-secondary" onClick={() => open("cancel")}>Cancel job</button>}
       {resource === "invoices" && item.status === "draft" && may("invoices.issue") && <button className="btn btn-primary" disabled={saving} onClick={() => void primary("issue")}>Issue invoice</button>}
+      {resource === "invoices" && ["draft", "issued"].includes(item.status) && Number(item.paidCents) === 0 && may("invoices.void") && <button className="btn btn-secondary" disabled={saving} onClick={() => { if (window.confirm("Void this invoice? Its history is kept and its visits can be billed again.")) void primary("void"); }}>Void invoice</button>}
       {resource === "invoices" && Number(item.openBalanceCents) > 0 && may("payments.record_manual", "payment_collection") && access.permissions.includes("payments.collect") && <button className="btn btn-primary" onClick={() => open("payment")}>Record payment</button>}
       {resource === "invoices" && <Link className="btn btn-secondary" href={`/app/documents/invoice/${id}`}>View invoice</Link>}
       {resource === "leads" && item.status !== "converted" && may("leads.convert") && <button className="btn btn-primary" disabled={saving} onClick={() => void primary("convert")}>Convert to customer</button>}

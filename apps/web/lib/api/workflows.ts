@@ -24,6 +24,7 @@ import { assignableTechnician, lockJobForPlanning, withdrawJobFromRoutes } from 
 import { approvedPricing } from "./estimate-pricing";
 import { estimateInvoice } from "./estimate-invoice";
 import { finishedWork, jobInvoice } from "./job-billing";
+import { voidInvoice } from "./invoice-void";
 import { storedLine } from "./document-lines";
 import type { DocumentPricing } from "@modular-crm/domain";
 
@@ -520,6 +521,7 @@ export async function handleWorkflow(request: Request, path: string[], actor: Se
       ...(actor.kind === "staff" && actor.role === "technician" ? { fieldOperation: { action: `job.transition.${body.status}`, target: id, clientOperationId: body.clientOperationId, payload: body, deviceTimestamp: body.deviceTimestamp ? new Date(body.deviceTimestamp) : null } } : {}),
     });
   }
+  if (resource === "invoices" && action === "void") return voidInvoice(actor, id);
   if (resource === "invoices" && ["issue", "pay"].includes(action)) return invoiceAction(request, actor, id, action);
   if (resource === "service-plans" && ["pause", "resume", "cancel"].includes(action)) return servicePlanAction(actor, id, action);
   return null;

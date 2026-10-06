@@ -39,7 +39,9 @@ test("office, schedule, field route, and portal preserve a calendar service date
     await expect(page.getByText(shortDate, { exact: true }).first()).toBeVisible();
     await page.clock.install({ time: new Date("2026-10-06T02:30:00.000Z") });
     await page.goto("/app/schedule");
-    await expect(page.getByRole("heading", { name: "Work for Oct 5, 2026", exact: true })).toBeVisible();
+    await expect(page.getByLabel("Schedule date", { exact: true })).toHaveValue("2026-10-05");
+    await expect(page.getByRole("region", { name: "Week calendar", exact: true }).getByRole("button", { name: "Mon, Oct 5", exact: true })).toBeVisible();
+    await expect(page).toHaveURL(/week=2026-10-05.*day=2026-10-05/);
 
     await signIn(page, "customer@happyyards.test");
     const overview = await (await page.request.get("/api/v1/portal/overview")).json();

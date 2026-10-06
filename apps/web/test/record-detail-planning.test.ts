@@ -14,6 +14,7 @@ vi.mock("../lib/db", () => ({ getDb: getDbMock }));
 vi.mock("../lib/connectors", () => ({ getCapability: getCapabilityMock }));
 process.env.DATABASE_URL ??= "postgres://localhost:5433/modular_crm_test";
 const { handleJobPlanning } = await import("../lib/api/job-planning");
+const { handleSchedule } = await import("../lib/api/schedule");
 const { handleRecordDetails } = await import("../lib/api/record-details");
 const { handleRecords } = await import("../lib/api/records");
 const { handleRoutesField } = await import("../lib/api/routes-field");
@@ -31,6 +32,39 @@ async function createJob(status = "scheduled", date = "2026-11-07") {
 async function action(job: typeof schema.jobs.$inferSelect, name: string, extra: Record<string, unknown>, actor = office, key = crypto.randomUUID()) {
   return handleJobPlanning(request({ idempotencyKey: key, expectedUpdatedAt: job.updatedAt.toISOString(), ...extra }), ["jobs", job.id, name], actor);
 }
+
+it("reads 500 week visits in four set-based queries with scoped technicians and unscheduled work", async () => {
+  const bulk = await db.insert(schema.jobs).values(Array.from({ length: 500 }, (_, i) => ({ tenantId: owner.tenantId, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, serviceId: seedIds.weeklyService, scheduledDate: `2027-02-${String(1 + i % 7).padStart(2, '0')}`, status: "scheduled" }))).returning();
+  const [tray] = await db.insert(schema.jobs).values({ tenantId: owner.tenantId, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, serviceId: seedIds.weeklyService, status: "unscheduled" }).returning();
+  const execute = vi.spyOn(db, "execute");
+  try {
+    const response = await handleSchedule(new Request("http://localhost/schedule?week=2027-02-03"), ["schedule"], office);
+    expect(execute).toHaveBeenCalledTimes(4);
+    const data = await response!.json();
+    expect(data).toMatchObject({ from: "2027-02-01", through: "2027-02-07", timeZone: "America/New_York", weekStartsOn: 1 });
+    expect(data.items.filter((item: { id: string }) => bulk.some(job => job.id === item.id))).toHaveLength(500);
+    expect(data.unscheduled).toContainEqual(expect.objectContaining({ id: tray!.id, technicianId: null }));
+    expect(data.technicians.map((tech: { id: string }) => tech.id)).toContain(seedIds.terryMembership);
+    expect(data.technicians.map((tech: { id: string }) => tech.id)).not.toContain(seedIds.caseyMembership);
+    await expect(handleSchedule(new Request(`http://localhost/schedule?locationId=${seedIds.northAugusta}`), ["schedule"], office)).rejects.toMatchObject({ status: 404 });
+    await expect(handleSchedule(new Request("http://localhost/schedule"), ["schedule"], { ...office, permissions: new Set() })).rejects.toMatchObject({ status: 403 });
+    const empty = await (await handleSchedule(new Request("http://localhost/schedule?week=2027-02-03"), ["schedule"], { ...office, tenantId: seedIds.cleanTenant }))!.json();
+    expect(empty.items).toEqual([]); expect(empty.unscheduled).toEqual([]); expect(empty.technicians).toEqual([]);
+  } finally { execute.mockRestore(); }
+});
+it("schedules and assigns an unscheduled visit atomically, stores branch arrival instants and supports unassignment", async () => {
+  const [job] = await db.insert(schema.jobs).values({ tenantId: owner.tenantId, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, serviceId: seedIds.weeklyService, status: "unscheduled" }).returning();
+  const key = crypto.randomUUID(), intent = { scheduledDate: "2027-02-03", technicianId: seedIds.terryMembership, arrivalWindow: { start: "09:30", end: "11:00" } };
+  expect((await action(job!, "reschedule", intent, office, key))!.status).toBe(200);
+  expect(await (await action(job!, "reschedule", intent, office, key))!.json()).toMatchObject({ duplicate: true });
+  const [saved] = await db.select().from(schema.jobs).where(eq(schema.jobs.id, job!.id));
+  expect(saved).toMatchObject({ status: "scheduled", scheduledDate: "2027-02-03", serviceWindowStart: new Date("2027-02-03T14:30:00Z"), serviceWindowEnd: new Date("2027-02-03T16:00:00Z") });
+  expect(await db.select().from(schema.jobAssignments).where(eq(schema.jobAssignments.jobId, job!.id))).toHaveLength(1);
+  await expect(action(saved!, "reschedule", { scheduledDate: "2027-02-04", technicianId: seedIds.caseyMembership })).rejects.toMatchObject({ status: 404 });
+  expect((await db.select().from(schema.jobs).where(eq(schema.jobs.id, job!.id)))[0]).toEqual(saved);
+  await action(saved!, "reassign", { technicianId: null });
+  expect((await db.select().from(schema.jobAssignments).where(eq(schema.jobAssignments.jobId, job!.id))).every(assignment => assignment.removedAt !== null)).toBe(true);
+});
 
 it("reschedules dispatched work atomically, preserves old route history, and publishes a valid new route", async () => {
   const job = await createJob();
@@ -94,6 +128,7 @@ it("rejects same-technician reassignment without withdrawing published work or e
   await handleRoutesField(request({}),["routes",route!.id,"publish"],office);
   const [published] = await db.select().from(schema.jobs).where(eq(schema.jobs.id,job.id));
   await expect(action(published!,"reassign",{ technicianId: seedIds.terryMembership })).rejects.toMatchObject({ status: 422 });
+  await expect(action(published!,"reschedule",{ scheduledDate: published!.scheduledDate, technicianId: seedIds.terryMembership, arrivalWindow: null })).rejects.toMatchObject({ status: 422, message: "Choose a different service date, technician, or arrival window." });
   expect((await db.select().from(schema.jobs).where(eq(schema.jobs.id,job.id)))[0]).toEqual(published);
   expect((await db.select().from(schema.routeStops).where(eq(schema.routeStops.routePlanId,route!.id)))[0]!.status).toBe("planned");
   expect(await db.select().from(schema.domainEvents).where(and(eq(schema.domainEvents.entityId,job.id),eq(schema.domainEvents.eventType,"job.assigned")))).toHaveLength(0);

@@ -111,7 +111,7 @@ test("V1 lifecycle: estimate approval through field work, billing, and feedback"
   await page.goto("/app/schedule");
   await page.getByLabel("Schedule date").fill(scheduledDate);
   await page.getByRole("button", { name: `Assign ${serviceName} for Carter Household` }).click();
-  await page.getByLabel("Technician").selectOption({ label: "Terry Tech" });
+  await page.getByLabel("Technician", { exact: true }).selectOption({ label: "Terry Tech" });
   await page.getByLabel("Service day").fill(scheduledDate);
   await page.getByRole("button", { name: "Assign job" }).click();
   await expect(page.getByText("Job assigned. The route planner can now include it.")).toBeVisible();

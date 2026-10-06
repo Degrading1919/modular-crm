@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { domainEvents, jobAssignments, jobs, jobStatusEvents, memberships, roleTemplates, routePlans, routeStops } from "@modular-crm/db";
+import { domainEvents, jobAssignments, jobs, jobStatusEvents, memberships, organizationLocations, roleTemplates, routePlans, routeStops } from "@modular-crm/db";
 import { assertTransition, DomainError, requirePermission } from "@modular-crm/domain";
 import { z } from "zod";
 import { getDb } from "../db";
@@ -9,6 +9,7 @@ import { recordEvent } from "./events";
 import { json, readBody } from "./http";
 import { normalized, uuidArray } from "./sql";
 import { recordJobReschedule, suppressJobReminders } from "./job-reschedule";
+import { arrivalInstant } from "../schedule-dates";
 
 type Tx = Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0];
 const plannable = new Set(["draft", "unscheduled", "scheduled", "dispatched", "missed"]);
@@ -50,7 +51,7 @@ export async function withdrawJobFromRoutes(tx: Tx, actor: SessionActor, job: ty
   return { status, assignedRouteId: null };
 }
 
-const actionSchema = z.object({ idempotencyKey: z.uuid(), expectedUpdatedAt: z.iso.datetime({ offset: true }), scheduledDate: z.iso.date().optional(), technicianId: z.uuid().optional(), reason: z.string().trim().min(1).max(500).optional() });
+const actionSchema = z.object({ idempotencyKey: z.uuid(), expectedUpdatedAt: z.iso.datetime({ offset: true }), scheduledDate: z.iso.date().optional(), technicianId: z.uuid().nullable().optional(), arrivalWindow: z.object({ start: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/), end: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/) }).nullable().optional(), reason: z.string().trim().min(1).max(500).optional() }).strict();
 
 export async function handleJobPlanning(request: Request, path: string[], actor: SessionActor): Promise<Response | null> {
   const [resource, id, action] = path;
@@ -59,7 +60,7 @@ export async function handleJobPlanning(request: Request, path: string[], actor:
   if (actor.role === "technician") throw new DomainError("FORBIDDEN", "Ask your office to change the schedule.", 403);
   requirePermission(actor, action === "cancel" ? "jobs.cancel" : "jobs.assign");
   const body = await readBody(request, actionSchema);
-  if (action === "reschedule" && !body.scheduledDate || action === "reassign" && !body.technicianId || action === "cancel" && !body.reason) throw new DomainError("VALIDATION_ERROR", "Enter the information for this change.", 422);
+  if (action === "reschedule" && !body.scheduledDate || action === "reassign" && body.technicianId === undefined || action === "cancel" && !body.reason) throw new DomainError("VALIDATION_ERROR", "Enter the information for this change.", 422);
   const requestHash = createHash("sha256").update(JSON.stringify({ id, action, ...body })).digest("hex");
   const bytes = createHash("sha256").update(`${actor.tenantId}:${actor.userId}:job-action:${body.idempotencyKey}`).digest("hex").slice(0, 32);
   const eventId = `${bytes.slice(0,8)}-${bytes.slice(8,12)}-${bytes.slice(12,16)}-${bytes.slice(16,20)}-${bytes.slice(20)}`;
@@ -74,6 +75,7 @@ export async function handleJobPlanning(request: Request, path: string[], actor:
     }
     if (job.updatedAt.toISOString() !== body.expectedUpdatedAt) throw new DomainError("CONFLICT", "This job changed. Refresh it before making this change.", 409);
     const now = new Date();
+    let assignmentChanged = false;
     let changes: Partial<typeof jobs.$inferInsert>;
     if (action === "cancel") {
       assertTransition("job", job.status, "canceled", { reason: body.reason });
@@ -85,17 +87,45 @@ export async function handleJobPlanning(request: Request, path: string[], actor:
       if (!plannable.has(job.status)) throw new DomainError("CONFLICT", "Only work that has not started can be rescheduled or reassigned.", 409);
       changes = await withdrawJobFromRoutes(tx, actor, job);
       if (action === "reschedule") {
-        if (body.scheduledDate === job.scheduledDate) throw new DomainError("VALIDATION_ERROR", "Choose a different service date.", 422);
-        changes = { ...changes, scheduledDate: body.scheduledDate, serviceWindowStart: null, serviceWindowEnd: null };
+        if (body.scheduledDate === job.scheduledDate && body.arrivalWindow === undefined && body.technicianId === undefined) throw new DomainError("VALIDATION_ERROR", "Choose a different service date.", 422);
+        const dateChanged = body.scheduledDate !== job.scheduledDate;
+        changes = { ...changes, scheduledDate: body.scheduledDate, ...(dateChanged ? { serviceWindowStart: null, serviceWindowEnd: null } : {}) };
+        if (["draft", "unscheduled"].includes(job.status)) {
+          assertTransition("job", job.status, "scheduled"); changes.status = "scheduled";
+          await tx.insert(jobStatusEvents).values({ tenantId: actor.tenantId, jobId: id, fromStatus: job.status, toStatus: "scheduled", actorType: "staff", actorId: actor.userId, note: "Scheduled from the planning calendar." });
+        }
+        if (body.arrivalWindow !== undefined) {
+          let start: Date | null = null, end: Date | null = null;
+          if (body.arrivalWindow) {
+            const [branch] = await tx.select({ timezone: organizationLocations.timezone }).from(organizationLocations).where(and(eq(organizationLocations.tenantId, actor.tenantId), eq(organizationLocations.id, job.organizationLocationId!)));
+            if (!branch) throw new DomainError("VALIDATION_ERROR", "Choose a branch before setting an arrival window.", 422);
+            try { start = arrivalInstant(body.scheduledDate!, body.arrivalWindow.start, branch!.timezone); end = arrivalInstant(body.scheduledDate!, body.arrivalWindow.end, branch!.timezone); }
+            catch (cause) { throw new DomainError("VALIDATION_ERROR", (cause as Error).message, 422); }
+            if (start >= end) throw new DomainError("VALIDATION_ERROR", "Arrival window must end after it starts on the service day.", 422);
+          }
+          changes.serviceWindowStart = start; changes.serviceWindowEnd = end;
+        }
         await recordJobReschedule(tx, actor, job, body.scheduledDate!);
-      } else {
-        const technician = await assignableTechnician(tx, actor, job, body.technicianId!);
-        const [currentAssignment] = await tx.select({ id: jobAssignments.id }).from(jobAssignments).where(and(eq(jobAssignments.tenantId,actor.tenantId),eq(jobAssignments.jobId,id),eq(jobAssignments.membershipId,technician.id),eq(jobAssignments.assignmentRole,"primary"),isNull(jobAssignments.removedAt)));
-        if (currentAssignment) throw new DomainError("VALIDATION_ERROR","This job is already assigned to this technician. Choose a different technician.",422);
-        await suppressJobReminders(tx, actor, id, "visit_rescheduled");
-        await tx.update(jobAssignments).set({ removedAt: now }).where(and(eq(jobAssignments.tenantId, actor.tenantId), eq(jobAssignments.jobId, id), isNull(jobAssignments.removedAt)));
-        await tx.insert(jobAssignments).values({ tenantId: actor.tenantId, jobId: id, membershipId: technician.id, assignmentRole: "primary" });
+        if (!dateChanged && body.arrivalWindow !== undefined) await suppressJobReminders(tx, actor, id, "visit_rescheduled");
       }
+      if (body.technicianId !== undefined) {
+        const technician = body.technicianId ? await assignableTechnician(tx, actor, job, body.technicianId) : null;
+        const [primary] = await tx.select({ membershipId: jobAssignments.membershipId }).from(jobAssignments).where(and(eq(jobAssignments.tenantId, actor.tenantId), eq(jobAssignments.jobId, id), eq(jobAssignments.assignmentRole, "primary"), isNull(jobAssignments.removedAt))).limit(1);
+        assignmentChanged = (primary?.membershipId ?? null) !== (technician?.id ?? null);
+        const [currentAssignment] = technician ? await tx.select({ id: jobAssignments.id }).from(jobAssignments).where(and(eq(jobAssignments.tenantId,actor.tenantId),eq(jobAssignments.jobId,id),eq(jobAssignments.membershipId,technician.id),eq(jobAssignments.assignmentRole,"primary"),isNull(jobAssignments.removedAt))) : [];
+        if (currentAssignment && action === "reassign") throw new DomainError("VALIDATION_ERROR","This job is already assigned to this technician. Choose a different technician.",422);
+        await suppressJobReminders(tx, actor, id, "visit_rescheduled");
+        if (!currentAssignment) {
+          await tx.update(jobAssignments).set({ removedAt: now }).where(and(eq(jobAssignments.tenantId, actor.tenantId), eq(jobAssignments.jobId, id), isNull(jobAssignments.removedAt)));
+          if (technician) await tx.insert(jobAssignments).values({ tenantId: actor.tenantId, jobId: id, membershipId: technician.id, assignmentRole: "primary" });
+        }
+      }
+    }
+    if (action === "reschedule") {
+      const dateChanged = changes.scheduledDate !== undefined && changes.scheduledDate !== job.scheduledDate;
+      const startChanged = changes.serviceWindowStart !== undefined && (changes.serviceWindowStart?.getTime() ?? null) !== (job.serviceWindowStart?.getTime() ?? null);
+      const endChanged = changes.serviceWindowEnd !== undefined && (changes.serviceWindowEnd?.getTime() ?? null) !== (job.serviceWindowEnd?.getTime() ?? null);
+      if (!dateChanged && !startChanged && !endChanged && !assignmentChanged) throw new DomainError("VALIDATION_ERROR", "Choose a different service date, technician, or arrival window.", 422);
     }
     const [saved] = await tx.update(jobs).set({ ...changes, updatedAt: now }).where(and(eq(jobs.tenantId, actor.tenantId), eq(jobs.id, id))).returning();
     const item = normalized(saved) as Record<string, unknown>;

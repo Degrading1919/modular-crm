@@ -91,4 +91,14 @@ it("keeps customer email preferences in force", async () => {
   await schedule(); const row = await invoice(); await enqueueInvoiceReminders(db, now); const message = (await messages(row.id))[0]!;
   await db.insert(schema.notificationPreferences).values({ tenantId: seedIds.happyTenant, customerId: seedIds.carter, eventKey: "invoice_overdue", emailEnabled: false, smsEnabled: false });
   expect(await deliver(message)).toBe("suppressed"); expect(sendMail).not.toHaveBeenCalled();
+  expect(await deliver(message)).toBe("skipped");
+  const facts = await db.select().from(schema.domainEvents).where(and(eq(schema.domainEvents.entityId, row.id), eq(schema.domainEvents.eventType, "invoice.reminder_not_sent")));
+  expect(facts).toHaveLength(1); expect(facts[0]!.payload.reason).toBeTruthy();
+  await enqueueInvoiceReminders(db, new Date("2026-10-11T12:00:00Z")); expect(await messages(row.id)).toHaveLength(1);
+  await enqueueInvoiceReminders(db, new Date("2026-10-17T12:00:00Z")); expect(await messages(row.id)).toHaveLength(2);
+});
+it("uses the shared currency exponent for reminder balances", async () => {
+  await schedule(); const row = await invoice({ currency: "JPY" }); await enqueueInvoiceReminders(db, now);
+  const body = await invoiceReminderBody(db, (await messages(row.id))[0]!, now);
+  expect(body).toContain("¥3,000"); expect(body).not.toContain("30.00");
 });

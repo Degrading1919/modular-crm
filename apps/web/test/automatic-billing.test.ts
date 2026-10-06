@@ -18,6 +18,7 @@ process.env.DATABASE_URL ??= "postgres://localhost:5433/modular_crm_test";
 const { handleRecords } = await import("../lib/api/records");
 const { handleWorkflow, transitionJob } = await import("../lib/api/workflows");
 const { jobInvoice, finishedWork } = await import("../lib/api/job-billing");
+const { voidInvoice } = await import("../lib/api/invoice-void");
 const { handleCapabilitySettings } = await import("../lib/api/capability-settings");
 const owner: SessionActor = { kind: "staff", role: "owner", userId: "demo-happy-owner", tenantId: seedIds.happyTenant, tenantName: "Happy Yards", packKey: null, email: "owner@happyyards.test", name: "Owner", permissions: permissionsForRole("owner"), allLocations: true, locationIds: new Set([seedIds.augusta]), membershipId: seedIds.oliviaMembership, organizationId: seedIds.happyOrganization, defaultLocationId: seedIds.augusta };
 const request = (path: string, data: unknown = {}, method = "POST") => new Request(`http://localhost/api/v1/${path}`, { method, headers: { "content-type": "application/json" }, body: method === "GET" ? undefined : JSON.stringify(data) });
@@ -143,6 +144,39 @@ it("rejects legacy total-only PATCH on multi-line drafts without changing their 
 async function businessSettings() {
   return (await db.select().from(schema.organizations).where(eq(schema.organizations.id, owner.organizationId!)))[0]!.settings;
 }
+
+it("voids an unpaid invoice atomically, preserves history, and permits one replacement bill", async () => {
+  const job = await completed(), invoice = (await (await jobInvoice(owner, job.id)).json()).item;
+  await expect(voidInvoice({ ...scoped, locationIds: new Set([seedIds.northAugusta]) }, invoice.id)).rejects.toMatchObject({ status: 403 });
+  expect((await voidInvoice(owner, invoice.id)).status).toBe(200);
+  expect(await db.select().from(schema.jobInvoiceLinks).where(eq(schema.jobInvoiceLinks.jobId, job.id))).toHaveLength(0);
+  expect(await db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, invoice.id))).toHaveLength(1);
+  expect(await (await voidInvoice(owner, invoice.id)).json()).toMatchObject({ duplicate: true });
+  const replacement = (await (await jobInvoice(owner, job.id)).json()).item;
+  expect(replacement.id).not.toBe(invoice.id); expect(replacement.totalMinor).toBe(2500);
+  expect((await (await jobInvoice(owner, job.id)).json()).item.id).toBe(replacement.id);
+  await db.update(schema.invoices).set({ paidMinor: 1n }).where(eq(schema.invoices.id, replacement.id));
+  await expect(voidInvoice(owner, replacement.id)).rejects.toMatchObject({ status: 409, message: expect.stringContaining("recorded payments") });
+  expect(await db.select().from(schema.jobInvoiceLinks).where(eq(schema.jobInvoiceLinks.jobId, job.id))).toHaveLength(1);
+});
+it("batch claims an unbilled plan setup once under its lock, and releases that claim on void", async () => {
+  const { revision } = await approvedQuote(true);
+  const [plan] = await db.select().from(schema.servicePlans).where(eq(schema.servicePlans.serviceId, (revision.snapshot.pricingSnapshot as { items: { serviceId: string }[] }).items[0]!.serviceId));
+  await db.update(schema.servicePlans).set({ billingConfiguration: { ...plan!.billingConfiguration, type: "monthly" } }).where(eq(schema.servicePlans.id, plan!.id));
+  for (let i = 0; i < 2; i++) await db.insert(schema.jobs).values({ tenantId: owner.tenantId, organizationId: owner.organizationId!, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, serviceId: plan!.serviceId, servicePlanId: plan!.id, status: "completed", actualCompletedAt: new Date("2028-03-15T12:00:00Z"), priceSnapshot: plan!.pricingSnapshot });
+  const range = { from: "2028-03-01", through: "2028-03-31", customerId: seedIds.carter, idempotencyKey: crypto.randomUUID() };
+  expect((await (await finishedWork(request("billing/finished-work?from=2028-03-01&through=2028-03-31", {}, "GET"), owner)).json()).items).toEqual([expect.objectContaining({ visits: 2, totals: { USD: 10000 } })]);
+  const response = await (await finishedWork(request("billing/finished-work", range), owner)).json();
+  expect(response.created).toBe(1); const invoice = response.invoices[0];
+  expect(invoice.totalMinor).toBe(10000);
+  expect((await db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, invoice.id))).filter(line => line.description === "Initial cleanup")).toHaveLength(1);
+  expect((await db.select().from(schema.servicePlans).where(eq(schema.servicePlans.id, plan!.id)))[0]!.billingConfiguration.oneTimeInvoiceId).toBe(invoice.id);
+  expect(await (await finishedWork(request("billing/finished-work", range), owner)).json()).toMatchObject({ duplicate: true, invoices: response.invoices });
+  await voidInvoice(owner, invoice.id);
+  expect((await db.select().from(schema.servicePlans).where(eq(schema.servicePlans.id, plan!.id)))[0]!.billingConfiguration).not.toHaveProperty("oneTimeInvoiceId");
+  const rebill = await (await finishedWork(request("billing/finished-work", { ...range, idempotencyKey: crypto.randomUUID() }), owner)).json();
+  expect(rebill.created).toBe(1); expect(rebill.invoices[0].totalMinor).toBe(10000);
+});
 async function setPaymentDueDays(days: number) {
   return handleCapabilitySettings(request("settings", { paymentDueDays: days }, "PATCH"), ["settings"], owner);
 }
