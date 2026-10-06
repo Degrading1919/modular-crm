@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { customers, domainEvents, estimateRevisions, estimates, invoiceItems, invoices, jobInvoiceLinks, jobs, organizationLocations, organizations, tenants, type Database } from "@modular-crm/db";
-import { DomainError, frozenDocument, requirePermission, type DocumentPricing } from "@modular-crm/domain";
+import { DomainError, frozenDocument, invoiceDueDate, requirePermission, type DocumentPricing } from "@modular-crm/domain";
 import { z } from "zod";
 import { getDb } from "../db";
 import { businessDate } from "../dates";
@@ -63,7 +63,7 @@ async function createForJobs(tx: Tx, actor: SessionActor, work: Job[], issued: b
   const rates = new Set(work.map(job => jobPricing(job).taxRateBasisPoints));
   const pricing = frozenDocument(lines, rates.size === 1 ? jobPricing(first).taxRateBasisPoints : 0);
   const now = new Date();
-  const dueAt = customer.paymentTermsDays && customer.paymentTermsDays > 0 ? new Date(now.getTime() + customer.paymentTermsDays * 86400000) : null;
+  const dueAt = issued ? invoiceDueDate({ issuedAt: now, customerTermsDays: customer.paymentTermsDays, businessTermsDays: organization.settings.paymentDueDays }) : null;
   const [invoice] = await tx.insert(invoices).values({ tenantId: actor.tenantId, organizationId: first.organizationId, organizationLocationId: first.organizationLocationId, customerId: first.customerId, status: issued ? "issued" : "draft", issuedAt: issued ? now : null, dueAt,
     invoiceNumber: `INV-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 8).toUpperCase()}`, currency: currency(first, defaultCurrency),
     subtotalMinor: BigInt(pricing.subtotalMinor), discountMinor: BigInt(pricing.discountMinor), taxMinor: BigInt(pricing.taxMinor), totalMinor: BigInt(pricing.totalMinor), balanceMinor: BigInt(pricing.totalMinor),

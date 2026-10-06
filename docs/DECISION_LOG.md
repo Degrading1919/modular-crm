@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-06 — Payment due defaults at invoice issuance
+
+- **Status:** Accepted
+- **Area:** Product / Implementation
+- **Decision:** Business Payment due defaults to On receipt, with 7, 15 and 30-day alternatives. All new issuance paths preserve explicit due dates and the existing completion-plan/customer term precedence before using the issuing business's default; drafts without a chosen date receive their deadline at actual issuance. Do not silently backfill historical issued invoices or change their due dates when settings change.
+- **Rationale:** Opt-in overdue reminders need a real due date even for customers without bespoke terms. One shared rule avoids inconsistent deadlines between manual and automatic billing.
+- **Authoritative doc:** `docs/PRODUCT_SCOPE.md`
+
 ## 2026-10-06 — Once-only charges, durable visit billing and opt-in overdue reminders
 
 - **Status:** Accepted

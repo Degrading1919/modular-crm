@@ -6,7 +6,7 @@ import {
   jobs, jobInvoiceLinks, leads, loadTenantCapabilities, paymentAllocations, payments, recurrenceRules, serviceLocations, servicePlans, services, tenants,
   secureEstimateTokens, organizations,
 } from "@modular-crm/db";
-import { assertTransition, documentCharges, frozenDocument, DomainError, manualPaymentMethods, requirePermission, type Permission } from "@modular-crm/domain";
+import { assertTransition, documentCharges, frozenDocument, invoiceDueDate, DomainError, manualPaymentMethods, requirePermission, type Permission } from "@modular-crm/domain";
 import { updateInvoiceFinancialPosition } from "./invoice-payment-ledger";
 import { expireExcessHostedPages } from "./hosted-page-expiry";
 import { getCapability } from "../connectors";
@@ -356,11 +356,8 @@ async function issueCompletionInvoice(
   const snapshotCurrency = typeof (snapshot?.currency ?? priceResult?.currency) === "string" ? String(snapshot?.currency ?? priceResult?.currency).toUpperCase() : "";
   const currency = /^[A-Z]{3}$/.test(snapshotCurrency) ? snapshotCurrency : tenant.currency ?? "USD";
   const configuration = plan.billingConfiguration ?? {};
-  const requestedNetDays = configuration.netDays;
-  const netDays = typeof requestedNetDays === "number" && Number.isSafeInteger(requestedNetDays) && requestedNetDays > 0
-    ? requestedNetDays
-    : customer.paymentTermsDays && customer.paymentTermsDays > 0 ? customer.paymentTermsDays : null;
-  const dueAt = netDays === null ? null : new Date(issuedAt.getTime() + netDays * 24 * 60 * 60 * 1000);
+  const [organization] = await tx.select().from(organizations).where(and(eq(organizations.tenantId, actor.tenantId), eq(organizations.id, job.organizationId))).limit(1);
+  const dueAt = invoiceDueDate({ issuedAt, planTermsDays: configuration.netDays, customerTermsDays: customer.paymentTermsDays, businessTermsDays: organization?.settings.paymentDueDays });
   const invoiceNumber = `INV-${issuedAt.getTime().toString(36).toUpperCase()}-${randomBytes(3).toString("hex").toUpperCase()}`;
   const description = service.name;
   const [invoice] = await tx.insert(invoices).values({
@@ -398,7 +395,11 @@ async function invoiceAction(request: Request, actor: SessionActor, invoiceId: s
       const [current] = await tx.select().from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, actor.tenantId))).limit(1);
       if (!current) throw new DomainError("NOT_FOUND", "Invoice not found.", 404);
       assertTransition("invoice", current.status, "issued");
-      const [saved] = await tx.update(invoices).set({ status: "issued", issuedAt: new Date(), updatedAt: new Date() }).where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, actor.tenantId))).returning();
+      const issuedAt = new Date();
+      const [customer] = await tx.select().from(customers).where(and(eq(customers.tenantId, actor.tenantId), eq(customers.id, current.customerId))).limit(1);
+      const [organization] = await tx.select().from(organizations).where(and(eq(organizations.tenantId, actor.tenantId), eq(organizations.id, current.organizationId))).limit(1);
+      const dueAt = invoiceDueDate({ issuedAt, dueAt: current.dueAt, customerTermsDays: customer?.paymentTermsDays, businessTermsDays: organization?.settings.paymentDueDays });
+      const [saved] = await tx.update(invoices).set({ status: "issued", issuedAt, dueAt, updatedAt: issuedAt }).where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, actor.tenantId))).returning();
       await recordEvent(actor, { type: "invoice.issued", entityType: "invoice", entityId: invoiceId, auditAction: "invoice.issue", before: { status: current.status }, after: { status: "issued" }, locationId: current.organizationLocationId }, tx);
       return saved;
     });

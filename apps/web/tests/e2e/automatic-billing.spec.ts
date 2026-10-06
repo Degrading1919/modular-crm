@@ -110,7 +110,7 @@ test("overdue invoice sends exactly one Mailpit reminder and none after payment"
     const created = await page.request.post("/api/v1/customers", { data: { name, email } }); expect(created.status()).toBe(201); const customerId = (await created.json()).item.id;
     const invoice = await page.request.post("/api/v1/invoices", { data: { customerId, description: "Unpaid invoice reminder", totalCents: 3000, dueDate: "2026-01-01" } }); expect(invoice.status()).toBe(201); const id = (await invoice.json()).item.id;
     expect((await page.request.post(`/api/v1/invoices/${id}/issue`, { data: {} })).ok()).toBe(true);
-    await page.goto("/app/settings"); const settings = page.getByRole("form", { name: "Unpaid invoice reminders" }); await settings.getByRole("checkbox", { name: "Remind customers about unpaid invoices", exact: true }).check(); await settings.getByRole("button", { name: "Save reminder settings", exact: true }).click(); await expect(settings.getByText("Invoice reminder settings saved.", { exact: true })).toBeVisible();
+    await page.goto("/app/settings"); const settings = page.getByRole("form", { name: "Unpaid invoice reminders" }); await settings.getByRole("checkbox", { name: "Remind customers about unpaid invoices", exact: true }).check(); await settings.getByRole("button", { name: "Save invoice settings", exact: true }).click(); await expect(settings.getByText("Invoice payment and reminder settings saved.", { exact: true })).toBeVisible();
     const reminderMail = async () => { const data = await (await page.request.get(`${mailpit}/api/v1/messages`)).json(); return data.messages.filter((item: { To: { Address: string }[]; Subject: string }) => item.To.some(to => to.Address === email) && item.Subject.startsWith("Reminder: invoice ")); };
     await expect.poll(async () => (await reminderMail()).length, { timeout: 60_000 }).toBe(1);
     const mail = (await reminderMail())[0]; const content = await (await page.request.get(`${mailpit}/api/v1/message/${mail.ID}`)).json(); expect(content.Text).toContain("$30.00"); expect(content.Text).toContain(`/portal/billing/${id}`);
@@ -121,5 +121,36 @@ test("overdue invoice sends exactly one Mailpit reminder and none after payment"
   } finally {
     expect((await page.request.patch("/api/v1/settings", { data: { overdueReminders: prior.overdueReminders ?? { enabled: false, firstAfterDays: 3, intervalDays: 7, maxReminders: 3 } } })).ok()).toBe(true);
     expect((await page.request.post("/api/v1/connections/mock-communication/connect", { data: {} })).ok()).toBe(true); await closeDatabase(db);
+  }
+});
+
+test("Payment due saves independently of reminders and applies to no-terms batch issuance, not historical invoices", async ({ page, browser }, testInfo) => {
+  await signIn(page); const db = createDatabase(process.env.DATABASE_URL!), office = await browser.newPage();
+  const prior = (await (await page.request.get("/api/v1/settings")).json()).item;
+  try {
+    await page.setViewportSize({ width: 390, height: 844 }); await page.goto("/app/settings");
+    const settings = page.getByRole("form", { name: "Unpaid invoice reminders" });
+    await expect(settings.getByLabel("Payment due", { exact: true })).toHaveValue(String(prior.paymentDueDays));
+    await settings.getByRole("checkbox", { name: "Remind customers about unpaid invoices", exact: true }).uncheck();
+    await settings.getByLabel("Payment due", { exact: true }).selectOption("7");
+    await settings.getByRole("button", { name: "Save invoice settings", exact: true }).click();
+    await expect(settings.getByText("Invoice payment and reminder settings saved.", { exact: true })).toBeVisible();
+    await page.reload(); await expect(settings.getByLabel("Payment due", { exact: true })).toHaveValue("7");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath("payment-due-phone.png"), fullPage: true });
+    const response = await page.request.post("/api/v1/customers", { data: { name: `Payment due customer ${crypto.randomUUID()}`, address: "123 Billing Lane" } }); expect(response.status(), await response.text()).toBe(201); const customerId = (await response.json()).item.id;
+    const [customer] = await db.select().from(schema.customers).where(eq(schema.customers.id, customerId)); expect(customer!.paymentTermsDays).toBeNull();
+    const [location] = await db.select().from(schema.serviceLocations).where(eq(schema.serviceLocations.customerId, customerId));
+    await db.insert(schema.jobs).values({ tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId, serviceLocationId: location!.id, serviceId: seedIds.weeklyService, status: "completed", actualCompletedAt: new Date("2026-08-15T12:00:00Z"), priceSnapshot: { ...priceDocument([{ description: "Terms regression", quantity: "1", unitAmountMinor: 1000 }]), currency: "USD" } });
+    const batch = await page.request.post("/api/v1/billing/finished-work", { data: { from: "2026-08-01", through: "2026-08-31", customerId, issue: true, idempotencyKey: crypto.randomUUID() } }); expect(batch.ok(), await batch.text()).toBe(true);
+    const invoice = (await batch.json()).invoices[0]; expect(Date.parse(invoice.dueAt) - Date.parse(invoice.issuedAt)).toBe(7 * 86400000);
+    await page.goto("/app/settings"); await settings.getByLabel("Payment due", { exact: true }).selectOption("0"); await settings.getByRole("button", { name: "Save invoice settings", exact: true }).click(); await expect(settings.getByText("Invoice payment and reminder settings saved.", { exact: true })).toBeVisible();
+    expect((await db.select().from(schema.invoices).where(eq(schema.invoices.id, invoice.id)))[0]!.dueAt!.toISOString()).toBe(invoice.dueAt);
+    await signIn(office, "manager@happyyards.test"); await office.goto("/app/settings");
+    await expect(office.getByLabel("Payment due", { exact: true })).toHaveValue("0"); await expect(office.getByLabel("Payment due", { exact: true })).toBeDisabled();
+    expect((await office.request.patch("/api/v1/settings", { data: { paymentDueDays: 30 } })).status()).toBe(403);
+  } finally {
+    expect((await page.request.patch("/api/v1/settings", { data: { paymentDueDays: prior.paymentDueDays, overdueReminders: prior.overdueReminders } })).ok()).toBe(true);
+    await office.close(); await closeDatabase(db);
   }
 });

@@ -6,13 +6,19 @@ import { migrate } from "drizzle-orm/pglite/migrator";
 import { and, eq } from "drizzle-orm";
 import { schema, seedDevelopment, seedIds, type Database } from "@modular-crm/db";
 import { permissionsForRole, priceDocument } from "@modular-crm/domain";
+import { readServerConfig } from "@modular-crm/config";
+import { createConnectorRegistry } from "@modular-crm/connectors";
+import { enqueueInvoiceReminders } from "../../worker/src/invoice-reminders-db";
+import { processOutboundMessage } from "../../worker/src/messages-db";
 import type { SessionActor } from "../lib/api/actor";
-const { getDbMock } = vi.hoisted(() => ({ getDbMock: vi.fn() }));
+const { getDbMock, sendMail } = vi.hoisted(() => ({ getDbMock: vi.fn(), sendMail: vi.fn() }));
 vi.mock("../lib/db", () => ({ getDb: getDbMock }));
+vi.mock("nodemailer", () => ({ default: { createTransport: () => ({ sendMail }) } }));
 process.env.DATABASE_URL ??= "postgres://localhost:5433/modular_crm_test";
 const { handleRecords } = await import("../lib/api/records");
 const { handleWorkflow, transitionJob } = await import("../lib/api/workflows");
 const { jobInvoice, finishedWork } = await import("../lib/api/job-billing");
+const { handleCapabilitySettings } = await import("../lib/api/capability-settings");
 const owner: SessionActor = { kind: "staff", role: "owner", userId: "demo-happy-owner", tenantId: seedIds.happyTenant, tenantName: "Happy Yards", packKey: null, email: "owner@happyyards.test", name: "Owner", permissions: permissionsForRole("owner"), allLocations: true, locationIds: new Set([seedIds.augusta]), membershipId: seedIds.oliviaMembership, organizationId: seedIds.happyOrganization, defaultLocationId: seedIds.augusta };
 const request = (path: string, data: unknown = {}, method = "POST") => new Request(`http://localhost/api/v1/${path}`, { method, headers: { "content-type": "application/json" }, body: method === "GET" ? undefined : JSON.stringify(data) });
 let pg: PGlite, db: Database;
@@ -43,6 +49,7 @@ it("bills setup once on the first completed visit, freezes only recurring lines 
     const response = await transitionJob(owner, job!.id, "completed", { completedChecklist: true }); const invoiceId = (await response.json()).invoice.id; invoiceIds.push(invoiceId);
     const [invoice] = await db.select().from(schema.invoices).where(eq(schema.invoices.id, invoiceId));
     expect(invoice!.totalMinor).toBe(visit === 0 ? 7500n : 2500n);
+    expect(invoice!.dueAt).toEqual(invoice!.issuedAt);
     const lines = await db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, invoiceId));
     expect(lines.filter(line => line.description === "Initial cleanup")).toHaveLength(visit === 0 ? 1 : 0);
     expect(lines.every(line => line.jobId === job!.id)).toBe(true);
@@ -84,6 +91,9 @@ it("batch bills two customers with durable replay receipts and excludes previous
   for (const row of data.items) {
     const command = { ...range, customerId: row.customerId, issue: true, idempotencyKey: crypto.randomUUID() };
     const first = await finishedWork(request("billing/finished-work", command), owner); const result = await first.json(); expect(result.created).toBe(1);
+    const invoice = result.invoices[0];
+    const [customer] = await db.select().from(schema.customers).where(eq(schema.customers.id, row.customerId));
+    expect(Date.parse(invoice.dueAt) - Date.parse(invoice.issuedAt)).toBe((customer!.paymentTermsDays ?? 0) * 86400000);
     expect((await (await finishedWork(request("billing/finished-work", command), owner)).json())).toMatchObject({ created: 1, duplicate: true, invoices: result.invoices });
     await expect(finishedWork(request("billing/finished-work", { ...command, issue: false }), owner)).rejects.toMatchObject({ status: 409 });
     expect((await (await finishedWork(request("billing/finished-work", { ...command, idempotencyKey: crypto.randomUUID() }), owner)).json()).created).toBe(0);
@@ -128,4 +138,104 @@ it("rejects legacy total-only PATCH on multi-line drafts without changing their 
   const response = await handleRecords(request("invoices", { customerId: seedIds.carter, description: "Two lines", lines: [{ description: "Work", quantity: "1", unitAmountMinor: 100 }, { description: "Parts", quantity: "1", unitAmountMinor: 200 }] }), ["invoices"], owner); const invoice = (await response!.json()).item;
   await expect(handleRecords(request(`invoices/${invoice.id}`, { description: "Flatten", totalCents: 300, dueDate: null, expectedUpdatedAt: invoice.updatedAt }, "PATCH"), ["invoices", invoice.id], owner)).rejects.toMatchObject({ status: 422 });
   expect(await db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, invoice.id))).toHaveLength(2);
+});
+
+async function businessSettings() {
+  return (await db.select().from(schema.organizations).where(eq(schema.organizations.id, owner.organizationId!)))[0]!.settings;
+}
+async function setPaymentDueDays(days: number) {
+  return handleCapabilitySettings(request("settings", { paymentDueDays: days }, "PATCH"), ["settings"], owner);
+}
+it("saves only supported business deadlines with authorization and audit, without backfilling issued history", async () => {
+  const prior = await businessSettings();
+  const [historical] = await db.insert(schema.invoices).values({ tenantId: owner.tenantId, organizationId: owner.organizationId!, customerId: seedIds.carter, invoiceNumber: crypto.randomUUID(), status: "issued", issuedAt: new Date("2026-01-01"), dueAt: null }).returning();
+  const other = (await db.select().from(schema.organizations).where(eq(schema.organizations.id, seedIds.cleanOrganization)))[0]!;
+  try {
+    expect((await (await handleCapabilitySettings(request("settings", {}, "GET"), ["settings"], owner))!.json()).item.paymentDueDays).toBe(0);
+    for (const days of [0, 7, 15, 30]) {
+      expect((await (await setPaymentDueDays(days))!.json()).item.paymentDueDays).toBe(days);
+      expect((await businessSettings()).paymentDueDays).toBe(days);
+    }
+    await expect(setPaymentDueDays(1)).rejects.toMatchObject({ name: "ZodError" });
+    await expect(handleCapabilitySettings(request("settings", { paymentDueDays: 7 }, "PATCH"), ["settings"], { ...scoped, permissions: new Set(["tenant.read"]) } as SessionActor)).rejects.toMatchObject({ status: 403 });
+    expect((await db.select().from(schema.invoices).where(eq(schema.invoices.id, historical!.id)))[0]!.dueAt).toBeNull();
+    expect((await db.select().from(schema.organizations).where(eq(schema.organizations.id, other.id)))[0]!.settings).toEqual(other.settings);
+    expect((await db.select().from(schema.auditEvents).where(and(eq(schema.auditEvents.tenantId, owner.tenantId), eq(schema.auditEvents.action, "tenant.settings_update")))).some(event => event.afterData?.paymentDueDays === 30)).toBe(true);
+  } finally { await db.update(schema.organizations).set({ settings: prior }).where(eq(schema.organizations.id, owner.organizationId!)); }
+});
+it("sets manual and job-draft deadlines at issuance, preserving explicit dates and customer terms", async () => {
+  const prior = await businessSettings();
+  try {
+    await setPaymentDueDays(7);
+    const draft = (await (await jobInvoice(owner, (await completed()).id)).json()).item;
+    expect(draft.dueAt).toBeNull();
+    // A changed default takes effect on issuance, not when the draft was created.
+    await setPaymentDueDays(15);
+    const issued = (await (await handleWorkflow(request(`invoices/${draft.id}/issue`), ["invoices", draft.id, "issue"], owner))!.json()).item;
+    expect(Date.parse(issued.dueAt) - Date.parse(issued.issuedAt)).toBe(15 * 86400000);
+    for (const customerId of [seedIds.carter, seedIds.riverfront]) {
+      const created = (await (await handleRecords(request("invoices", { customerId, description: "Manual terms", totalCents: 1000 }), ["invoices"], owner))!.json()).item;
+      const result = (await (await handleWorkflow(request(`invoices/${created.id}/issue`), ["invoices", created.id, "issue"], owner))!.json()).item;
+      const [customer] = await db.select().from(schema.customers).where(eq(schema.customers.id, customerId));
+      expect(Date.parse(result.dueAt) - Date.parse(result.issuedAt)).toBe((customer!.paymentTermsDays ?? 15) * 86400000);
+    }
+    const explicit = (await (await handleRecords(request("invoices", { customerId: seedIds.carter, description: "Chosen date", totalCents: 1000, dueDate: "2030-01-15" }), ["invoices"], owner))!.json()).item;
+    const saved = (await (await handleWorkflow(request(`invoices/${explicit.id}/issue`), ["invoices", explicit.id, "issue"], owner))!.json()).item;
+    expect(saved.dueAt).toBe(explicit.dueAt);
+  } finally { await db.update(schema.organizations).set({ settings: prior }).where(eq(schema.organizations.id, owner.organizationId!)); }
+});
+it("uses the completion invoice's own business default and preserves agreed plan and customer terms", async () => {
+  const prior = await businessSettings();
+  const [customer] = await db.select().from(schema.customers).where(eq(schema.customers.id, seedIds.carter));
+  try {
+    await setPaymentDueDays(30);
+    const { revision } = await approvedQuote(true);
+    const [plan] = await db.select().from(schema.servicePlans).where(eq(schema.servicePlans.serviceId, (revision.snapshot.pricingSnapshot as { items: { serviceId: string }[] }).items[0]!.serviceId));
+    for (const terms of [{ customer: null, plan: undefined, expected: 30 }, { customer: 15, plan: undefined, expected: 15 }, { customer: 15, plan: 7, expected: 7 }, { customer: 0, plan: undefined, expected: 0 }]) {
+      await db.update(schema.customers).set({ paymentTermsDays: terms.customer }).where(eq(schema.customers.id, seedIds.carter));
+      await db.update(schema.servicePlans).set({ billingConfiguration: { ...plan!.billingConfiguration, netDays: terms.plan } }).where(eq(schema.servicePlans.id, plan!.id));
+      const [job] = await db.insert(schema.jobs).values({ tenantId: owner.tenantId, organizationId: owner.organizationId!, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, serviceId: plan!.serviceId, servicePlanId: plan!.id, status: "in_progress", priceSnapshot: plan!.pricingSnapshot }).returning();
+      const invoiceId = (await (await transitionJob(owner, job!.id, "completed", { completedChecklist: true })).json()).invoice.id;
+      const [invoice] = await db.select().from(schema.invoices).where(eq(schema.invoices.id, invoiceId));
+      expect(invoice!.dueAt!.getTime() - invoice!.issuedAt!.getTime()).toBe(terms.expected * 86400000);
+    }
+  } finally { await db.update(schema.organizations).set({ settings: prior }).where(eq(schema.organizations.id, owner.organizationId!)); await db.update(schema.customers).set({ paymentTermsDays: customer!.paymentTermsDays }).where(eq(schema.customers.id, seedIds.carter)); }
+});
+it("uses the issuing business's deadline, not the parent's workspace setting", async () => {
+  const prior = await businessSettings();
+  const [business] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, seedIds.franchiseEastOrganization));
+  try {
+    await setPaymentDueDays(30);
+    await db.update(schema.organizations).set({ settings: { ...business!.settings, paymentDueDays: 7 } }).where(eq(schema.organizations.id, business!.id));
+    const [customer] = await db.insert(schema.customers).values({ tenantId: owner.tenantId, organizationId: business!.id, owningLocationId: seedIds.franchiseEastLocation, displayName: "Business-specific terms" }).returning();
+    const [location] = await db.insert(schema.serviceLocations).values({ tenantId: owner.tenantId, customerId: customer!.id, organizationLocationId: seedIds.franchiseEastLocation, name: "Business property", addressLine1: "123 Billing Lane", city: "Augusta", region: "GA", postalCode: "30904" }).returning();
+    const [draft] = await db.insert(schema.invoices).values({ tenantId: owner.tenantId, organizationId: business!.id, organizationLocationId: seedIds.franchiseEastLocation, customerId: customer!.id, status: "draft", invoiceNumber: crypto.randomUUID(), subtotalMinor: 1000n, totalMinor: 1000n, balanceMinor: 1000n }).returning();
+    const saved = (await (await handleWorkflow(request(`invoices/${draft!.id}/issue`), ["invoices", draft!.id, "issue"], owner))!.json()).item;
+    expect(Date.parse(saved.dueAt) - Date.parse(saved.issuedAt)).toBe(7 * 86400000);
+    await db.insert(schema.jobs).values({ tenantId: owner.tenantId, organizationId: business!.id, organizationLocationId: seedIds.franchiseEastLocation, customerId: customer!.id, serviceLocationId: location!.id, serviceId: seedIds.weeklyService, status: "completed", actualCompletedAt: new Date("2026-07-15T12:00:00Z"), priceSnapshot: { ...priceDocument([{ description: "Business visit", quantity: "1", unitAmountMinor: 1000 }]), currency: "USD" } });
+    const invoice = (await (await finishedWork(request("billing/finished-work", { from: "2026-07-01", through: "2026-07-31", customerId: customer!.id, issue: true, idempotencyKey: crypto.randomUUID() }), owner)).json()).invoices[0];
+    expect(Date.parse(invoice.dueAt) - Date.parse(invoice.issuedAt)).toBe(7 * 86400000);
+  } finally { await db.update(schema.organizations).set({ settings: prior }).where(eq(schema.organizations.id, owner.organizationId!)); await db.update(schema.organizations).set({ settings: business!.settings }).where(eq(schema.organizations.id, business!.id)); }
+});
+it("delivers exactly one reminder after the first delay for an issued batch invoice with no customer terms", async () => {
+  const prior = await businessSettings();
+  try {
+    expect((await db.select().from(schema.customers).where(eq(schema.customers.id, seedIds.carter)))[0]!.paymentTermsDays).toBeNull();
+    await db.update(schema.organizations).set({ settings: { ...prior, paymentDueDays: 7, overdueReminders: { enabled: true, firstAfterDays: 3, intervalDays: 7, maxReminders: 3 } } }).where(eq(schema.organizations.id, owner.organizationId!));
+    const job = await completed(); await db.update(schema.jobs).set({ actualCompletedAt: new Date("2026-08-15T12:00:00Z") }).where(eq(schema.jobs.id, job.id));
+    const invoice = (await (await finishedWork(request("billing/finished-work", { from: "2026-08-01", through: "2026-08-31", customerId: seedIds.carter, issue: true, idempotencyKey: crypto.randomUUID() }), owner)).json()).invoices[0];
+    expect(Date.parse(invoice.dueAt) - Date.parse(invoice.issuedAt)).toBe(7 * 86400000);
+    const firstReminder = new Date(Date.parse(invoice.dueAt) + 3 * 86400000);
+    const messages = () => db.select().from(schema.outboundMessages).where(and(eq(schema.outboundMessages.invoiceId, invoice.id), eq(schema.outboundMessages.templateKey, "invoice_overdue")));
+    await enqueueInvoiceReminders(db, new Date(firstReminder.getTime() - 1)); expect(await messages()).toHaveLength(0);
+    await enqueueInvoiceReminders(db, firstReminder); await enqueueInvoiceReminders(db, firstReminder); expect(await messages()).toHaveLength(1);
+    sendMail.mockReset(); sendMail.mockResolvedValue({ accepted: ["carter@example.test"], rejected: [], messageId: "due-regression" });
+    const config = readServerConfig({ NODE_ENV: "test", MOCK_CONNECTORS: "false", SMTP_HOST: "localhost", SMTP_FROM: "Platform <mail@platform.test>", APP_BASE_URL: "http://localhost:3000" });
+    const message = (await messages())[0]!;
+    const deliver = () => processOutboundMessage(db, createConnectorRegistry({ includePlannedProviders: true }), { tenantId: owner.tenantId, messageId: message.id }, firstReminder, config);
+    expect(await deliver()).toBe("sent"); expect(await deliver()).toBe("skipped");
+    await enqueueInvoiceReminders(db, firstReminder);
+    expect(sendMail).toHaveBeenCalledTimes(1); expect(await messages()).toHaveLength(1);
+    expect(await db.select().from(schema.domainEvents).where(and(eq(schema.domainEvents.entityId, invoice.id), eq(schema.domainEvents.eventType, "invoice.reminder_sent")))).toHaveLength(1);
+  } finally { await db.update(schema.organizations).set({ settings: prior }).where(eq(schema.organizations.id, owner.organizationId!)); }
 });
