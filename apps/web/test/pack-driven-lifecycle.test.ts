@@ -4,9 +4,9 @@ import { randomUUID } from "node:crypto";
 import { PGlite } from "../../../packages/db/node_modules/@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
-import { and, eq } from "drizzle-orm";
-import { auditEvents, automationRules, customerAssets, customers, domainEvents, importRows, jobAssignments, jobs, memberships, organizations, priceRules, roleTemplates, schema, seedDevelopment, seedIds, seedUserIds, serviceLocations, services, sites, siteSubmissions, tenants, type Database } from "@modular-crm/db";
-import { PET_WASTE_REMOVAL_PACK } from "@modular-crm/industry-packs";
+import { and, eq, isNull } from "drizzle-orm";
+import { auditEvents, automationRules, customerAssets, customers, domainEvents, estimateItems, estimateRevisions, estimates, importRows, jobAssignments, jobs, leads, memberships, organizations, priceRules, roleTemplates, schema, seedDevelopment, seedIds, seedUserIds, serviceLocations, services, sites, siteSubmissions, tenants, type Database } from "@modular-crm/db";
+import { HOUSE_CLEANING_PACK, PET_WASTE_REMOVAL_PACK } from "@modular-crm/industry-packs";
 import { permissionsForRole } from "@modular-crm/domain";
 import type { SessionActor } from "../lib/api/actor.ts";
 
@@ -19,6 +19,8 @@ const { handlePortal } = await import("../lib/api/portal.ts");
 const { handleRoutesField } = await import("../lib/api/routes-field.ts");
 const { handleDataPortability } = await import("../lib/api/data-portability.ts");
 const { handleOnboardingSite } = await import("../lib/api/onboarding-site.ts");
+const { handleWorkflow, estimateAction } = await import("../lib/api/workflows.ts");
+const { handleV1 } = await import("../lib/api/handler.ts");
 const { apiError } = await import("../lib/api/http.ts");
 const { decryptServiceAccessInstructions } = await import("../lib/api/service-access.ts");
 let pglite: PGlite;
@@ -151,4 +153,91 @@ it("selects a second pack for an empty business without retaining the previous c
   expect(catalog.find(service => service.key === "recurring-cleanup")?.active).toBe(false);
   expect((await db.select().from(priceRules).where(eq(priceRules.tenantId, tenantId)))[0].active).toBe(false);
   expect((await db.select().from(automationRules).where(eq(automationRules.tenantId, tenantId)))[0]).toMatchObject({ status: "archived", activeFrom: null });
+  const archived = (await db.select().from(automationRules).where(eq(automationRules.tenantId, tenantId)))[0]!;
+  expect(archived.archivedAt).toBeInstanceOf(Date);
+  expect(archived.version).toBe(2);
+  expect(archived.updatedAt).toEqual(archived.archivedAt);
+  for (const pack of [PET_WASTE_REMOVAL_PACK, HOUSE_CLEANING_PACK, PET_WASTE_REMOVAL_PACK]) {
+    expect((await response(handleOnboardingSite(request("onboarding", { step: 0, data: { packKey: pack.key } }, "PATCH"), ["onboarding"], newOwner))).status).toBe(200);
+    const visible = await db.select().from(automationRules).where(and(eq(automationRules.tenantId, tenantId), isNull(automationRules.archivedAt)));
+    expect(visible.map(rule => rule.sourceKey).sort()).toEqual(pack.defaultAutomations.map(rule => rule.sourceKey).sort());
+    expect(new Set(visible.map(rule => rule.sourceKey)).size).toBe(visible.length);
+    expect(visible.every(rule => rule.status === "draft")).toBe(true);
+  }
+});
+
+it("keeps portal media read-only without overwriting an existing photo", async () => {
+  const [asset] = await db.select().from(customerAssets).where(eq(customerAssets.customerId, seedIds.nguyen));
+  await db.update(customerAssets).set({ customFields: { ...asset!.customFields, photo: "existing-photo-reference" } }).where(eq(customerAssets.id, asset!.id));
+  const portalActor = { ...customer, tenantId: seedIds.happyTenant, customerIds: new Set([seedIds.nguyen]), locationIds: new Set([seedIds.nguyenLocation]), customerLocationIds: new Map([[seedIds.nguyen, new Set([seedIds.nguyenLocation])]]) };
+  const read = await response(handlePortal(request("portal/profile"), ["portal", "profile"], portalActor));
+  const profile = (await read.json()).item;
+  expect(profile.assets[0].customFields.photo).toBe("existing-photo-reference");
+  expect(profile.assets[0].fields.find((field: { key: string }) => field.key === "photo").customerEditable).toBe(false);
+  const edit = await response(handlePortal(request("portal/profile", { assets: [{ id: asset!.id, assetTypeKey: "pet", customFields: { photo: "arbitrary-text" } }] }, "PATCH"), ["portal", "profile"], portalActor));
+  expect(edit.status).toBe(422);
+  expect((await db.select().from(customerAssets).where(eq(customerAssets.id, asset!.id)))[0]!.customFields.photo).toBe("existing-photo-reference");
+});
+
+it.each([
+  ["pet-waste-removal", "staff"], ["pet-waste-removal", "secure-link"],
+  ["house-cleaning", "staff"], ["house-cleaning", "secure-link"],
+  ["pet-waste-removal", "staff-legacy"],
+])("preserves reviewed signup details and encrypted access for %s conversion via %s", async (packKey, path) => {
+  const house = packKey === "house-cleaning";
+  const staff: SessionActor = house ? owner : { ...owner, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, membershipId: seedIds.oliviaMembership, userId: seedUserIds.happyOwner, defaultLocationId: seedIds.augusta, locationIds: new Set([seedIds.augusta]) };
+  const serviceId = house ? seedIds.houseService : seedIds.weeklyService;
+  const marker = `private-convert-${packKey}-${path}`;
+  const details = house ? { assets: [{ assetTypeKey: "room", name: "Review room", customFields: { floor_surface: "tile" } }], locationFields: { room_count: 4, entry_instructions: marker } } : { assets: [{ assetTypeKey: "pet", name: "Review item", customFields: { size: "large" } }], locationFields: { yard_size: "large", gate_code: marker } };
+  const signup = await response(handlePublicSite(request("public/signup", { slug: house ? "tidy-home" : "happy-yards", address: "98 Review Street", zip: house ? "30909" : "30901", contact: { name: "Review Conversion", email: `conversion-${packKey}-${path}@example.test`, phone: "555-010231" }, service: { id: serviceId, frequency: "weekly" }, ...details, termsAccepted: true, idempotencyKey: `conversion-${packKey}-${path}` }), ["public", "signup"]));
+  expect(signup.status).toBe(201);
+  const result = (await signup.json()).item;
+  expect(result.kind).toBe("lead");
+  if (path === "staff-legacy") {
+    const [saved] = await db.select().from(leads).where(eq(leads.id, result.id));
+    await db.update(leads).set({ customFields: { ...saved!.customFields, websiteSignup: { pets: [{ name: "Review item", size: "large" }], yardSize: "large" } } }).where(eq(leads.id, result.id));
+  }
+  const [lead] = await db.select().from(leads).where(eq(leads.id, result.id));
+  const envelope = lead!.customFields.accessInstructionsEncrypted;
+  if (path.startsWith("staff")) {
+    // Staff sees the same not-found response for foreign tenants and unassigned locations.
+    const denied = await response(handleWorkflow(request(`leads/${lead!.id}/convert`, {}), ["leads", lead!.id, "convert"], { ...staff, tenantId: house ? seedIds.happyTenant : seedIds.houseTenant }));
+    expect(denied.status).toBe(404);
+    const limited = await response(handleWorkflow(request(`leads/${lead!.id}/convert`, {}), ["leads", lead!.id, "convert"], { ...staff, allLocations: false, locationIds: new Set() }));
+    expect(limited.status).toBe(404);
+    expect((await response(handleWorkflow(request(`leads/${lead!.id}/convert`, {}), ["leads", lead!.id, "convert"], staff))).status).toBe(200);
+    expect((await response(handleWorkflow(request(`leads/${lead!.id}/convert`, {}), ["leads", lead!.id, "convert"], staff))).status).toBe(200);
+  } else {
+    const [estimate] = await db.insert(estimates).values({ tenantId: staff.tenantId, leadId: lead!.id, organizationLocationId: staff.defaultLocationId, status: "draft", currentRevision: 1, totalMinor: 7500n, createdByMembershipId: staff.membershipId }).returning();
+    const [revision] = await db.insert(estimateRevisions).values({ tenantId: staff.tenantId, estimateId: estimate!.id, revisionNumber: 1, subtotalMinor: 7500n, totalMinor: 7500n, termsText: "Service terms", snapshot: { title: "Requested service" } }).returning();
+    await db.insert(estimateItems).values({ tenantId: staff.tenantId, estimateRevisionId: revision!.id, serviceId, description: "Requested service", quantity: "1", unitAmountMinor: 7500n, totalMinor: 7500n });
+    const sent = await estimateAction(request(`estimates/${estimate!.id}/send`, {}), staff, estimate!.id, "send");
+    expect(sent.status).toBe(200);
+    const token = (await sent.json()).actionUrl.split("/").at(-1);
+    const approve = () => handleV1(request(`public/estimate-links/${token}/approve`, {}), ["public", "estimate-links", token, "approve"]);
+    expect((await approve()).status).toBe(200);
+    expect((await approve()).status).toBe(200);
+  }
+  const [converted] = await db.select().from(leads).where(eq(leads.id, lead!.id));
+  const [location] = await db.select().from(serviceLocations).where(eq(serviceLocations.customerId, converted!.customerId!));
+  expect(location!.accessInstructionsEncrypted).toBe(envelope);
+  expect(decryptServiceAccessInstructions(location!.accessInstructionsEncrypted)).toContain(marker);
+  expect(location!.customFields).toMatchObject(house ? { room_count: 4 } : { yardSize: "large" });
+  const assets = await db.select().from(customerAssets).where(eq(customerAssets.customerId, converted!.customerId!));
+  expect(assets).toHaveLength(1);
+  expect(assets[0]!).toMatchObject({ tenantId: staff.tenantId, serviceLocationId: location!.id, assetTypeKey: house ? "room" : "pet", name: house ? "Review room" : "Review item" });
+  const record = await response(handleRecords(request(`customers/${converted!.customerId}`), ["customers", converted!.customerId!], staff));
+  expect(record.status).toBe(200);
+  expect((await record.json()).item.assets[0].customFields).toMatchObject(house ? { floor_surface: "tile" } : { size: "large" });
+  const jobId = randomUUID(), membershipId = house ? seedIds.houseTechMembership : seedIds.terryMembership;
+  await db.insert(jobs).values({ id: jobId, tenantId: staff.tenantId, organizationId: staff.organizationId!, organizationLocationId: staff.defaultLocationId, customerId: converted!.customerId!, serviceLocationId: location!.id, serviceId, status: "dispatched", scheduledDate: "2026-10-07", billable: false });
+  await db.insert(jobAssignments).values({ tenantId: staff.tenantId, jobId, membershipId, assignmentRole: "primary" });
+  const assigned: SessionActor = { ...staff, role: "technician", membershipId, permissions: permissionsForRole("technician"), allLocations: false };
+  const field = await response(handleRoutesField(request(`field/jobs/${jobId}`), ["field", "jobs", jobId], assigned));
+  expect(field.status).toBe(200);
+  const fieldItem = (await field.json()).item;
+  expect(fieldItem.accessNotes).toContain(marker);
+  expect(fieldItem.assets[0].name).toBe(assets[0]!.name);
+  expect(fieldItem.fieldValues).toMatchObject(house ? { room_count: 4 } : { yard_size: "large" });
+  for (const table of [siteSubmissions, auditEvents, domainEvents]) expect(JSON.stringify(await db.select().from(table))).not.toContain(marker);
 });

@@ -16,7 +16,7 @@ import { getDb } from "../db";
 import { json } from "./http";
 import { requireTenantFeature } from "./capability-enforcement";
 import { getIndustryPack, packFieldValues, packQuantity, type IndustryPack } from "@modular-crm/industry-packs";
-import { normalizePackInput, packInputSchema, safePackDetails, storePackFields, type ServiceDetailsInput } from "./pack-fields";
+import { normalizePackInput, packInputSchema, privatePackFingerprints, safePackDetails, storePackFields, type ServiceDetailsInput } from "./pack-fields";
 import { businessDate } from "../dates";
 import { clientAddress } from "./client-address";
 import { clientIpKey } from "./rate-limits";
@@ -383,13 +383,15 @@ async function hasExistingCustomerMatch(tx: Parameters<Parameters<ReturnType<typ
   return !!match;
 }
 
-function sanitizedSubmission(input: SignupInput, pack: IndustryPack) {
+function sanitizedSubmission(input: SignupInput, pack: IndustryPack, tenantId: string) {
   // Return the JSON form that is stored, so a retry compares equal to it: optional fields left
   // undefined here are absent from the saved payload.
+  const privateFields = privatePackFingerprints(pack, input, tenantId);
   return JSON.parse(JSON.stringify({
     address: input.address, zip: input.zip, contact: input.contact, service: input.service, ...safePackDetails(pack, input),
     preferredDay: input.preferredDay, quoteId: input.quoteId, paymentMethod: input.paymentMethod,
     notificationPreferences: input.notificationPreferences, termsAccepted: true, termsVersion: input.termsVersion,
+    ...(Object.keys(privateFields).length ? { privateFieldFingerprints: privateFields } : {}),
   })) as Record<string, unknown>;
 }
 
@@ -458,12 +460,12 @@ async function createSignup(request: Request, row: PublicSiteRow, input: SignupI
     const form = await ensureForm(tx, row.site, "signup");
     const [createdSubmission] = await tx.insert(siteSubmissions).values({
       tenantId: row.site.tenantId, siteId: row.site.id, siteFormId: form.id, idempotencyKey,
-      payload: sanitizedSubmission(input, pack), status: "processing",
+      payload: sanitizedSubmission(input, pack, row.site.tenantId), status: "processing",
     }).onConflictDoNothing({ target: [siteSubmissions.siteId, siteSubmissions.idempotencyKey] }).returning();
     if (!createdSubmission) {
       const [prior] = await tx.select().from(siteSubmissions).where(and(eq(siteSubmissions.siteId, row.site.id), eq(siteSubmissions.idempotencyKey, idempotencyKey))).limit(1);
       if (!prior) throw new Error("Could not load the prior signup request.");
-      if (!isDeepStrictEqual(prior.payload, sanitizedSubmission(input, pack))) throw new DomainError("IDEMPOTENCY_CONFLICT", "This signup request key was already used for different information.", 409);
+      if (!isDeepStrictEqual(prior.payload, sanitizedSubmission(input, pack, row.site.tenantId))) throw new DomainError("IDEMPOTENCY_CONFLICT", "This signup request key was already used for different information.", 409);
       return { duplicate: prior };
     }
 

@@ -12,6 +12,14 @@ Newest entries go first.
 - **Rationale:** A usable deployment path must not create cloud resources during development or bind business logic to AWS. Template assertions and resource-scoped security checks belong in the existing test gate.
 - **Authoritative doc:** docs/ARCHITECTURE.md; operator runbook in docs/DEPLOYMENT.md
 
+## 2026-10-07 — Preserve reviewed signup facts, private retries and pack retirement
+
+- **Status:** Accepted
+- **Area:** Industry Packs / Architecture / UX
+- **Decision:** Archive old pack recipes through the same timestamp/version contract used by ordinary archive paths. Keep tenant- and field-separated keyed private replay evidence without plaintext, and preserve recorded signup details and encrypted access envelopes in both lead conversion paths through pack-owned legacy mappings. Media stays read-only in customer profiles until validated uploads exist.
+- **Rationale:** Review requests must not lose service details, silently discard a changed private value, leave old recipes visible or overwrite photo references with arbitrary text.
+- **Authoritative doc:** docs/INDUSTRY_PACKS.md
+
 ## 2026-10-06 — Preserve recorded service facts and queued pack compatibility
 
 - **Status:** Accepted

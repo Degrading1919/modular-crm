@@ -4,7 +4,7 @@ import { PGlite } from "../../../packages/db/node_modules/@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import { eq } from "drizzle-orm";
-import { leads, schema, seedDevelopment, seedIds, type Database } from "@modular-crm/db";
+import { leads, siteSubmissions, schema, seedDevelopment, seedIds, type Database } from "@modular-crm/db";
 
 const { getDbMock } = vi.hoisted(() => ({ getDbMock: vi.fn() }));
 vi.mock("../lib/db.ts", () => ({ getDb: getDbMock }));
@@ -36,6 +36,22 @@ async function signup(body: unknown, ip: string) {
 }
 
 describe("public signup retries", () => {
+  it("conflicts when private details are added, changed or removed, but accepts an identical private retry without storing plaintext", async () => {
+    const body = { slug: "happy-yards", address: "82 Retry Lane", zip: "30901", contact: { name: "Private Retry", email: "private.retry@example.test", phone: "706-555-0181" }, service: { id: seedIds.weeklyService, frequency: "weekly" }, pets: [{ name: "Rex", size: "medium" }], yard: { size: "medium" }, termsAccepted: true, idempotencyKey: "private-replay-added" };
+    expect((await signup(body, "198.51.100.233")).status).toBe(201);
+    const privateBody = { ...body, yard: { ...body.yard, gateCode: "private-gate-9127" } };
+    expect((await signup(privateBody, "198.51.100.233")).status).toBe(409);
+    const firstPrivate = { ...privateBody, idempotencyKey: "private-replay-identical" };
+    expect((await signup(firstPrivate, "198.51.100.234")).status).toBe(201);
+    expect((await signup(firstPrivate, "198.51.100.234")).status).toBe(200);
+    expect((await signup({ ...firstPrivate, yard: { ...firstPrivate.yard, gateCode: "changed-gate-4983" } }, "198.51.100.234")).status).toBe(409);
+    expect((await signup({ ...body, idempotencyKey: firstPrivate.idempotencyKey }, "198.51.100.234")).status).toBe(409);
+    const submissions = await db.select().from(siteSubmissions);
+    expect(JSON.stringify(submissions)).not.toContain("private-gate-9127");
+    expect(JSON.stringify(submissions)).not.toContain("changed-gate-4983");
+    const saved = submissions.find(row => row.idempotencyKey === "signup:private-replay-identical")!;
+    expect(saved.payload.privateFieldFingerprints).toMatchObject({ "location.gate_code": expect.stringMatching(/^[a-f0-9]{64}$/) });
+  });
   it("returns the original result when the same request is resent without optional fields", async () => {
     // Mirrors the signup form when no price was quoted: quoteId and paymentMethod are left out.
     const body = {

@@ -113,9 +113,9 @@ async function updateProfile(request: Request, actor: SessionActor): Promise<Res
   customerActor(actor);
   const id = firstCustomerId(actor);
   const pack = await tenantIndustryPack(actor.tenantId);
-  const assetSchemas = pack.assets.map(def => z.object({ id: z.uuid(), assetTypeKey: z.literal(def.key), name: def.fields.some(field => field.key === "name" && field.customerEditable) ? z.string().min(1).max(100).optional() : z.never().optional(), customFields: fieldsSchema(def.fields.filter(field => field.customerEditable && !field.sensitive && field.key !== "name"), true).optional() }).strict());
+  const assetSchemas = pack.assets.map(def => z.object({ id: z.uuid(), assetTypeKey: z.literal(def.key), name: def.fields.some(field => field.key === "name" && field.customerEditable) ? z.string().min(1).max(100).optional() : z.never().optional(), customFields: fieldsSchema(def.fields.filter(field => field.customerEditable && !field.sensitive && field.key !== "name"), true, true).optional() }).strict());
   const editableAsset = assetSchemas.length === 1 ? assetSchemas[0]! : assetSchemas.length ? z.union(assetSchemas as unknown as [z.ZodType, z.ZodType, ...z.ZodType[]]) : z.never();
-  const body = await readBody(request, z.object({ name: z.string().min(2).optional(), email: z.email().optional(), phone: z.string().optional(), notificationPreferences: z.object({ email: z.boolean(), sms: z.boolean() }).strict().optional(), assets: z.array(editableAsset).max(100).optional(), locations: z.array(z.object({ id: z.uuid(), customFields: fieldsSchema(pack.locationFields.filter(field => field.customerEditable && !field.sensitive), true) }).strict()).optional() }).strict());
+  const body = await readBody(request, z.object({ name: z.string().min(2).optional(), email: z.email().optional(), phone: z.string().optional(), notificationPreferences: z.object({ email: z.boolean(), sms: z.boolean() }).strict().optional(), assets: z.array(editableAsset).max(100).optional(), locations: z.array(z.object({ id: z.uuid(), customFields: fieldsSchema(pack.locationFields.filter(field => field.customerEditable && !field.sensitive), true, true) }).strict()).optional() }).strict());
   const db = getDb();
   await db.transaction(async (tx) => {
     if (body.name || body.email || body.phone) {

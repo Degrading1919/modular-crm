@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   auditEvents, automationRules, connectorInstallations, customers, domains, domainEvents, organizationLocations, organizations,
   priceRules, serviceZones, services, siteContents, sites, tenants,
@@ -190,7 +190,8 @@ async function applyStep(tx: Tx, actor: SessionActor, step: number, rawData: Rec
       if (existingCustomer || settings.onboardingComplete === true || priorOnboarding.completed === true) throw new DomainError("CONFLICT", "Industry changes are available only before customer setup. Your existing service details have been kept.", 409);
       if (previousPack?.services.length) await tx.update(services).set({ active: false }).where(and(eq(services.tenantId, actor.tenantId), eq(services.organizationId, organization.id), inArray(services.key, previousPack.services.map(service => service.key))));
       if (previousPack?.intake?.quantityReview) await tx.update(priceRules).set({ active: false }).where(and(eq(priceRules.tenantId, actor.tenantId), eq(priceRules.organizationId, organization.id), eq(priceRules.name, previousPack.intake.quantityReview.ruleName)));
-      if (previousPack?.defaultAutomations.length) await tx.update(automationRules).set({ status: "archived", activeFrom: null }).where(and(eq(automationRules.tenantId, actor.tenantId), eq(automationRules.source, "industry_pack"), inArray(automationRules.sourceKey, previousPack.defaultAutomations.map(recipe => recipe.sourceKey))));
+      const now = new Date();
+      if (previousPack?.defaultAutomations.length) await tx.update(automationRules).set({ status: "archived", archivedAt: now, updatedAt: now, version: sql`${automationRules.version} + 1`, activeFrom: null }).where(and(eq(automationRules.tenantId, actor.tenantId), eq(automationRules.source, "industry_pack"), inArray(automationRules.sourceKey, previousPack.defaultAutomations.map(recipe => recipe.sourceKey))));
       if (pack.defaultAutomations.length) await tx.insert(automationRules).values(pack.defaultAutomations.map(recipe => ({ tenantId: actor.tenantId, name: recipe.name, description: recipe.description, source: "industry_pack", sourceKey: recipe.sourceKey, status: "draft", version: 1, triggerConfig: { event: recipe.event, ...(recipe.filters ? { filters: recipe.filters } : {}) }, conditions: {}, actions: recipe.actions.map(action => ({ actionType: action.actionType, configuration: action.configuration, ...(action.purpose ? { purpose: action.purpose } : {}), ...(action.delay ? { delay: action.delay } : {}) })), createdByMembershipId: actor.membershipId })));
     }
     await tx.update(tenants).set({ industryPackKey: pack.key, industryPackVersion: pack.version }).where(eq(tenants.id, actor.tenantId));
