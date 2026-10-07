@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-07 — Locally verified AWS deployment infrastructure
+
+- **Status:** Accepted
+- **Area:** Architecture / Implementation
+- **Decision:** Keep AWS CDK infrastructure in a separate workspace with operator-supplied configuration and no deployment identifiers or secrets committed. Gate ECS releases on successful migrations, preserve stateful resources and provide parallel snapshot recovery; use temporary task credentials behind the existing S3-compatible boundary.
+- **Rationale:** A usable deployment path must not create cloud resources during development or bind business logic to AWS. Template assertions and resource-scoped security checks belong in the existing test gate.
+- **Authoritative doc:** docs/ARCHITECTURE.md; operator runbook in docs/DEPLOYMENT.md
+
 ## 2026-10-06 — Preserve recorded service facts and queued pack compatibility
 
 - **Status:** Accepted

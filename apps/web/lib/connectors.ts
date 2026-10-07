@@ -2,7 +2,7 @@ import path from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import { connectorInstallations, type Database } from "@modular-crm/db";
 import { ConnectorError, ConnectorRegistry, createMockConnectorRegistry, createStripePaymentDefinition, type CapabilityKey, type InstallationView } from "@modular-crm/connectors";
-import { readServerConfig } from "@modular-crm/config";
+import { readServerConfig, readObjectStorageConfig } from "@modular-crm/config";
 import { DomainError } from "@modular-crm/domain";
 import { createLocalStorageDefinition } from "@modular-crm/connectors/local-storage";
 import { createS3StorageDefinition } from "@modular-crm/connectors/s3-storage";
@@ -17,18 +17,13 @@ export function getRegistry() {
     const registry = createMockConnectorRegistry({ includePlannedProviders: true });
     const stripe = readServerConfig(process.env).stripePayments;
     if (stripe) registry.register(createStripePaymentDefinition(stripe));
-    const objectStorageValues = [process.env.OBJECT_STORAGE_ENDPOINT, process.env.OBJECT_STORAGE_BUCKET, process.env.OBJECT_STORAGE_ACCESS_KEY, process.env.OBJECT_STORAGE_SECRET_KEY];
-    const configuredStorageValues = objectStorageValues.filter(Boolean).length;
-    if (configuredStorageValues > 0 && configuredStorageValues < objectStorageValues.length) throw new Error("Object storage configuration is incomplete");
+    const objectStorage = readObjectStorageConfig(process.env);
     registry.register(createLocalStorageDefinition({
       rootDirectory: process.env.OBJECT_STORAGE_DIRECTORY ?? path.resolve(process.cwd(), "../../.local-data/files"),
       signingSecret: authSigningSecret(),
     }));
-    if (configuredStorageValues === objectStorageValues.length) registry.register(createS3StorageDefinition({
-      endpoint: process.env.OBJECT_STORAGE_ENDPOINT!, bucket: process.env.OBJECT_STORAGE_BUCKET!,
-      region: process.env.OBJECT_STORAGE_REGION ?? "us-east-1", accessKeyId: process.env.OBJECT_STORAGE_ACCESS_KEY!,
-      secretAccessKey: process.env.OBJECT_STORAGE_SECRET_KEY!,
-      forcePathStyle: process.env.OBJECT_STORAGE_FORCE_PATH_STYLE !== "false",
+    if (objectStorage) registry.register(createS3StorageDefinition({
+      ...objectStorage,
       signingSecret: authSigningSecret(),
     }));
     globalForConnectors.modularRegistry = registry;

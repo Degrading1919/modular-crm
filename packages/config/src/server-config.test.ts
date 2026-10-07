@@ -11,6 +11,11 @@ const healthy = {
 };
 
 describe("production startup configuration", () => {
+  it("accepts task-role storage without static keys and rejects partial static configuration at startup", () => {
+    const storage = { OBJECT_STORAGE_ENDPOINT: "https://s3.example.test", OBJECT_STORAGE_BUCKET: "crm-files", OBJECT_STORAGE_CREDENTIAL_MODE: "task-role" };
+    expect(readServerConfig({ ...healthy, ...storage }).environment).toBe("production");
+    expect(() => readServerConfig({ ...healthy, ...storage, OBJECT_STORAGE_CREDENTIAL_MODE: "static" })).toThrow("incomplete");
+  });
   it("defaults to one production proxy and none locally, and validates the fixed hop count", () => {
     expect(readServerConfig(healthy).trustedProxyHops).toBe(1);
     expect(readServerConfig({ NODE_ENV: "test" }).trustedProxyHops).toBe(0);

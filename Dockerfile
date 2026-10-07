@@ -9,6 +9,8 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY apps ./apps
 COPY packages ./packages
 COPY containers ./containers
+COPY infra ./infra
+RUN node containers/fetch-rds-ca.mjs
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store pnpm install --frozen-lockfile --prod=false --store-dir=/pnpm/store
 
 FROM dependencies AS web-build
@@ -19,6 +21,8 @@ COPY --from=web-build --chown=node:node /app/apps/web/.next/standalone ./
 COPY --from=web-build --chown=node:node /app/apps/web/.next/static ./apps/web/.next/static
 COPY --from=web-build --chown=node:node /app/apps/web/public ./apps/web/public
 COPY --chown=node:node containers/probe.mjs ./containers/probe.mjs
+COPY --from=dependencies --chown=node:node /app/containers/entrypoint.mjs /app/containers/rds-ca.pem ./containers/
+ENTRYPOINT ["node", "containers/entrypoint.mjs"]
 ENV PORT=3000 HOSTNAME=0.0.0.0
 USER node
 EXPOSE 3000
@@ -32,6 +36,8 @@ RUN pnpm --filter @modular-crm/worker build \
 FROM base AS worker-runtime
 COPY --from=worker-build --chown=node:node /runtime/worker ./
 COPY --chown=node:node containers/probe.mjs ./containers/probe.mjs
+COPY --from=dependencies --chown=node:node /app/containers/entrypoint.mjs /app/containers/rds-ca.pem ./containers/
+ENTRYPOINT ["node", "containers/entrypoint.mjs"]
 USER node
 
 FROM worker-runtime AS migrate

@@ -10,6 +10,10 @@
 !packages/**
 !containers/
 !containers/**
+!infra/
+!infra/**
+**/cdk.out
+**/cdk.context.json
 **/node_modules
 **/.next
 **/dist

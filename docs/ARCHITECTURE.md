@@ -173,6 +173,10 @@ For example, the CRM should ask a payments capability to create a payment reques
 
 Provider-specific logic belongs in connector packages/modules.
 
+AWS deployment is isolated in the `infra/aws` workspace: network, stateful data and application stacks, validated operator-supplied staging/production configuration, pinned CDK v2 and resource-scoped AwsSolutions checks. Application packages never import infrastructure. The S3-compatible connector supports either static credentials (including MinIO) or the SDK's refreshing task-credential chain; tenant prefix checks are unchanged. Container entry points accept portable PostgreSQL secret parts and encode the connection URL at runtime, with verified TLS for RDS. Only migrate receives the administrator identity and provisions a separate constrained application/pg-boss runtime login; web/worker never receive administrator credentials. Production WAF retains common/rate rules with a body-size-label exception limited to authenticated import and field-photo POST paths, which retain application authorization and limits.
+
+Initial ECS capacity is zero. An operator-only release builds immutable SHA images, requires successful application/queue migration, then rolls out web and worker and verifies that circuit-breaker rollback did not masquerade as success. No CI job provisions infrastructure or runs this script. Production uses private encrypted Multi-AZ RDS with 14-day backups, deletion/stack protection and final snapshots; object storage is private, encrypted and versioned. Snapshot restoration creates a parallel database while preserving the original and the snapshot choice in subsequent configuration. See DEPLOYMENT.md for first-release activation, secrets, DNS, recovery and operating-cost assumptions.
+
 
 ## Organizational hierarchy
 
