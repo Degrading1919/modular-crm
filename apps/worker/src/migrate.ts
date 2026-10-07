@@ -2,6 +2,7 @@ import { logJson } from "@modular-crm/config/observability";
 import { PgBoss } from "pg-boss";
 import { migrateDatabase } from "../../../packages/db/src/migrate.ts";
 import { registerWorkerQueues } from "./queues.js";
+import { configureRuntimeDatabaseRole } from "./runtime-database-role.js";
 
 // One-shot release operation, not imported by long-lived worker/web entry points.
 const connectionString = process.env.DATABASE_URL;
@@ -14,3 +15,4 @@ try {
   await registerWorkerQueues(boss);
   logJson("info", "queue.migrations_applied");
 } finally { await boss.stop(); }
+await configureRuntimeDatabaseRole(connectionString, process.env);

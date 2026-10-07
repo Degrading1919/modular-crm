@@ -1,3 +1,6 @@
+import { readObjectStorageConfig } from "./object-storage.ts";
+export { readObjectStorageConfig } from "./object-storage.ts";
+
 export type ComparisonOperator =
   | "equals" | "not_equals" | "in" | "not_in" | "exists" | "not_exists"
   | "greater_than" | "greater_or_equal" | "less_than" | "less_or_equal"
@@ -134,6 +137,7 @@ function isLoopback(host: string): boolean {
 /** Server-only startup settings; never serialize the returned object to a browser payload. */
 export const SERVER_CONFIGURATION_KEYS: ReadonlySet<string> = new Set([
   "DATABASE_URL", "BETTER_AUTH_SECRET", "WEBHOOK_SECRET_ENCRYPTION_KEY", "CONNECTOR_CREDENTIAL_ENCRYPTION_KEY",
+  "DB_USERNAME", "DB_PASSWORD", "DB_RUNTIME_USERNAME", "DB_RUNTIME_PASSWORD", "OBJECT_STORAGE_ACCESS_KEY", "OBJECT_STORAGE_SECRET_KEY", "OBJECT_STORAGE_SESSION_TOKEN", "OBJECT_STORAGE_CREDENTIAL_MODE", "OBJECT_STORAGE_ENDPOINT", "OBJECT_STORAGE_BUCKET",
   "MOCK_CONNECTORS", "DOMAIN_VERIFICATION_MODE", "LOCAL_SMOKE_TEST", "PUBLIC_BASE_URL", "BETTER_AUTH_URL", "APP_BASE_URL",
   "SMTP_HOST", "SMTP_PORT", "SMTP_FROM", "SMTP_USER", "SMTP_PASSWORD", "SMTP_SECURE",
   "WORKER_HEALTH_PORT", "WORKER_POLL_STALE_MS", "WORKER_JOB_MAX_MS", "PLATFORM_NAME",
@@ -224,6 +228,7 @@ export function readServerConfig(env: Record<string, string | undefined>): Serve
     || !["test", "live"].includes(env.PAYMENTS_STRIPE_MODE ?? "")
     || !env.PAYMENTS_STRIPE_SECRET_KEY?.startsWith(`sk_${env.PAYMENTS_STRIPE_MODE}_`))) problems.push("PAYMENTS_STRIPE_SECRET_KEY, PAYMENTS_STRIPE_WEBHOOK_SECRET and PAYMENTS_STRIPE_MODE must be complete and use the same test/live mode");
   if (stripeConfigured && environment === "test" && env.PAYMENTS_STRIPE_MODE === "live") problems.push("Live payment credentials must not be used in tests");
+  try { readObjectStorageConfig(env); } catch (error) { problems.push(error instanceof Error ? error.message : "Invalid object storage configuration"); }
   if (problems.length) throw new ServerConfigurationError(problems);
   if (env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT) {
     let endpoint: URL;

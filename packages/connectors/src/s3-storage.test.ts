@@ -1,9 +1,35 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Readable } from "node:stream";
 import { ConnectorError } from "./types.ts";
 import { createS3StorageDefinition } from "./s3-storage.ts";
 
 type Stored = { body: Uint8Array; contentType: string };
+
+it("refreshes temporary credentials before expiry and signs session tokens", async () => {
+  const initial = Date.parse("2026-10-07T01:00:00Z");
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(initial);
+  try {
+    const handler = makeHandler();
+    const provider = vi.fn(async () => ({ accessKeyId: `temporary-${provider.mock.calls.length}`, secretAccessKey: "fixture-secret",
+      sessionToken: `session-${provider.mock.calls.length}`, expiration: new Date(Date.now() + 60 * 60 * 1000) }));
+    const definition = createS3StorageDefinition({ endpoint: "https://objects.example.test", bucket: "crm-files", region: "us-east-1",
+      credentialMode: "task-role", credentials: provider, requestHandler: handler.requestHandler as never, now: () => new Date() });
+    const scope = definition.createConfiguredScope!({ tenantId: "tenant-role", credentials: {}, now: () => new Date(), ensureAvailable: () => {} });
+    const storage = scope.storage!;
+    await storage.putObject({ key: "one.txt", content: new Uint8Array([1]), contentType: "text/plain" });
+    const cachedCalls = provider.mock.calls.length;
+    const firstToken = handler.requests.at(-1)!.headers["x-amz-security-token"];
+    await storage.getObject("one.txt");
+    expect(provider).toHaveBeenCalledTimes(cachedCalls);
+    vi.setSystemTime(initial + 56 * 60 * 1000);
+    await storage.getObject("one.txt");
+    expect(provider.mock.calls.length).toBeGreaterThan(cachedCalls);
+    expect(handler.requests.at(-1)!.headers["x-amz-security-token"]).not.toBe(firstToken);
+    const link = await storage.createDownloadLink("one.txt", new Date(Date.now() + 60_000).toISOString());
+    expect(new URL(link).searchParams.get("X-Amz-Security-Token")).toBe(handler.requests.at(-1)!.headers["x-amz-security-token"]);
+  } finally { vi.useRealTimers(); }
+});
 
 function makeHandler() {
   const objects = new Map<string, Stored>();

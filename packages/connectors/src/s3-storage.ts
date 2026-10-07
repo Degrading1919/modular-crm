@@ -15,8 +15,12 @@ export type S3StorageConfig = Readonly<{
   endpoint: string;
   bucket: string;
   region: string;
-  accessKeyId: string;
-  secretAccessKey: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  sessionToken?: string;
+  credentialMode?: "static" | "task-role";
+  /** Server-owned seam; SDK caches temporary identities and refreshes before expiry. */
+  credentials?: S3ClientConfig["credentials"];
   forcePathStyle?: boolean;
   signingSecret?: string;
   now?: () => Date;
@@ -35,7 +39,8 @@ function validateConfig(config: S3StorageConfig): URL {
     throw new Error("S3 endpoint must use HTTPS and cannot include credentials, query, or fragment");
   }
   if (!config.bucket.trim() || config.bucket.includes("/") || !config.region.trim()
-    || !config.accessKeyId.trim() || !config.secretAccessKey.trim()) throw new Error("S3 storage configuration is incomplete");
+    || (config.credentialMode !== "task-role" && (!config.accessKeyId?.trim() || !config.secretAccessKey?.trim()))) throw new Error("S3 storage configuration is incomplete");
+  if (config.credentialMode === "task-role" && (config.accessKeyId || config.secretAccessKey || config.sessionToken)) throw new Error("Task-role storage must not include static credentials");
   return endpoint;
 }
 
@@ -77,7 +82,9 @@ export function createS3StorageDefinition(config: S3StorageConfig): ConnectorDef
   const client = new S3Client({
     endpoint: endpoint.toString(),
     region: config.region,
-    credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
+    // Omission selects the Node SDK default chain, including refreshing ECS task credentials.
+    ...(config.credentialMode === "task-role" ? (config.credentials ? { credentials: config.credentials } : {})
+      : { credentials: { accessKeyId: config.accessKeyId!, secretAccessKey: config.secretAccessKey!, ...(config.sessionToken ? { sessionToken: config.sessionToken } : {}) } }),
     forcePathStyle: config.forcePathStyle ?? true,
     ...(config.requestHandler ? { requestHandler: config.requestHandler } : {}),
   });

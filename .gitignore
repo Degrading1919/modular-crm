@@ -10,3 +10,5 @@ test-results/
 *.tsbuildinfo
 .local-data/
 .DS_Store
+infra/aws/cdk.out/
+infra/aws/cdk.context.json
