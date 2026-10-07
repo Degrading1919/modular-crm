@@ -10,7 +10,9 @@ const env = { ...process.env, POSTGRES_USER: "smoke", POSTGRES_DB: "crm", POSTGR
   NODE_ENV: "production", LOCAL_SMOKE_TEST: "true", MOCK_CONNECTORS: "false", DOMAIN_VERIFICATION_MODE: "dns",
   PLATFORM_BILLING_PROVIDER: "mock", PLATFORM_BILLING_PLANS_JSON: JSON.stringify([{ key: "container-fixture", name: "Isolated container fixture", seats: 10, capabilities: ["*"], prices: { USD: { monthly: 100 } } }]),
   BETTER_AUTH_SECRET: randomBytes(32).toString("hex"), WEBHOOK_SECRET_ENCRYPTION_KEY: randomBytes(32).toString("base64url"), CONNECTOR_CREDENTIAL_ENCRYPTION_KEY: randomBytes(32).toString("base64url"),
-  APP_BASE_URL: "http://localhost:3000", BETTER_AUTH_URL: "http://localhost:3000", PUBLIC_BASE_URL: "http://localhost:3000",
+  // Match the actual loopback hostname returned by docker port below. The Host
+  // router intentionally does not expose the staff app on any other hostname.
+  APP_BASE_URL: "http://127.0.0.1:3000", BETTER_AUTH_URL: "http://127.0.0.1:3000", PUBLIC_BASE_URL: "http://127.0.0.1:3000",
   SMTP_HOST: "smtp.invalid", SMTP_PORT: "587", SMTP_FROM: "smoke@example.invalid", WORKER_HEALTH_PORT: "3001",
 };
 env.DATABASE_URL = `postgresql://smoke:${env.POSTGRES_PASSWORD}@${names.postgres}:5432/crm`;
@@ -64,6 +66,8 @@ try {
   }
   const login = await fetch(`${web}/login`);
   assert.equal(login.status, 200);
+  assert.equal((await fetch(`${web}/login`, { headers: { host: "unknown.example.test" } })).status, 404, "unknown Host must never serve the staff app");
+  assert.equal((await fetch(`${web}/login`, { headers: { "x-website-host": "unknown.example.test", "x-website-origin-key": "forged" } })).status, 404, "forged website forwarding must never serve the staff app");
   const html = await login.text();
   assert.match(html, /Sign in/);
   const asset = html.match(/(?:src|href)="([^"\s]*\/_next\/static\/[^"\s]+)"/);

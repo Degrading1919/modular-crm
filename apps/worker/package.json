@@ -13,6 +13,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudfront": "^3.1138.0",
     "@modular-crm/automations": "workspace:*",
     "@modular-crm/config": "workspace:*",
     "@modular-crm/connectors": "workspace:*",

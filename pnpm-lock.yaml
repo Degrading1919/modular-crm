@@ -117,6 +117,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@aws-sdk/client-cloudfront':
+        specifier: ^3.1138.0
+        version: 3.1146.0
       '@modular-crm/automations':
         specifier: workspace:*
         version: link:../../packages/automations

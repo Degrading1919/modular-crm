@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-07 — Validate bundled worker runtime imports
+
+- **Status:** Accepted
+- **Area:** Implementation
+- **Decision:** Every external library imported by bundled worker or migrate entrypoints must be a direct worker production dependency. Validate the complete emitted import set during build and in regression coverage, in addition to the unchanged production container smoke check.
+- **Rationale:** Workspace connector dependencies remain transitive after deployment, while bundled code resolves from the worker package. CI caught the new CloudFront client missing at that boundary; source typecheck and development resolution alone cannot prove packaged runtime resolution.
+- **Authoritative doc:** docs/ARCHITECTURE.md
+
 ## 2026-10-07 — Verified website hosts and automated customer certificates
 
 - **Status:** Accepted
