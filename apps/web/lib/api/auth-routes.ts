@@ -10,6 +10,7 @@ import {
 import { DomainError } from "@modular-crm/domain";
 import { evaluateProductCapabilityRecommendations, DEFAULT_INDUSTRY_PACK } from "@modular-crm/industry-packs";
 import { auth } from "../auth";
+import { mocksAllowed } from "../mock-policy";
 import { getDb } from "../db";
 import { requireActor } from "./actor";
 import { json, readBody } from "./http";
@@ -38,11 +39,16 @@ export async function handleAuthRoute(request: Request, path: string[]): Promise
     const { keys, limited: credentialLimited } = await limitAuthAccount(request, body.email, "signin");
     if (credentialLimited) return credentialLimited;
     const response = await auth.api.signInEmail({ body, headers: request.headers, asResponse: true });
-    if (response.ok) await resetSignInBudget(keys);
+    if (response.ok) {
+      await resetSignInBudget(keys);
+      response.headers.append("set-cookie", "crm_membership=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+    }
     return response;
   }
   if (action === "logout" && request.method === "POST") {
-    return auth.api.signOut({ headers: request.headers, asResponse: true });
+    const response = await auth.api.signOut({ headers: request.headers, asResponse: true });
+    response.headers.append("set-cookie", "crm_membership=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+    return response;
   }
   if (action === "me" && request.method === "GET") {
     const actor = await requireActor(request);
@@ -63,7 +69,7 @@ export async function handleAuthRoute(request: Request, path: string[]): Promise
     await db.transaction(async (tx) => {
       const now = new Date();
       await installInitialCapabilityCatalog(tx);
-      const [tenant] = await tx.insert(tenants).values({ name: body.businessName, slug, status: "active", industryPackKey: DEFAULT_INDUSTRY_PACK.key, industryPackVersion: DEFAULT_INDUSTRY_PACK.version, settings: { onboardingComplete: false, capabilitySetupComplete: false, servicePostalCodes: [], demoMode: true } }).returning();
+      const [tenant] = await tx.insert(tenants).values({ name: body.businessName, slug, status: "active", industryPackKey: DEFAULT_INDUSTRY_PACK.key, industryPackVersion: DEFAULT_INDUSTRY_PACK.version, settings: { onboardingComplete: false, capabilitySetupComplete: false, servicePostalCodes: [], demoMode: mocksAllowed() } }).returning();
       if (!tenant) throw new Error("Tenant creation failed");
       await startPlatformTrial(tx, tenant.id, readPlatformBillingConfig(process.env), now);
       const recommendedFeatures = evaluateProductCapabilityRecommendations(DEFAULT_INDUSTRY_PACK, {})

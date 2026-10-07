@@ -23,15 +23,15 @@ export async function checkWebsiteDomain(db: Database, tenantId: string, domainI
     const dns = await hosting.dns.check(domain.hostname, token, hosting.target, check.mockRecords);
     let edge;
     const previouslyVerified = check.ownershipVerified || ["verified", "securing", "live", "needs_attention"].includes(check.state);
-    let transition = websiteDomainTransition(dns, previouslyVerified);
+    let transition = websiteDomainTransition(dns, previouslyVerified, undefined, check.state as Parameters<typeof websiteDomainTransition>[3]);
     if (dns.ownership === "valid" && dns.routing === "valid" && !dns.unavailable && (provision || check.edgeReference)) {
       try { edge = await hosting.edge.ensure({ id: domain.id, hostname: domain.hostname, reference: check.edgeReference, mockRecords: check.mockRecords });
-        transition = websiteDomainTransition(dns, previouslyVerified, edge);
+        transition = websiteDomainTransition(dns, previouslyVerified, edge, check.state as Parameters<typeof websiteDomainTransition>[3]);
       } catch { transition = { state: "needs_attention", problem: "We couldn’t set up your secure connection. We’ll check again shortly; contact support if this continues." }; }
     }
     const [updated] = await tx.update(websiteDomainChecks).set({ ...transition,
-      ownershipVerified: !dns.unavailable && dns.ownership === "valid", routingVerified: !dns.unavailable && dns.routing === "valid",
-      edgeReference: edge?.reference ?? check.edgeReference, checkedAt: now, nextCheckAt: new Date(now.getTime() + (transition.state === "live" ? 15 : 1) * 60_000), updatedAt: now })
+      ownershipVerified: dns.unavailable ? check.ownershipVerified : dns.ownership === "valid", routingVerified: dns.unavailable ? check.routingVerified : dns.routing === "valid",
+      edgeReference: edge?.reference ?? check.edgeReference, checkedAt: dns.unavailable ? check.checkedAt : now, nextCheckAt: new Date(now.getTime() + (transition.state === "live" ? 15 : 1) * 60_000), updatedAt: now })
       .where(and(eq(websiteDomainChecks.domainId, domain.id), eq(websiteDomainChecks.tenantId, tenantId))).returning();
     return updated!;
   });

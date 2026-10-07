@@ -136,7 +136,14 @@ describe("website custom domains", () => {
     await sweepWebsiteDomains(db, hosting);
     const route = await findWebsiteHost(hostname);
     expect(route?.tenantId).toBe(owner.tenantId);
-    expect(await findWebsiteHost(hostname, new Date(Date.now() + 31 * 60_000))).toBeNull();
+    expect(await findWebsiteHost(hostname, new Date(Date.now() + 23 * 60 * 60_000))).not.toBeNull();
+    expect(await findWebsiteHost(hostname, new Date(Date.now() + 25 * 60 * 60_000))).toBeNull();
+    const [evidence] = await db.select().from(schema.websiteDomainChecks).where(eq(schema.websiteDomainChecks.domainId, item.id));
+    await checkWebsiteDomain(db, owner.tenantId, item.id, { ...hosting, dns: { check: vi.fn().mockResolvedValue({ ownership: "missing", routing: "missing", unavailable: true }) } }, true);
+    const [afterOutage] = await db.select().from(schema.websiteDomainChecks).where(eq(schema.websiteDomainChecks.domainId, item.id));
+    expect(afterOutage).toMatchObject({ state: "live", ownershipVerified: true, routingVerified: true, checkedAt: evidence!.checkedAt });
+    expect(await findWebsiteHost(hostname)).not.toBeNull();
+    expect(await findWebsiteHost(hostname, new Date(Date.now() + 25 * 60 * 60_000))).toBeNull();
     await expect(assertWebsiteHostSlug(new Request("http://localhost", { headers: { host: hostname } }), "cleanpaws")).rejects.toMatchObject({ status: 404 });
     await expect(assertWebsiteHostSlug(new Request("http://localhost", { headers: { host: hostname } }), route!.slug)).resolves.toBeUndefined();
     const request = (path: string, headers = {}) => new NextRequest(`http://localhost:3000${path}`, { headers: { host: hostname, ...headers } });

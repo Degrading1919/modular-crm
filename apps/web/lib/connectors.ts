@@ -1,7 +1,7 @@
 import path from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import { connectorInstallations, type Database } from "@modular-crm/db";
-import { ConnectorError, ConnectorRegistry, createMockConnectorRegistry, createStripePaymentDefinition, type CapabilityKey, type InstallationView } from "@modular-crm/connectors";
+import { ConnectorError, ConnectorRegistry, createConnectorRegistry, createStripePaymentDefinition, type CapabilityKey, type InstallationView } from "@modular-crm/connectors";
 import { readServerConfig, readObjectStorageConfig } from "@modular-crm/config";
 import { DomainError } from "@modular-crm/domain";
 import { createLocalStorageDefinition } from "@modular-crm/connectors/local-storage";
@@ -9,16 +9,18 @@ import { createS3StorageDefinition } from "@modular-crm/connectors/s3-storage";
 import { getDb } from "./db";
 import { openConnectorCredentials } from "./api/connector-secrets";
 import { authSigningSecret } from "./runtime-secret";
+import { mocksAllowed } from "./mock-policy";
 
-const globalForConnectors = globalThis as typeof globalThis & { modularRegistry?: ReturnType<typeof createMockConnectorRegistry> };
+const globalForConnectors = globalThis as typeof globalThis & { modularRegistry?: ConnectorRegistry; modularRegistryMode?: string };
 
 export function getRegistry() {
-  if (!globalForConnectors.modularRegistry) {
-    const registry = createMockConnectorRegistry({ includePlannedProviders: true });
+  const mode = `${process.env.NODE_ENV}:${mocksAllowed()}`;
+  if (!globalForConnectors.modularRegistry || globalForConnectors.modularRegistryMode !== mode) {
+    const registry = createConnectorRegistry({ includePlannedProviders: true, mockConnectors: mocksAllowed() });
     const stripe = readServerConfig(process.env).stripePayments;
     if (stripe) registry.register(createStripePaymentDefinition(stripe));
     const objectStorage = readObjectStorageConfig(process.env);
-    registry.register(createLocalStorageDefinition({
+    if (process.env.NODE_ENV !== "production") registry.register(createLocalStorageDefinition({
       rootDirectory: process.env.OBJECT_STORAGE_DIRECTORY ?? path.resolve(process.cwd(), "../../.local-data/files"),
       signingSecret: authSigningSecret(),
     }));
@@ -27,6 +29,7 @@ export function getRegistry() {
       signingSecret: authSigningSecret(),
     }));
     globalForConnectors.modularRegistry = registry;
+    globalForConnectors.modularRegistryMode = mode;
   }
   return globalForConnectors.modularRegistry;
 }
@@ -39,6 +42,7 @@ export async function hydrateTenantConnectors(tenantId: string) {
   for (const installation of installations) {
     if (installation.status !== "connected") continue;
     const manifest = registry.getDefinition(installation.connectorKey)?.manifest;
+    if (!manifest) continue; // Historical demo installations never hydrate in production.
     if (manifest?.guidedPayments) {
       if (installation.credentialReference) {
         try { registry.connectGuidedPayments(tenantId, installation.connectorKey, openConnectorCredentials(installation.credentialReference, { tenantId, installationId: installation.id, connectorKey: installation.connectorKey })); }

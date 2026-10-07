@@ -36,6 +36,17 @@ async function signup(body: unknown, ip: string) {
 }
 
 describe("public signup retries", () => {
+  it("rejects a forged demo payment in production before saving a signup", async () => {
+    const before = await db.select().from(siteSubmissions);
+    const previousBase = process.env.APP_BASE_URL;
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("APP_BASE_URL", "http://localhost");
+    try {
+      const response = await signup({ slug: "happy-yards", address: "90 Production Lane", zip: "30901", contact: { name: "Production Safety", email: "production.signup@example.test", phone: "7065550185" }, service: { id: seedIds.weeklyService, frequency: "weekly" }, pets: [{ name: "Rex", size: "medium" }], yard: { size: "medium" }, termsAccepted: true, paymentMethod: "demo", idempotencyKey: "production-demo-refused" }, "198.51.100.230");
+      expect(response.status).toBe(403);
+      expect(await db.select().from(siteSubmissions)).toHaveLength(before.length);
+    } finally { vi.stubEnv("NODE_ENV", "test"); vi.stubEnv("APP_BASE_URL", previousBase); }
+  });
   it("conflicts when private details are added, changed or removed, but accepts an identical private retry without storing plaintext", async () => {
     const body = { slug: "happy-yards", address: "82 Retry Lane", zip: "30901", contact: { name: "Private Retry", email: "private.retry@example.test", phone: "706-555-0181" }, service: { id: seedIds.weeklyService, frequency: "weekly" }, pets: [{ name: "Rex", size: "medium" }], yard: { size: "medium" }, termsAccepted: true, idempotencyKey: "private-replay-added" };
     expect((await signup(body, "198.51.100.233")).status).toBe(201);

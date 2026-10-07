@@ -4,7 +4,7 @@ import { getDomain } from "tldts";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { auditEvents, checkWebsiteDomain, domains, domainEvents, sites, tenants, websiteDomainChecks } from "@modular-crm/db";
 import { createWebsiteHosting } from "@modular-crm/connectors";
-import { DomainError, requirePermission } from "@modular-crm/domain";
+import { WEBSITE_DOMAIN_EVIDENCE_MAX_AGE_MS, DomainError, requirePermission } from "@modular-crm/domain";
 import { z } from "zod";
 import { getDb } from "../db";
 import { requireStaff, type SessionActor } from "./actor";
@@ -67,7 +67,7 @@ function verificationFor(hostname: string, data: Record<string, unknown> | null)
 }
 
 function domainItem(domain: typeof domains.$inferSelect, check?: typeof websiteDomainChecks.$inferSelect, target?: string) {
-  const stale = check?.state === "live" && (!check.checkedAt || check.checkedAt.getTime() < Date.now() - 30 * 60_000);
+  const stale = check?.state === "live" && (!check.checkedAt || check.checkedAt.getTime() < Date.now() - WEBSITE_DOMAIN_EVIDENCE_MAX_AGE_MS);
   return {
     id: domain.id, hostname: domain.hostname, domainType: domain.domainType,
     verificationStatus: check ? (check.ownershipVerified ? "verified" : "pending") : domain.verificationStatus, isPrimary: domain.isPrimary,
@@ -157,7 +157,7 @@ async function setPrimaryDomain(actor: SessionActor, id: string) {
     )).limit(1);
     if (!domain || !["custom", "platform"].includes(domain.domainType)) throw new DomainError("NOT_FOUND", "Website domain not found.", 404);
     const [check] = await tx.select().from(websiteDomainChecks).where(and(eq(websiteDomainChecks.domainId, domain.id), eq(websiteDomainChecks.tenantId, actor.tenantId)));
-    if (domain.domainType === "custom" && (check?.state !== "live" || !check.ownershipVerified || !check.routingVerified || !check.checkedAt || check.checkedAt.getTime() < Date.now() - 30 * 60_000)) {
+    if (domain.domainType === "custom" && (check?.state !== "live" || !check.ownershipVerified || !check.routingVerified || !check.checkedAt || check.checkedAt.getTime() < Date.now() - WEBSITE_DOMAIN_EVIDENCE_MAX_AGE_MS)) {
       throw new DomainError("VALIDATION_ERROR", "Verify this domain before making it your primary website address.", 422);
     }
     const [platform] = await tx.select().from(domains).where(and(

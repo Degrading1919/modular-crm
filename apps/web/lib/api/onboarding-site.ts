@@ -8,6 +8,7 @@ import { DEFAULT_INDUSTRY_PACK_KEY, getIndustryPack, listIndustryPacks } from "@
 import { z } from "zod";
 import { getDb } from "../db";
 import { requireStaff, type SessionActor } from "./actor";
+import { mocksAllowed, requireMocks } from "../mock-policy";
 import { json, readBody } from "./http";
 import { requireTenantFeature } from "./capability-enforcement";
 
@@ -23,8 +24,8 @@ const stepSchemas: Record<number, z.ZodTypeAny> = {
   1: z.object({ businessName: z.string().trim().min(2).max(160), phone: blankable(40), email: z.union([z.email().max(254), z.literal("")]).optional().default(""), address: blankable(250), timezone: z.enum(["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles"]).default("America/New_York"), brandColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional() }),
   2: areaStepSchema,
   3: serviceStepSchema,
-  4: z.object({ paymentMode: z.enum(["demo", "manual", "connect"]).default("demo") }),
-  5: z.object({ email: z.enum(["demo", "connect", "off"]).default("demo"), sms: z.enum(["demo", "connect", "off"]).default("demo") }),
+  4: z.object({ paymentMode: z.enum(["demo", "manual", "connect"]).default(() => mocksAllowed() ? "demo" : "manual") }),
+  5: z.object({ email: z.enum(["demo", "connect", "off"]).default(() => mocksAllowed() ? "demo" : "connect"), sms: z.enum(["demo", "connect", "off"]).default(() => mocksAllowed() ? "demo" : "off") }),
   6: z.object({ importChoice: z.enum(["fresh", "csv", "later"]).default("fresh") }),
   7: z.object({ workDays: z.array(z.enum(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])).max(7).optional().default(["Mon", "Tue", "Wed", "Thu", "Fri"]), technicianCount: z.number().int().min(0).max(500).default(1), ownerFieldWorker: z.boolean().default(false) }),
   8: z.object({ tagline: blankable(180), description: blankable(2000), hours: blankable(180), publish: z.boolean().default(false) }),
@@ -174,6 +175,7 @@ async function applyAreaSetup(tx: Tx, actor: SessionActor, site: SiteRow, data: 
 
 async function applyStep(tx: Tx, actor: SessionActor, step: number, rawData: Record<string, unknown>) {
   const data = stepSchemas[step]!.parse(rawData) as Record<string, unknown>;
+  if ((step === 4 && data.paymentMode === "demo") || (step === 5 && (data.email === "demo" || data.sms === "demo"))) requireMocks();
   const scoped = await scopeRows(actor, tx);
   const { site, organization, tenant } = scoped;
   const settings = object(tenant.settings);
@@ -355,7 +357,13 @@ export async function handleOnboardingSite(request: Request, path: string[], act
     if (path.length === 1 && request.method === "GET") {
       const { tenant } = await scopeRows(actor);
       const onboarding = object(object(tenant.settings).onboarding);
-      return json({ item: { step: Number.isInteger(onboarding.step) ? Math.min(9, Math.max(0, Number(onboarding.step))) : 0, data: object(onboarding.data), complete: onboarding.completed === true, packKey: tenant.industryPackKey, packs: listIndustryPacks() } });
+      const data = { ...object(onboarding.data) };
+      if (!mocksAllowed()) {
+        const payments = object(data[4]), updates = object(data[5]);
+        if (payments.paymentMode === "demo") data[4] = { ...payments, paymentMode: "manual" };
+        if (updates.email === "demo" || updates.sms === "demo") data[5] = { ...updates, email: updates.email === "demo" ? "connect" : updates.email, sms: updates.sms === "demo" ? "off" : updates.sms };
+      }
+      return json({ item: { step: Number.isInteger(onboarding.step) ? Math.min(9, Math.max(0, Number(onboarding.step))) : 0, data, complete: onboarding.completed === true, packKey: tenant.industryPackKey, packs: listIndustryPacks(), mocksAllowed: mocksAllowed() } });
     }
     if (path.length === 1 && request.method === "PATCH") {
       const input = await readBody(request, patchOnboardingSchema);

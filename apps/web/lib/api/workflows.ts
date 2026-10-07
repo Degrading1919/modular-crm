@@ -12,6 +12,7 @@ import { updateInvoiceFinancialPosition } from "./invoice-payment-ledger";
 import { expireExcessHostedPages } from "./hosted-page-expiry";
 import { getCapability } from "../connectors";
 import { getDb } from "../db";
+import { requireMocks } from "../mock-policy";
 import type { Database } from "@modular-crm/db";
 import { requireTenantFeature } from "./capability-enforcement";
 import { assertCustomerDocumentAccess, requireStaff, type SessionActor } from "./actor";
@@ -420,6 +421,7 @@ async function invoiceAction(request: Request, actor: SessionActor, invoiceId: s
   }
   if (action !== "pay") throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
   const body = await readBody(request, z.object({ amountCents: z.number().int().positive(), method: z.enum(["test", "manual", ...manualPaymentMethods]), reference: z.string().trim().max(200).optional(), fail: z.boolean().optional(), idempotencyKey: z.string().trim().min(1).max(200).optional() }));
+  if (body.method === "test") requireMocks();
   if (actor.kind === "customer" && body.method !== "test") throw new DomainError("FORBIDDEN", "A customer payment must use the connected payment service.", 403);
   if (actor.kind === "staff" && body.method !== "test") requirePermission(actor, "payments.record_manual");
   const recordedMethod = body.method === "manual" ? null : body.method;
