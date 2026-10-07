@@ -159,6 +159,8 @@ Worker readiness additionally bounds actual pg-boss progress: every application 
 
 CI builds images locally with BuildKit cache and no registry push, then uses a fresh PostgreSQL container. The smoke gate proves migration isolation/replay, all four production probes, non-root execution, rendered login/static assets, absent runtime `tsx`/baked credentials, and fatal unsafe web configuration. Local Docker-daemon unavailability must be reported rather than counted as passing; hosted smoke evidence covers the exact PR head. No infrastructure is provisioned or deployed by this workflow.
 
+Container smoke virtual-host rejection requests use a native HTTP client with regression coverage proving the exact Host/forwarding headers reach the wire. Native fetch's URL-authority Host replacement cannot stand in for a custom-domain isolation check; production routing assertions remain unchanged.
+
 ## Local development
 
 The application should boot locally without requiring real external accounts.

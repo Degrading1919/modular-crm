@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { httpStatus } from "./http-status.mjs";
 
 // This is an isolated local/CI check, not deployment. No registry push or seed.
 const prefix = `crm-smoke-${randomBytes(6).toString("hex")}`;
@@ -66,8 +67,8 @@ try {
   }
   const login = await fetch(`${web}/login`);
   assert.equal(login.status, 200);
-  assert.equal((await fetch(`${web}/login`, { headers: { host: "unknown.example.test" } })).status, 404, "unknown Host must never serve the staff app");
-  assert.equal((await fetch(`${web}/login`, { headers: { "x-website-host": "unknown.example.test", "x-website-origin-key": "forged" } })).status, 404, "forged website forwarding must never serve the staff app");
+  assert.equal(await httpStatus(`${web}/login`, { host: "unknown.example.test" }), 404, "unknown Host must never serve the staff app");
+  assert.equal(await httpStatus(`${web}/login`, { "x-website-host": "unknown.example.test", "x-website-origin-key": "forged" }), 404, "forged website forwarding must never serve the staff app");
   const html = await login.text();
   assert.match(html, /Sign in/);
   const asset = html.match(/(?:src|href)="([^"\s]*\/_next\/static\/[^"\s]+)"/);
