@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { and, eq, inArray, isNull, lt, or } from "drizzle-orm";
 import {
   type Database, automationRuns, estimates, estimateRevisions, customerContacts, customers, hasUsableFeature, internalNotifications, invoices,
-  jobs, loadTenantCapabilities, memberships, messageTemplates, notes, outboundMessages, roleTemplates, sealAccountEmail,
+  jobs, loadTenantCapabilities, memberships, messageTemplates, notes, outboundMessages, roleTemplates, sealAccountEmail, platformSubscription,
   ticketStatusDefinitions, ticketTypeDefinitions, tickets, REMINDER_KEYS, reminderDeadline,
 } from "@modular-crm/db";
 import { evaluateAutomationRule, renderActionConfiguration, type AutomationAction, type AutomationPlan, type AutomationRule, type DomainEvent } from "@modular-crm/automations";
@@ -111,6 +111,13 @@ export async function processAutomationRun(db: Database, boss: PgBoss, input: { 
     .where(and(eq(automationRuns.id, input.runId), eq(automationRuns.tenantId, input.tenantId), inArray(automationRuns.status, ["queued", "retry"])))
     .returning();
   if (!run) return "skipped";
+  const subscription = await platformSubscription(db, input.tenantId);
+  if (subscription && ["read_only", "canceled"].includes(subscription.status)) {
+    await db.update(automationRuns).set({ status: "failed", attempts: run.attempts + 1, completedAt: now, errorCode: "workspace_read_only",
+      errorMessage: "Workspace is read-only. This automation was not executed. Review it after billing recovers.", nextRetryAt: null, updatedAt: now })
+      .where(and(eq(automationRuns.id, run.id), eq(automationRuns.tenantId, input.tenantId)));
+    return "failed";
+  }
   const capabilityState = await loadTenantCapabilities(db, input.tenantId, now);
   if (!hasUsableFeature(capabilityState, "automation_workflows")) {
     await db.update(automationRuns).set({

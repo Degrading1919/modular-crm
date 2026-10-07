@@ -207,6 +207,12 @@ importers:
       '@aws-sdk/s3-request-presigner':
         specifier: ^3.1138.0
         version: 3.1138.0
+      '@modular-crm/config':
+        specifier: workspace:*
+        version: link:../config
+      '@modular-crm/domain':
+        specifier: workspace:*
+        version: link:../domain
       nodemailer:
         specifier: 7.0.13
         version: 7.0.13

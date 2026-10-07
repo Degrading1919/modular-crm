@@ -94,6 +94,14 @@ Owners should be able to start with a focused setup and add or remove capabiliti
 
 A septic company should feel that the product was built for septic work. A chimney sweep, hood cleaner, appliance repair company, or small-engine shop should receive different language and workflow defaults while still using the same platform.
 
+## Workspace plans and billing
+
+The platform charges each business for its workspace subscription, independently of that business collecting money from customers. New owners start a configurable free trial (14 days by default) without a card. Owner Settings links to **Plan and billing** with current plan, remaining trial, next bill and hosted **Change plan**, **Update card** and **View invoices** actions. Local example plans/prices are clearly labeled demonstrations, not chosen commercial prices. A card added near trial end may extend that trial to accommodate the hosted provider's two-day minimum; it never causes an earlier charge.
+
+Plan display names, prices per currency, optional yearly prices, included staff seats and functional capability keys are platform-operator configuration. Active plus invited staff count toward seats; a downgrade preserves existing staff/data but blocks additions until capacity is available. Plan restrictions stop new work without hiding permitted historical records or exports. Owner billing authority is separate from the platform operator's explicitly allowlisted, filtered business-billing list.
+
+Trial-ending and payment-attention banners offer one clear billing action. Failed payment starts a configurable seven-day grace period; further failures do not extend it. Afterwards, or on cancellation, the workspace is read-only: you can sign in, view your records, export your data and update billing. No data is deleted. Customer payment links still work; new automated messages and operational writes stop. A stopped reminder appears in history and is not sent in a burst after recovery. Signed payment confirmation restores editing, never a browser return alone. Owners do not configure provider keys or webhooks.
+
 ## Core business lifecycle
 
 The default service-business lifecycle is:

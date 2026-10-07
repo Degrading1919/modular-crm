@@ -9,6 +9,10 @@ export function requiredFeatureForApi(path: readonly string[], method: string): 
   if (root === "reports") return "advanced_reporting";
   if (root === "franchise") return method === "GET" ? "advanced_reporting" : "multi_location_management";
   if (!changesState) return null;
+  if (root === "customers") return "customer_records";
+  if (root === "leads") return "lead_management";
+  if (root === "services") return "service_catalog";
+  if (root === "staff") return "staff_access_management";
   if (root === "estimates") return "estimate_management";
   if (root === "service-plans") return "recurring_service_management";
   if (root === "jobs") return third === "transition" ? "field_job_tracking" : "service_scheduling";
@@ -46,5 +50,16 @@ export async function requireTenantFeature(tenantId: string, featureKey: string,
 
 export async function requireApiCapability(tenantId: string, path: readonly string[], method: string): Promise<void> {
   const feature = requiredFeatureForApi(path, method);
-  if (feature) await requireTenantFeature(tenantId, feature);
+  if (feature) {
+    const state = await loadTenantCapabilities(getDb(), tenantId);
+    if (["GET", "HEAD"].includes(method) && state.features[feature]?.historicalRead) return;
+    await requireTenantFeature(tenantId, feature, state);
+  }
+}
+
+/** Already-issued invoices remain payable even after a plan downgrade. */
+export async function requirePaymentLinkFeature(tenantId: string, feature: string) {
+  const state = await loadTenantCapabilities(getDb(), tenantId);
+  if (state.features[feature]?.historicalRead) return;
+  await requireTenantFeature(tenantId, feature, state);
 }

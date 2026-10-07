@@ -4,6 +4,20 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-07 — Platform workspace subscriptions and recovery
+
+- **Status:** Accepted
+- **Area:** Business Model / Architecture / Connectors / UX
+- **Decision:** Use operator-configured plans, trial/grace lengths, seats and capabilities with a separate platform-owned billing capability, credentials, ledger and signed webhook destination. Preserve sign-in, authorized historical views/exports, billing recovery and customer payment links in read-only; stop new automated business work with visible history and no catch-up burst. Never delete data or existing staff on downgrade/cancel; placeholder commercial prices remain local/test only.
+- **Authoritative doc:** docs/PRODUCT_SCOPE.md; docs/ARCHITECTURE.md; docs/CONNECTOR_SYSTEM.md; operator configuration in docs/DEPLOYMENT.md
+
+## 2026-10-07 — Inherit grown snapshot storage on restore
+
+- **Status:** Accepted
+- **Area:** Architecture / Implementation
+- **Decision:** Omit initial and CDK-default storage allocation from restored database templates unless an operator explicitly requests an increase. Validate that override against stage bounds and require the operator to compare it with actual snapshot allocation before deployment; preserve the original database and all protection.
+- **Authoritative doc:** docs/ARCHITECTURE.md; recovery procedure in docs/DEPLOYMENT.md
+
 ## 2026-10-07 — Scope WAF body-size blocking to public entry points
 
 - **Status:** Accepted

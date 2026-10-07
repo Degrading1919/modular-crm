@@ -16,6 +16,9 @@ export function apiError(error: unknown): Response {
   const seen = new Set<unknown>();
   while (current && typeof current === "object" && !seen.has(current)) {
     seen.add(current);
+    if ("code" in current && ["P0402", "P0403"].includes(String(current.code))) {
+      return json({ error: { code: "BILLING_REQUIRED", message: current.code === "P0402" ? "Your workspace is read-only. Update your card in Plan and billing. You can still view and export all your data." : "Your plan’s staff seat limit is reached. Choose a larger plan or remove an unused seat." } }, 402);
+    }
     if ("code" in current && current.code === "22P02") {
       logJson("info", "api.invalid_input", { errorCode: "22P02", status: 400 });
       return json({ error: { code: "VALIDATION_ERROR", message: "Check the information you entered and try again." } }, 400);

@@ -127,6 +127,14 @@ Owner-authorized partial refunds reserve their amount durably before calling the
 
 Local `mock-payments` implements the same account, hosted page and signed confirmation/refund path, with no card entry, network request or real money. Its `/test-checkout/` action is authenticated, tenant/object-scoped and unavailable in production or with mocks disabled. Tests use fixtures/Mailpit only. Live onboarding, processor account requirements and external delivery remain operator acceptance work before deployment.
 
+## Platform-owned workspace billing
+
+`platform-billing` is an independent provider capability in a server-owned registry, not a tenant payment installation or marketplace choice. Mock and Stripe Billing implement plan validation, customer creation, hosted subscription/card pages, hosted management and signed state reconciliation. `PLATFORM_STRIPE_*` credentials and the `/api/v1/platform-billing/webhook` signing destination are separate from `PAYMENTS_STRIPE_*` and connected-account invoice payments. No Stripe-Account header is sent; connected-account or wrong-mode notifications are rejected. Never substitute one destination's signing secret or ledger for the other.
+
+Operator plans are validated at startup against actual active recurring provider prices, currency, minor-unit amount, interval and test/live mode. The adapter pins `2025-02-24.acacia`; configure the destination to that same version. Hosted Checkout handles subscription/card setup without receiving card details in CRM APIs. Hosted portal invoices, cancellation and selected-price confirmation stay with the provider. Card setup is bound to the existing customer/subscription; verified completion updates the default method, attempts the open bill with stable idempotency keys and retrieves canonical subscription state. Owner redirects never grant access.
+
+Hosted requests are durably bound to tenant, purpose, plan/currency/interval and request key before provider calls. A pending subscribe page prevents parallel choices, and ambiguous operations older than 23 hours require operator review rather than replay beyond the provider's retention window. Event IDs and hashes remain append-only. The separately signed local page exposes no card fields, never charges money and is unavailable in production; isolated container smoke uses only the mock capability and no local action routes.
+
 ## Setup experience
 
 Prefer:

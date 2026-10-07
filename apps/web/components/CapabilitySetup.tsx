@@ -20,7 +20,7 @@ export type CapabilityModule = {
   recommendations?: { featureKey: string; recommendation: string; rationale?: string }[];
 };
 
-export type CapabilityFeature = { name?: string; visible?: boolean; usable?: boolean };
+export type CapabilityFeature = { name?: string; visible?: boolean; usable?: boolean; historicalRead?: boolean };
 export type CapabilityQuestion = { key: string; prompt: string; answerType?: string };
 export type CapabilityCatalog = {
   modules: CapabilityModule[];

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readPlatformBillingConfig } from "@modular-crm/config";
+import { startPlatformTrial } from "@modular-crm/db";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -63,6 +65,7 @@ export async function handleAuthRoute(request: Request, path: string[]): Promise
       await installInitialCapabilityCatalog(tx);
       const [tenant] = await tx.insert(tenants).values({ name: body.businessName, slug, status: "active", industryPackKey: DEFAULT_INDUSTRY_PACK.key, industryPackVersion: DEFAULT_INDUSTRY_PACK.version, settings: { onboardingComplete: false, capabilitySetupComplete: false, servicePostalCodes: [], demoMode: true } }).returning();
       if (!tenant) throw new Error("Tenant creation failed");
+      await startPlatformTrial(tx, tenant.id, readPlatformBillingConfig(process.env), now);
       const recommendedFeatures = evaluateProductCapabilityRecommendations(DEFAULT_INDUSTRY_PACK, {})
         .filter((item) => item.recommendation === "normally_recommended")
         .map((item) => item.featureKey);

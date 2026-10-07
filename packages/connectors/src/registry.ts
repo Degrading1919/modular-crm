@@ -15,6 +15,7 @@ export type ConnectorDefinition = Readonly<{
 type Installation = { tenantId: string; connectorKey: string; state: InstallationView["state"]; scenario: MockScenario; stateNonce?: string; capabilities?: ScopedCapabilities; connectedAt?: string; lastErrorCode?: string; webhookEvents: Set<string> };
 
 export const CAPABILITY_LABELS: Readonly<Record<CapabilityKey, string>> = {
+  "platform-billing": "Plan and billing",
   payments: "Accept payments", email: "Send email", sms: "Send text messages", accounting: "Sync accounting", calendar: "Connect my calendar", routing: "Plan efficient routes", geocoding: "Find service addresses", storage: "Store files", payroll: "Export payroll", crm_import: "Import my customers", ai: "Draft content",
 };
 

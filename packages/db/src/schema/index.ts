@@ -6,6 +6,7 @@ export * from "./systems.ts";
 export * from "./platform.ts";
 export * from "./capabilities.ts";
 export * from "./online-payments.ts";
+export * from "./platform-billing.ts";
 
 import * as identity from "./identity.ts";
 import * as crm from "./crm.ts";
@@ -15,5 +16,6 @@ import * as systems from "./systems.ts";
 import * as platform from "./platform.ts";
 import * as capabilities from "./capabilities.ts";
 import * as onlinePayments from "./online-payments.ts";
+import * as platformBilling from "./platform-billing.ts";
 
-export const schema = { ...identity, ...crm, ...operations, ...finance, ...systems, ...platform, ...capabilities, ...onlinePayments };
+export const schema = { ...identity, ...crm, ...operations, ...finance, ...systems, ...platform, ...capabilities, ...onlinePayments, ...platformBilling };

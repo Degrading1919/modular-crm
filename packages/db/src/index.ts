@@ -11,3 +11,4 @@ export * from "./platform-email-limits.ts";
 export * from "./account-email.ts";
 export * from "./message-expiry.ts";
 export * from "./rate-limits.ts";
+export * from "./platform-billing.ts";

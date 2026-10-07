@@ -10,6 +10,9 @@ import { createConnectorRegistry } from "@modular-crm/connectors";
 import { enqueuePendingAutomationRuns, processAutomationRun } from "./automations-db.js";
 import { processDomainEvent, publishPendingDomainEvents } from "./events-db.js";
 import { jobLoopRunning, startHealthServer } from "./health.js";
+import { sweepPlatformBilling } from "@modular-crm/db";
+import { createPlatformBillingProvider } from "@modular-crm/connectors";
+import { DEVELOPMENT_AUTH_SECRET } from "@modular-crm/config";
 import { enqueuePendingMessages, processOutboundMessage } from "./messages-db.js";
 import { QUEUES, registerWorkerQueues, type AutomationRunJob, type DomainEventJob, type OutboundMessageJob, type RecurringGenerationJob, type WebhookDeliveryJob } from "./queues.js";
 import { generateRecurringJobs } from "./recurring-db.js";
@@ -40,6 +43,7 @@ export async function registerWorkerHandlers(db: Database, boss: PgBoss, resolve
   await boss.work(QUEUES.publishOutbox, async (jobs) => {
     for (const job of jobs) await observeJob(QUEUES.publishOutbox, job.data, async () => {
       await cleanupRateLimits(db);
+      await sweepPlatformBilling(db, config.platformBilling, { secret: process.env.BETTER_AUTH_SECRET ?? DEVELOPMENT_AUTH_SECRET, baseUrl: config.appBaseUrl });
       await enqueueInvoiceReminders(db);
       const [events, messages, automations, webhooks] = await Promise.all([
         publishPendingDomainEvents(db, boss), enqueuePendingMessages(db, boss),
@@ -75,6 +79,7 @@ export async function registerWorkerHandlers(db: Database, boss: PgBoss, resolve
 
 export async function startWorker(env: Record<string, string | undefined> = process.env): Promise<{ stop: () => Promise<void>; boss: PgBoss; db: Database }> {
   const config = readServerConfig(env);
+  await createPlatformBillingProvider(config.platformBilling).validatePlans();
   const connectionString = config.databaseUrl;
   if (!connectionString) throw new Error("DATABASE_URL is required for the background worker");
   const db = createDatabase(connectionString);
@@ -83,6 +88,8 @@ export async function startWorker(env: Record<string, string | undefined> = proc
   let health: Awaited<ReturnType<typeof startHealthServer>> | undefined;
   boss.on("error", () => log("queue.error"));
   try {
+    const { initializePlatformTrials } = await import("@modular-crm/db");
+    await initializePlatformTrials(db, config.platformBilling);
     await boss.start();
     await registerWorkerQueues(boss);
     await registerWorkerHandlers(db, boss, environmentSecretResolver(env), config);

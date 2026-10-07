@@ -7,7 +7,7 @@ import { getDb } from "../db";
 import { assertCustomerDocumentAccess, type SessionActor } from "./actor";
 import { json, readBody } from "./http";
 import { onlineForAccount } from "./online-payment-accounts";
-import { requireTenantFeature } from "./capability-enforcement";
+import { requirePaymentLinkFeature } from "./capability-enforcement";
 import { expireExcessHostedPages } from "./hosted-page-expiry";
 
 export async function readableOnlineInvoice(actor: SessionActor, invoiceId: string, collect = true) {
@@ -23,8 +23,8 @@ export async function readableOnlineInvoice(actor: SessionActor, invoiceId: stri
 export async function handleOnlinePaymentSession(request: Request, path: string[], actor: SessionActor): Promise<Response | null> {
   const invoicePath = path[0] === "portal" ? path.slice(1) : path;
   if (invoicePath.length !== 3 || invoicePath[0] !== "invoices" || invoicePath[2] !== "checkout" || request.method !== "POST") return null;
-  await requireTenantFeature(actor.tenantId, "invoicing");
-  await requireTenantFeature(actor.tenantId, "payment_collection");
+  await requirePaymentLinkFeature(actor.tenantId, "invoicing");
+  await requirePaymentLinkFeature(actor.tenantId, "payment_collection");
   const invoice = await readableOnlineInvoice(actor, invoicePath[1]!);
   const body = await readBody(request, z.object({ idempotencyKey: z.string().trim().min(1).max(200), amountCents: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional() }).strict());
   const [account] = await getDb().select().from(onlinePaymentAccounts).where(and(eq(onlinePaymentAccounts.tenantId, actor.tenantId), eq(onlinePaymentAccounts.organizationId, invoice.organizationId))).limit(1);

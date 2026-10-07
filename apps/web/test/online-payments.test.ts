@@ -8,12 +8,14 @@ import { and, eq, sql } from "drizzle-orm";
 import { connectorInstallations, creditAllocations, customerCredits, domainEvents, invoices, onlinePaymentAccounts, onlinePaymentEvents, onlinePaymentSessions, paymentAllocations, payments, refunds, schema, seedDevelopment, seedIds, type Database } from "@modular-crm/db";
 import { createMockConnectorRegistry, signMockPaymentEvent, type OnlinePaymentEvent } from "@modular-crm/connectors";
 import { permissionsForRole } from "@modular-crm/domain";
+import { readPlatformBillingConfig } from "@modular-crm/config";
+import { platformSubscriptions, startPlatformTrial, platformBillingEvents } from "@modular-crm/db";
 import type { SessionActor } from "../lib/api/actor.ts";
 
 const { getDbMock, getRegistryMock, featureMock } = vi.hoisted(() => ({ getDbMock: vi.fn(), getRegistryMock: vi.fn(), featureMock: vi.fn(async () => {}) }));
 vi.mock("../lib/db.ts", () => ({ getDb: getDbMock }));
 vi.mock("../lib/connectors.ts", () => ({ getRegistry: getRegistryMock, getCapability: vi.fn() }));
-vi.mock("../lib/api/capability-enforcement.ts", () => ({ requireTenantFeature: featureMock }));
+vi.mock("../lib/api/capability-enforcement.ts", () => ({ requireTenantFeature: featureMock, requirePaymentLinkFeature: featureMock }));
 vi.stubEnv("MOCK_CONNECTORS", "true");
 vi.stubEnv("CONNECTOR_CREDENTIAL_ENCRYPTION_KEY", Buffer.alloc(32, 17).toString("base64url"));
 process.env.DATABASE_URL ??= "postgres://localhost:5433/modular_crm_test";
@@ -69,6 +71,19 @@ beforeAll(async () => {
 afterAll(async () => { await pglite?.close(); vi.unstubAllEnvs(); });
 
 describe("account-bound online invoice payments", () => {
+  it("keeps issued customer invoices payable while the workspace subscription is read-only, with separate ledgers", async () => {
+    await startPlatformTrial(db, owner.tenantId, readPlatformBillingConfig({}));
+    const invoice = await fixture(), later = await fixture();
+    const event = await eventFor(invoice);
+    const billingBefore = await db.select().from(platformBillingEvents);
+    await db.update(platformSubscriptions).set({ status: "read_only" }).where(eq(platformSubscriptions.tenantId, owner.tenantId));
+    try {
+      await apply(event); expect(await current(invoice.id)).toMatchObject({ status: "paid", balanceMinor: 0n });
+      const second = await eventFor(later); await apply(second); expect(await current(later.id)).toMatchObject({ status: "paid", balanceMinor: 0n });
+      expect(await db.select().from(platformBillingEvents)).toEqual(billingBefore);
+      expect((await db.select().from(platformSubscriptions).where(eq(platformSubscriptions.tenantId, owner.tenantId)))[0]).toMatchObject({ status: "read_only" });
+    } finally { await db.update(platformSubscriptions).set({ status: "active" }).where(eq(platformSubscriptions.tenantId, owner.tenantId)); }
+  });
   it("pays a discounted multi-line taxed invoice online, rejects excess and refunds against its exact total",async()=>{
     const created=await handleRecords(request("invoices",{customerId:seedIds.carter,description:"Taxed itemized work",lines:[{description:"Taxable work",quantity:"2",unitAmountMinor:1000,taxable:true,discountMinor:100},{description:"Untaxed supplies",quantity:"1",unitAmountMinor:500}],taxRateBasisPoints:750,discount:{type:"percent",value:1000}}),["invoices"],owner);
     expect(created!.status).toBe(201);const id=(await created!.json()).item.id;

@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { DEVELOPMENT_AUTH_SECRET, readServerConfig } from "./index.ts";
 
 const healthy = {
+  PLATFORM_STRIPE_SECRET_KEY: "sk_test_platformfixture", PLATFORM_STRIPE_WEBHOOK_SECRET: "whsec_platformfixture", PLATFORM_STRIPE_MODE: "test",
+  PLATFORM_BILLING_PLANS_JSON: JSON.stringify([{ key: "standard", name: "Standard", seats: 10, capabilities: ["*"], prices: { USD: { monthly: 4900, monthlyPriceId: "price_standard" } } }]),
   NODE_ENV: "production", DATABASE_URL: "postgresql://db.example/crm",
   BETTER_AUTH_SECRET: "a-private-signing-secret-of-more-than-32-characters",
   WEBHOOK_SECRET_ENCRYPTION_KEY: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",

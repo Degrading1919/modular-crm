@@ -77,6 +77,11 @@ Webstudio is currently AGPL-3.0. Architectural concepts may be studied, but sour
 - [OpenTelemetry OTLP specification](https://opentelemetry.io/docs/specs/otlp/): the optional collector adapter uses OTLP/HTTP JSON log envelopes, lower-camel-case fields and string-encoded nanosecond timestamps. The deployment setting is the complete trusted logs endpoint.
 - [Jobber review marketing tools](https://help.getjobber.com/en/articles/reviews-marketing-tools/): completed-visit follow-up and owner-controlled activation inform the pack's draft review-request recipe. No vendor source code was copied; implementations are original and no new third-party runtime dependency was introduced.
 
+## Platform subscription research (2026-10-07)
+
+- [Stripe subscription webhooks](https://docs.stripe.com/billing/subscriptions/webhooks), [Checkout subscriptions](https://docs.stripe.com/payments/checkout/build-subscriptions), [trials](https://docs.stripe.com/billing/subscriptions/trials), [signature verification](https://docs.stripe.com/webhooks), [subscription retrieval](https://docs.stripe.com/api/subscriptions/retrieve), [price retrieval](https://docs.stripe.com/api/prices/retrieve) and [portal deep links](https://docs.stripe.com/customer-management/portal-deep-links): separate platform credentials, canonical reconciliation under lock, signed replay-safe events, hosted card/setup flows and provider-owned plan-change confirmation. REST requests and webhook destination pin `2025-02-24.acacia`; do not accidentally adopt Basil's changed invoice/subscription fields. Checkout requires at least two remaining trial days; extend a shorter remaining trial, never charge early.
+- [Dub workspace billing upgrade](https://github.com/dubinc/dub/blob/main/apps/web/app/api/workspaces/%5BidOrSlug%5D/billing/upgrade/route.ts): studied workspace authorization, server price/customer binding, hosted Checkout for new subscriptions and `subscription_update_confirm` for existing subscription changes. [Dub's license](https://github.com/dubinc/dub/blob/main/LICENSE.md) is AGPL-3.0 outside separately licensed enterprise directories. Only concepts were studied; no source was copied or new runtime dependency introduced.
+
 ## Research rule
 
 For every major integration or subsystem:

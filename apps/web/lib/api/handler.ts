@@ -1,6 +1,7 @@
 import { observeRequest, identifyTenant } from "@modular-crm/config/observability";
 import { DomainError } from "@modular-crm/domain";
 import { requireActor } from "./actor";
+import { guardBusinessRequest, handlePlatformBilling, handlePlatformBillingPublic } from "./platform-billing";
 import { handleAdminOperations } from "./admin-operations";
 import { handleAuthRoute } from "./auth-routes";
 import { handleCapabilitySettings } from "./capability-settings";
@@ -41,6 +42,8 @@ import { handleMockHostedPayment } from "./mock-hosted-payments";
 
 async function dispatchV1(request: Request, path: string[]): Promise<Response> {
   try {
+    const platformWebhook = await handlePlatformBillingPublic(request, path);
+    if (platformWebhook) return platformWebhook;
     const paymentWebhook = await handleOnlinePaymentWebhook(request, path);
     if (paymentWebhook) return paymentWebhook;
     const portalActivation = await handlePortalActivation(request, path);
@@ -54,6 +57,9 @@ async function dispatchV1(request: Request, path: string[]): Promise<Response> {
     if (publicResult) return publicResult;
     const actor = await requireActor(request);
     identifyTenant(actor.tenantId);
+    const planBilling = await handlePlatformBilling(request, path, actor);
+    if (planBilling) return planBilling;
+    await guardBusinessRequest(request, path, actor);
     await requireApiCapability(actor.tenantId, path, request.method);
     const mockCheckout = await handleMockHostedPayment(request, path, actor);
     if (mockCheckout) return mockCheckout;

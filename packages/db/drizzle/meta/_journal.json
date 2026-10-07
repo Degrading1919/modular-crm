@@ -155,6 +155,13 @@
       "when": 1791272699812,
       "tag": "0021_mute_shaman",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1791367604803,
+      "tag": "0022_platform_subscriptions",
+      "breakpoints": true
     }
   ]
 }
