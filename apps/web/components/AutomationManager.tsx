@@ -229,7 +229,7 @@ export default function AutomationManager({
         <div className="stack">
           {runs.map((run) => {
             const ruleName = rules.find((rule) => rule.id === run.ruleId)?.name ?? "Automation rule";
-            return <article className="action-item" key={run.id}>
+            return <article className="action-item" key={run.id} data-automation-run-id={run.id}>
               <div className="action-icon" aria-hidden="true">◷</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <strong>{ruleName}</strong>

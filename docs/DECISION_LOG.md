@@ -4,6 +4,23 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-06 — Automation activation excludes historical outbox backlog
+
+- **Status:** Accepted
+- **Area:** Product / Implementation
+- **Decision:** Persist a fresh activation cutoff whenever an automation is created active, activated/reactivated, or edited with an active result, including pack overrides and enabled signup recipes. Only events at or after that cutoff may match; pause/archive preserves it, and migration backfills missing cutoffs on existing active rules from their last update.
+- **Rationale:** Turning on a rule must not contact customers or create work for activity that occurred before the owner enabled it, even after a worker outage. Verification identifies runs by their actual triggering invoice, not an arbitrary first history row.
+- **Authoritative docs:** `docs/PRODUCT_SCOPE.md`, `docs/V1_AUTOMATION_ENGINE.md`
+
+## 2026-10-06 — Week dispatch calendar and billing follow-ups
+
+- **Status:** Accepted
+- **Area:** Product / Architecture / UX
+- **Decision:** Provide a scoped week/technician calendar, hourly day view, unscheduled tray and phone day grouping, with business week-start/timezone and branch-local arrival windows using existing job fields. Moves share existing optimistic, idempotent planning commands and retain withdrawn route history until explicit republishing. Space suppressed reminder attempts, expose plain-language not-sent timeline facts, release active billing claims on unpaid invoice void, claim batch setup charges under the plan lock, and share currency-aware formatting.
+- **Rationale:** Offices need one operational calendar without weakening dispatch or financial ownership contracts. These follow-ups make suppression, replacement billing and setup charges consistent with owner expectations.
+- **Authoritative docs:** `docs/PRODUCT_SCOPE.md`, `docs/ARCHITECTURE.md`
+- **Supersedes:** The October 6 once-only billing decision's void-retains-active-claim and interval-from-successful-send rules; frozen historical documents remain unchanged.
+
 ## 2026-10-06 — Payment due defaults at invoice issuance
 
 - **Status:** Accepted

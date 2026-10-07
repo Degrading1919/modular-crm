@@ -25,6 +25,7 @@ import { handleSecureEstimateLink } from "./secure-estimate-links";
 import { handleRecords } from "./records";
 import { handleRecordDetails } from "./record-details";
 import { handleJobPlanning } from "./job-planning";
+import { handleSchedule } from "./schedule";
 import { handleReporting } from "./reporting";
 import { handleInvoiceRefund } from "./refunds";
 import { handleRefundReview } from "./refund-review";
@@ -100,6 +101,8 @@ export async function handleV1(request: Request, path: string[]): Promise<Respon
     if (reporting) return reporting;
     const payroll = await handlePayroll(request, path, actor);
     if (payroll) return payroll;
+    const schedule = await handleSchedule(request, path, actor);
+    if (schedule) return schedule;
     const planning = await handleJobPlanning(request, path, actor);
     if (planning) return planning;
     const workflow = await handleWorkflow(request, path, actor);

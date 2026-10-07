@@ -56,18 +56,23 @@ test("an issued invoice triggers an active automation and records its action", a
   await page.goto("/app/automations");
   const historyFilter = page.locator("#automation-history-filter");
   const ruleId = (await historyFilter.selectOption({ label: ruleName }))[0]!;
+  let completedRunId = "";
   await expect.poll(async () => {
     const response = await page.request.get(`/api/v1/automations/${encodeURIComponent(ruleId)}/runs?limit=20`);
     if (!response.ok()) return "request_failed";
-    const result = await response.json() as { items?: Array<{ status?: string; trigger?: string }> };
-    const run = result.items?.find((item) => item.trigger === "invoice.issued");
+    const result = await response.json() as { items?: Array<{ id: string; status?: string; trigger?: string; entityType?: string; entityId?: string }> };
+    const matching = result.items?.filter((item) => item.trigger === "invoice.issued" && item.entityType === "invoice" && item.entityId === created.item!.id) ?? [];
+    if (matching.length !== 1) return `matching_runs_${matching.length}`;
+    const run = matching[0]!;
+    completedRunId = run.id;
     return run?.status ?? "waiting";
   }, { timeout: 70_000, intervals: [1_000, 2_000, 5_000] }).toBe("completed");
 
   await page.reload();
   await page.locator("#automation-history-filter").selectOption({ label: ruleName });
   const history = page.locator("section.card").filter({ has: page.getByRole("heading", { name: "Run history" }) });
-  const completedRun = history.locator("article.action-item").filter({ hasText: ruleName });
+  const completedRun = history.locator(`article.action-item[data-automation-run-id="${completedRunId}"]`).filter({ hasText: ruleName });
+  await expect(completedRun).toHaveCount(1);
   await expect(completedRun).toContainText("An invoice is sent");
   await expect(completedRun.getByText("Completed", { exact: true })).toBeVisible({ timeout: 30_000 });
 

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { customers, domainEvents, estimateRevisions, estimates, invoiceItems, invoices, jobInvoiceLinks, jobs, organizationLocations, organizations, tenants, type Database } from "@modular-crm/db";
+import { customers, domainEvents, estimateRevisions, estimates, invoiceItems, invoices, jobInvoiceLinks, jobs, organizationLocations, organizations, servicePlans, tenants, type Database } from "@modular-crm/db";
 import { DomainError, frozenDocument, invoiceDueDate, requirePermission, type DocumentPricing } from "@modular-crm/domain";
 import { z } from "zod";
 import { getDb } from "../db";
@@ -15,7 +15,7 @@ import { normalized, uuidArray } from "./sql";
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
 type Job = typeof jobs.$inferSelect;
 const locationScope = (actor: SessionActor) => actor.kind === "staff" && actor.allLocations ? sql`true` : actor.locationIds.size ? sql`${jobs.organizationLocationId} = any(${uuidArray(actor.locationIds)})` : sql`false`;
-const unbilled = sql`not exists (select 1 from job_invoice_links l where l.tenant_id = ${jobs.tenantId} and l.job_id = ${jobs.id}) and not exists (select 1 from invoice_items ii where ii.tenant_id = ${jobs.tenantId} and ii.job_id = ${jobs.id})`;
+const unbilled = sql`not exists (select 1 from job_invoice_links l where l.tenant_id = ${jobs.tenantId} and l.job_id = ${jobs.id}) and not exists (select 1 from invoice_items ii join invoices i on i.tenant_id=ii.tenant_id and i.id=ii.invoice_id where ii.tenant_id = ${jobs.tenantId} and ii.job_id = ${jobs.id} and i.status <> 'void' and i.voided_at is null)`;
 
 export function jobPricing(job: Job): DocumentPricing {
   const snapshot = job.priceSnapshot;
@@ -45,7 +45,7 @@ export async function lockSourceEstimates(tx: Tx, tenantId: string, candidates: 
 export async function existingJobInvoice(tx: Tx, tenantId: string, jobId: string) {
   const [linked] = await tx.select({ invoice: invoices }).from(jobInvoiceLinks).innerJoin(invoices, and(eq(invoices.tenantId, jobInvoiceLinks.tenantId), eq(invoices.id, jobInvoiceLinks.invoiceId))).where(and(eq(jobInvoiceLinks.tenantId, tenantId), eq(jobInvoiceLinks.jobId, jobId))).limit(1);
   if (linked) return linked.invoice;
-  const [historical] = await tx.select({ invoice: invoices }).from(invoiceItems).innerJoin(invoices, and(eq(invoices.tenantId, invoiceItems.tenantId), eq(invoices.id, invoiceItems.invoiceId))).where(and(eq(invoiceItems.tenantId, tenantId), eq(invoiceItems.jobId, jobId))).limit(1);
+  const [historical] = await tx.select({ invoice: invoices }).from(invoiceItems).innerJoin(invoices, and(eq(invoices.tenantId, invoiceItems.tenantId), eq(invoices.id, invoiceItems.invoiceId))).where(and(eq(invoiceItems.tenantId, tenantId), eq(invoiceItems.jobId, jobId), sql`${invoices.status} <> 'void' and ${invoices.voidedAt} is null`)).limit(1);
   return historical?.invoice;
 }
 
@@ -53,12 +53,23 @@ export function requireInvoiceLocation(actor: SessionActor, invoice: typeof invo
   if (actor.kind !== "staff" || !actor.allLocations && (!invoice.organizationLocationId || !actor.locationIds.has(invoice.organizationLocationId))) throw new DomainError("NOT_FOUND", "Invoice not found.", 404);
 }
 
-async function createForJobs(tx: Tx, actor: SessionActor, work: Job[], issued: boolean, defaultCurrency: string) {
+async function createForJobs(tx: Tx, actor: SessionActor, work: Job[], issued: boolean, defaultCurrency: string, plans = new Map<string, typeof servicePlans.$inferSelect>()) {
   const first = work[0]!;
   const [customer] = await tx.select().from(customers).where(and(eq(customers.tenantId, actor.tenantId), eq(customers.id, first.customerId))).limit(1);
   const [organization] = await tx.select().from(organizations).where(and(eq(organizations.tenantId, actor.tenantId), eq(organizations.id, first.organizationId))).limit(1);
   if (!customer || !organization) throw new DomainError("NOT_FOUND", "Customer not found.", 404);
   const lines = work.flatMap(job => jobPricing(job).items.map(line => ({ ...line, jobId: job.id })));
+  const claimed: typeof servicePlans.$inferSelect[] = [];
+  for (const job of work) {
+    const plan = job.servicePlanId ? plans.get(job.servicePlanId) : undefined;
+    const once = plan?.billingConfiguration.oneTimePricingSnapshot as DocumentPricing | undefined;
+    if (!plan || plan.billingConfiguration.oneTimeInvoiceId || claimed.some(item => item.id === plan.id) || once?.version !== 1 || !once.items?.length) continue;
+    if (plan.customerId !== job.customerId || plan.serviceId !== job.serviceId || plan.organizationLocationId !== job.organizationLocationId) throw new DomainError("CONFLICT", "Review this visit's service plan before billing it.", 409);
+    const planCurrency = String(plan.pricingSnapshot.currency ?? defaultCurrency);
+    if (planCurrency !== currency(job, defaultCurrency)) throw new DomainError("CONFLICT", "Review the plan currency before billing its setup work.", 409);
+    lines.push(...once.items.map(line => ({ ...line, jobId: job.id })));
+    claimed.push(plan);
+  }
   if (lines.length > 100) throw new DomainError("VALIDATION_ERROR", "Choose a shorter date range; an invoice can contain up to 100 lines.", 422);
   const rates = new Set(work.map(job => jobPricing(job).taxRateBasisPoints));
   const pricing = frozenDocument(lines, rates.size === 1 ? jobPricing(first).taxRateBasisPoints : 0);
@@ -71,6 +82,10 @@ async function createForJobs(tx: Tx, actor: SessionActor, work: Job[], issued: b
   }).returning();
   await tx.insert(invoiceItems).values(lines.map((line, sortOrder) => ({ tenantId: actor.tenantId, invoiceId: invoice!.id, ...storedLine({ ...line, sortOrder }), jobId: line.jobId })));
   await tx.insert(jobInvoiceLinks).values(work.map(job => ({ tenantId: actor.tenantId, customerId: job.customerId, jobId: job.id, invoiceId: invoice!.id })));
+  for (const plan of claimed) {
+    plan.billingConfiguration = { ...plan.billingConfiguration, oneTimeInvoiceId: invoice!.id };
+    await tx.update(servicePlans).set({ billingConfiguration: plan.billingConfiguration, updatedAt: now }).where(and(eq(servicePlans.tenantId, actor.tenantId), eq(servicePlans.id, plan.id)));
+  }
   await recordEvent(actor, { type: "invoice.created", entityType: "invoice", entityId: invoice!.id, locationId: first.organizationLocationId, auditAction: "invoice.create_from_jobs", payload: { jobIds: work.map(job => job.id), totalMinor: pricing.totalMinor } }, tx);
   if (issued) await recordEvent(actor, { type: "invoice.issued", entityType: "invoice", entityId: invoice!.id, locationId: first.organizationLocationId, auditAction: "invoice.issue", payload: { totalMinor: pricing.totalMinor } }, tx);
   return invoice!;
@@ -114,10 +129,17 @@ export async function finishedWork(request: Request, actor: SessionActor) {
     const work = await db.select({ job: jobs, name: customers.displayName }).from(jobs).innerJoin(customers, and(eq(customers.tenantId, jobs.tenantId), eq(customers.id, jobs.customerId))).where(and(eq(jobs.tenantId, actor.tenantId), eq(jobs.status, "completed"), eq(jobs.billable, true), locationScope(actor), rangeCondition(range.from, range.through, tenant!.defaultTimezone), unbilled)).orderBy(customers.displayName, jobs.id).limit(1001);
     if (work.length > 1000) throw new DomainError("VALIDATION_ERROR", "Choose a shorter range to review up to 1,000 visits at a time.", 422);
     const groups = new Map<string, { customerId: string; name: string; visits: number; totals: Record<string, number>; invoiceCount: number; groups: Set<string>; error?: string }>();
+    const planIds = [...new Set(work.map(({ job }) => job.servicePlanId).filter((id): id is string => !!id))];
+    const plans = planIds.length ? await db.select().from(servicePlans).where(and(eq(servicePlans.tenantId, actor.tenantId), inArray(servicePlans.id, planIds))) : [];
+    const counted = new Set<string>();
     for (const { job, name } of work) {
       const group = groups.get(job.customerId) ?? { customerId: job.customerId, name, visits: 0, totals: {}, invoiceCount: 0, groups: new Set<string>() };
       group.visits++; group.groups.add(`${job.organizationId}:${job.organizationLocationId}:${currency(job, tenant!.defaultCurrency)}`);
-      try { const code = currency(job, tenant!.defaultCurrency); group.totals[code] = (group.totals[code] ?? 0) + jobPricing(job).totalMinor; }
+      try {
+        const code = currency(job, tenant!.defaultCurrency); group.totals[code] = (group.totals[code] ?? 0) + jobPricing(job).totalMinor;
+        const plan = plans.find(plan => plan.id === job.servicePlanId), once = plan?.billingConfiguration.oneTimePricingSnapshot as DocumentPricing | undefined;
+        if (plan && !counted.has(plan.id) && !plan.billingConfiguration.oneTimeInvoiceId && once?.version === 1 && once.items?.length) { group.totals[code] += once.totalMinor; counted.add(plan.id); }
+      }
       catch (cause) { group.error = (cause as Error).message; }
       group.invoiceCount = group.groups.size; groups.set(job.customerId, group);
     }
@@ -140,6 +162,10 @@ export async function finishedWork(request: Request, actor: SessionActor) {
     if (candidates.length > 1000) throw new DomainError("VALIDATION_ERROR", "Choose a shorter billing range.", 422);
     await lockSourceEstimates(tx, actor.tenantId, candidates);
     const work = candidates.length ? await tx.select().from(jobs).where(and(conditions, inArray(jobs.id, candidates.map(job => job.id)))).orderBy(jobs.id).for("update") : [];
+    // Completion billing uses job → plan locks too. Serialize all once claims before invoice creation.
+    const planIds = [...new Set(work.map(job => job.servicePlanId).filter((id): id is string => !!id))];
+    const lockedPlans = planIds.length ? await tx.select().from(servicePlans).where(and(eq(servicePlans.tenantId, actor.tenantId), inArray(servicePlans.id, planIds))).orderBy(servicePlans.id).for("update") : [];
+    const plans = new Map(lockedPlans.map(plan => [plan.id, plan]));
     const groups = new Map<string, Job[]>();
     for (const job of work) {
       // Recheck after obtaining locks: another billing transaction may have just claimed it.
@@ -148,7 +174,7 @@ export async function finishedWork(request: Request, actor: SessionActor) {
       groups.set(key, [...groups.get(key) ?? [], job]);
     }
     const created = [];
-    for (const group of groups.values()) created.push(await createForJobs(tx, actor, group, command.issue, tenant!.defaultCurrency));
+    for (const group of groups.values()) created.push(await createForJobs(tx, actor, group, command.issue, tenant!.defaultCurrency, plans));
     const outcome = { invoices: normalized(created), created: created.length, visits: [...groups.values()].reduce((count, group) => count + group.length, 0) };
     await recordEvent(actor, { type: "invoice.batch_created", entityType: "customer", entityId: command.customerId, locationId: work[0]?.organizationLocationId, auditAction: "invoice.batch_create", payload: { key: command.idempotencyKey, userId: actor.userId, hash, result: outcome } }, tx);
     return outcome;

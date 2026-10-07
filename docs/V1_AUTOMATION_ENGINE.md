@@ -18,6 +18,9 @@ Each rule contains:
 - configuration version
 - owner/creator
 - audit metadata
+- activation cutoff (`active_from`), set in the rule-write transaction on active creation, activation/reactivation, or an edit whose resulting rule is active (including a tenant override of a pack recipe)
+
+Match a rule only when the triggering event occurred at or after its latest activation cutoff. Processing time and an outbox backlog do not make earlier business activity eligible. Pause/archive preserves the cutoff; enabled-at-signup recipes start at signup, and migration backfills missing cutoffs for existing active rules from `updated_at` without changing known cutoffs or inactive rules. Historical/sample simulation remains explicit and does not perform actions.
 
 ## Trigger schema
 

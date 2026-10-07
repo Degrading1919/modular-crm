@@ -56,7 +56,7 @@ export async function handleRecordDetails(request: Request, path: string[], acto
   const timeline = history.map((event) => {
     const payload = event.payload as Record<string, unknown>;
     const suffix = String(event.event_type).split(".").slice(1).join(".");
-    return { id: event.id, occurredAt: event.occurred_at, title: names[suffix] ?? "Record activity", ...(typeof payload.reason === "string" ? { description: payload.reason } : {}) };
+    return { id: event.id, occurredAt: event.occurred_at, title: suffix === "reminder_not_sent" ? `Reminder not sent: ${typeof payload.reason === "string" ? payload.reason : "Check your email settings."}` : names[suffix] ?? "Record activity", ...(suffix !== "reminder_not_sent" && typeof payload.reason === "string" ? { description: payload.reason } : {}) };
   });
   return json({ item, related, timeline: normalized(timeline) });
 }

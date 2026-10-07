@@ -54,7 +54,7 @@ test("Morgan's operational destinations work without owner administration", asyn
     await expect(navigation.getByRole("link", { name, exact: true })).toHaveCount(0);
   }
   for (const [link, heading] of [["Schedule", "Schedule"], ["Jobs", "Jobs"], ["Routes", "Routes"], ["Get paid", "Get paid"], ["Staff", "Staff"], ["Connections", "Connections"], ["Settings", "Settings"], ["Locations", "Locations"]]) {
-    const endpoint = ({ Schedule: "jobs", Jobs: "jobs", Routes: "routes", Staff: "staff", Connections: "connections", Settings: "settings", Locations: "organization" } as Record<string, string>)[link];
+    const endpoint = ({ Schedule: "schedule", Jobs: "jobs", Routes: "routes", Staff: "staff", Connections: "connections", Settings: "settings", Locations: "organization" } as Record<string, string>)[link];
     const response = endpoint ? page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/${endpoint}` && response.request().method() === "GET") : null;
     await navigation.getByRole("link", { name: link, exact: true }).click();
     await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();

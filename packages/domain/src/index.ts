@@ -12,3 +12,4 @@ export * from "./secret-envelope.ts";
 export * from "./document-pricing.ts";
 export * from "./invoice-reminders.ts";
 export * from "./invoice-due-date.ts";
+export { moneyValue } from "./money.ts";

@@ -1,6 +1,5 @@
-export function moneyValue(cents: number, currency = "USD"): string {
-  return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(cents / 100);
-}
+import { moneyValue } from "@modular-crm/domain";
+export { moneyValue };
 
 export function reportColumns(row: Record<string, unknown>): { key: string; label: string }[] {
   const labels: Record<string, string> = {

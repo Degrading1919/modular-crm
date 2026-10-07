@@ -10,11 +10,23 @@ import type { PgBoss } from "pg-boss";
 import { enqueueOutboundMessage } from "./queues.js";
 import { hydrateMessagingConnector } from "./messaging-connectors.js";
 import { invoiceReminderBody } from "./invoice-reminders-db.js";
+import { createHash } from "node:crypto";
 
 type Message = typeof outboundMessages.$inferSelect;
 type Preference = typeof notificationPreferences.$inferSelect;
 type Consent = typeof consentRecords.$inferSelect;
 class MessageSetupError extends Error { readonly code = "business_details_missing"; readonly retryable = false; }
+const reminderReasons: Record<string, string> = { preference_disabled: "Customer reminders are turned off.", customer_suppressed: "The customer has asked not to receive these reminders.", customer_unsubscribed: "The customer has asked not to receive these messages.", capability_unavailable: "Customer notifications are not enabled.", invoice_reminder_canceled: "The invoice no longer needs this reminder.", reminder_expired: "The reminder is no longer current.", recipient_missing: "No customer email address is recorded." };
+type ReminderWriter = Pick<Database, "select" | "insert">;
+/** One reviewable fact per message/reason, including deferred quota attempts; replay never adds duplicate facts. */
+async function recordReminderNotSent(tx: ReminderWriter, message: Message, code: string, now: Date, note?: string) {
+  if (message.templateKey !== "invoice_overdue" || !message.invoiceId) return;
+  const [invoice] = await tx.select({ organizationId: invoices.organizationId, locationId: invoices.organizationLocationId }).from(invoices).where(and(eq(invoices.tenantId, message.tenantId), eq(invoices.id, message.invoiceId))).limit(1);
+  if (!invoice) return;
+  const bytes = createHash("sha256").update(`${message.tenantId}:${message.id}:${code}`).digest("hex").slice(0, 32);
+  const id = `${bytes.slice(0,8)}-${bytes.slice(8,12)}-${bytes.slice(12,16)}-${bytes.slice(16,20)}-${bytes.slice(20)}`;
+  await tx.insert(domainEvents).values({ id, tenantId: message.tenantId, ...invoice, eventType: "invoice.reminder_not_sent", actorType: "system", entityType: "invoice", entityId: message.invoiceId, occurredAt: now, payload: { messageId: message.id, reason: note ?? reminderReasons[code] ?? "Check the customer email address and your email settings.", code } }).onConflictDoNothing();
+}
 
 export function suppressReason(message: Pick<Message, "channel">, preference?: Pick<Preference, "emailEnabled" | "smsEnabled">, consent?: Pick<Consent, "state">): string | undefined {
   if (message.channel !== "email" && message.channel !== "sms") return "unsupported_channel";
@@ -59,6 +71,7 @@ export async function processOutboundMessage(db: Database, registry: ConnectorRe
     await db.transaction(async (tx) => {
       await tx.update(outboundMessages).set({ status: "suppressed", failureCode: "reminder_expired", failureMessage: "This reminder was not sent because the visit has started, ended, or changed.", nextSendAt: null, updatedAt: now }).where(and(eq(outboundMessages.tenantId, input.tenantId), eq(outboundMessages.id, message.id)));
       await tx.insert(communicationEvents).values({ tenantId: input.tenantId, outboundMessageId: message.id, eventType: "suppressed", occurredAt: now, payload: { reason: "reminder_expired" } });
+      await recordReminderNotSent(tx, message, "reminder_expired", now);
     });
     return "suppressed";
   }
@@ -71,6 +84,7 @@ export async function processOutboundMessage(db: Database, registry: ConnectorRe
         tenantId: input.tenantId, outboundMessageId: message.id, eventType: "suppressed", occurredAt: now,
         payload: { reason: "capability_unavailable" },
       });
+      await recordReminderNotSent(tx, message, "capability_unavailable", now);
     });
     return "suppressed";
   }
@@ -79,11 +93,12 @@ export async function processOutboundMessage(db: Database, registry: ConnectorRe
   const preference = preferenceKeys.map((key) => preferences.find((item) => item.eventKey === key)).find(Boolean);
   const [consent] = message.customerId ? await db.select().from(consentRecords).where(and(eq(consentRecords.tenantId, input.tenantId), eq(consentRecords.customerId, message.customerId), eq(consentRecords.channel, message.channel), eq(consentRecords.category, "transactional"))).orderBy(desc(consentRecords.capturedAt)).limit(1) : [];
   const [marketingConsent] = message.customerId && purpose === "marketing" ? await db.select().from(consentRecords).where(and(eq(consentRecords.tenantId, input.tenantId), eq(consentRecords.customerId, message.customerId), eq(consentRecords.channel, message.channel), eq(consentRecords.category, "marketing"))).orderBy(desc(consentRecords.capturedAt)).limit(1) : [];
-  const reason = purpose === "account" ? undefined : suppressReason(message, preference, consent) ?? (marketingConsent?.state === "opted_out" || marketingConsent?.state === "suppressed" ? "customer_unsubscribed" : undefined);
+  const reason = !message.recipient ? "recipient_missing" : purpose === "account" ? undefined : suppressReason(message, preference, consent) ?? (marketingConsent?.state === "opted_out" || marketingConsent?.state === "suppressed" ? "customer_unsubscribed" : undefined);
   if (reason) {
     await db.transaction(async (tx) => {
       await tx.update(outboundMessages).set({ status: "suppressed", failureCode: reason, updatedAt: now }).where(and(eq(outboundMessages.id, message.id), eq(outboundMessages.tenantId, input.tenantId)));
       await tx.insert(communicationEvents).values({ tenantId: input.tenantId, outboundMessageId: message.id, eventType: "suppressed", occurredAt: now, payload: { reason } });
+      await recordReminderNotSent(tx, message, reason, now);
     });
     return "suppressed";
   }
@@ -101,6 +116,7 @@ export async function processOutboundMessage(db: Database, registry: ConnectorRe
       await db.transaction(async tx => {
         await tx.update(outboundMessages).set({ status: "suppressed", failureCode: "invoice_reminder_canceled", failureMessage: "This invoice no longer needs this reminder.", nextSendAt: null, updatedAt: now }).where(and(eq(outboundMessages.tenantId, message.tenantId), eq(outboundMessages.id, message.id)));
         await tx.insert(communicationEvents).values({ tenantId: message.tenantId, outboundMessageId: message.id, eventType: "suppressed", occurredAt: now, payload: { reason: "invoice_reminder_canceled" } });
+        await recordReminderNotSent(tx, message, "invoice_reminder_canceled", now);
       });
       return "suppressed";
     }
@@ -112,6 +128,7 @@ export async function processOutboundMessage(db: Database, registry: ConnectorRe
       if (!reservation.allowed) {
         await db.update(outboundMessages).set({ status: "queued", nextSendAt: reservation.nextSendAt, failureCode: reservation.code, failureMessage: reservation.note, updatedAt: now })
           .where(and(eq(outboundMessages.id, message.id), eq(outboundMessages.tenantId, input.tenantId)));
+        await recordReminderNotSent(db, message, reservation.code, now, reservation.note);
         return "queued";
       }
     }
@@ -137,6 +154,7 @@ export async function processOutboundMessage(db: Database, registry: ConnectorRe
     await db.transaction(async (tx) => {
       await tx.update(outboundMessages).set({ status: retryable ? "retry" : "failed", failureCode: code, failureMessage, updatedAt: now }).where(and(eq(outboundMessages.id, message.id), eq(outboundMessages.tenantId, input.tenantId)));
       await tx.insert(communicationEvents).values({ tenantId: input.tenantId, outboundMessageId: message.id, eventType: "failed", occurredAt: now, payload: { code, retryable } });
+      await recordReminderNotSent(tx, message, code, now, failureMessage);
     });
     if (retryable) throw error;
     return "failed";
