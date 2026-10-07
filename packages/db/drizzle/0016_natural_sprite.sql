@@ -1,0 +1,2 @@
+ALTER TABLE "refunds" ADD COLUMN "review_resolution" text;--> statement-breakpoint
+ALTER TABLE "refunds" ADD CONSTRAINT "refunds_review_resolution_valid" CHECK ("refunds"."review_resolution" is null or "refunds"."review_resolution" in ('refunded', 'not_refunded'));

@@ -11,6 +11,7 @@ import { recordEvent } from "./events";
 import { json, readBody } from "./http";
 import { normalized } from "./sql";
 import { z } from "zod";
+import { invoiceOverpayment } from "./read-facts";
 
 const refundRequest = z.object({
   paymentId: z.uuid(),
@@ -19,7 +20,7 @@ const refundRequest = z.object({
   idempotencyKey: z.string().trim().min(1).max(200).optional(),
 });
 
-function refundId(tenantId: string, invoiceId: string, key: string): string {
+export function refundId(tenantId: string, invoiceId: string, key: string): string {
   const bytes = createHash("sha256").update(`${tenantId}:${invoiceId}:${key}`).digest().subarray(0, 16);
   bytes[6] = (bytes[6]! & 0x0f) | 0x50;
   bytes[8] = (bytes[8]! & 0x3f) | 0x80;
@@ -42,7 +43,7 @@ export async function handleInvoiceRefund(request: Request, path: string[], acto
     requireStaff(actor);
     requirePermission(actor, "invoices.read");
     const db = getDb();
-    const [invoice] = await db.select({ id: invoices.id, organizationLocationId: invoices.organizationLocationId })
+    const [invoice] = await db.select({ id: invoices.id, organizationLocationId: invoices.organizationLocationId, overpayment: invoiceOverpayment("invoices") })
       .from(invoices).where(and(eq(invoices.id, invoiceId), eq(invoices.tenantId, actor.tenantId))).limit(1);
     if (!invoice || (!actor.allLocations && (!invoice.organizationLocationId || !actor.locationIds.has(invoice.organizationLocationId)))) {
       throw new DomainError("NOT_FOUND", "Invoice not found.", 404);
@@ -53,17 +54,27 @@ export async function handleInvoiceRefund(request: Request, path: string[], acto
       .where(and(eq(paymentAllocations.tenantId, actor.tenantId), eq(paymentAllocations.invoiceId, invoiceId)));
     const ids = allocated.map(({ payment }) => payment.id);
     const refundRows = ids.length
-      ? await db.select({ paymentId: refunds.paymentId, amountMinor: refunds.amountMinor }).from(refunds)
-        .where(and(eq(refunds.tenantId, actor.tenantId), eq(refunds.status, "succeeded"), inArray(refunds.paymentId, ids)))
+      ? await db.select({ id: refunds.id, paymentId: refunds.paymentId, amountMinor: refunds.amountMinor, status: refunds.status, reviewReason: refunds.reviewReason }).from(refunds)
+        .where(and(eq(refunds.tenantId, actor.tenantId), inArray(refunds.paymentId, ids)))
       : [];
     const refundedByPayment = new Map<string, bigint>();
-    for (const refund of refundRows) refundedByPayment.set(refund.paymentId, (refundedByPayment.get(refund.paymentId) ?? 0n) + refund.amountMinor);
+    const pendingByPayment = new Map<string, bigint>();
+    for (const refund of refundRows) {
+      if (!["pending", "succeeded"].includes(refund.status)) continue;
+      const amounts = refund.status === "pending" ? pendingByPayment : refundedByPayment;
+      amounts.set(refund.paymentId, (amounts.get(refund.paymentId) ?? 0n) + refund.amountMinor);
+    }
     return json({ items: allocated.map(({ payment, allocation }) => normalized({
       id: payment.id,
       amountCents: allocation.amountMinor,
       refundedCents: refundedByPayment.get(payment.id) ?? 0n,
+      pendingRefundCents: pendingByPayment.get(payment.id) ?? 0n,
+      overpaymentCents: invoice.overpayment,
+      refundReviews: actor.role === "owner" ? refundRows.filter((row) => row.paymentId === payment.id && row.reviewReason).map((row) => ({ id: row.id, amountCents: Number(row.amountMinor), status: "needs_review", message: row.reviewReason })) : undefined,
       status: payment.status,
       sourceType: payment.sourceType,
+      method: payment.recordedMethod ?? payment.sourceType,
+      reference: payment.reference,
       createdAt: payment.createdAt,
     })) });
   }
@@ -164,7 +175,7 @@ export async function handleInvoiceRefund(request: Request, path: string[], acto
       .from(paymentAllocations).where(and(eq(paymentAllocations.tenantId, actor.tenantId), eq(paymentAllocations.invoiceId, invoiceId)));
     const invoicePaymentIds = invoiceAllocations.map((item) => item.paymentId);
     const invoiceRefundRows = invoicePaymentIds.length
-      ? await tx.select({ amountMinor: refunds.amountMinor }).from(refunds)
+      ? await tx.select({ amountMinor: refunds.amountMinor, reviewResolution: refunds.reviewResolution }).from(refunds)
         .where(and(eq(refunds.tenantId, actor.tenantId), eq(refunds.status, "succeeded"), inArray(refunds.paymentId, invoicePaymentIds)))
       : [];
     const totalRefundedMinor = invoiceRefundRows.reduce((sum, item) => sum + item.amountMinor, 0n);
@@ -173,7 +184,7 @@ export async function handleInvoiceRefund(request: Request, path: string[], acto
     const creditedMinor = creditRows.reduce((sum, item) => sum + item.amountMinor, 0n);
     let position: ReturnType<typeof invoiceFinancialPosition>;
     try {
-      position = invoiceFinancialPosition(Number(invoice.totalMinor), Number(invoice.paidMinor), Number(totalRefundedMinor), Number(creditedMinor));
+      position = invoiceFinancialPosition(Number(invoice.totalMinor), Number(invoice.paidMinor), Number(totalRefundedMinor), Number(creditedMinor), { confirmedExcessRefund: invoiceRefundRows.some((row) => row.reviewResolution === "refunded") });
     } catch (error) {
       if (error instanceof DomainError && error.code === "VALIDATION_ERROR") {
         throw new DomainError("CONFLICT", "Refund would exceed the amount collected for this invoice.", 409);

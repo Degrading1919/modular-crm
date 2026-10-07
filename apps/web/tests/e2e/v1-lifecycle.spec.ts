@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { chooseStaffRecord } from "./staff-picker";
 
 const password = "Demo12345!";
 
@@ -46,8 +47,8 @@ test("V1 lifecycle: estimate approval through field work, billing, and feedback"
 
   await page.goto("/app/estimates");
   await page.getByRole("button", { name: "New estimate" }).click();
-  await page.getByLabel("Customer", { exact: true }).selectOption({ label: "Carter Household" });
-  await page.getByLabel("Service", { exact: true }).selectOption({ label: serviceName });
+  await chooseStaffRecord(page, "Customer", "Carter Household");
+  await chooseStaffRecord(page, "Service", serviceName);
   await page.getByLabel("What is included?").fill(estimateTitle);
   await page.getByLabel("Total price").fill("36");
   await page.getByLabel("Description").fill(`Approved estimate ${suffix}.`);
@@ -151,8 +152,14 @@ test("V1 lifecycle: estimate approval through field work, billing, and feedback"
   await technician.getByLabel("What should the office know?").fill(completionNote);
   await technician.getByLabel("I confirmed the correct property and completed the service.").check();
   await technician.getByLabel("I left gates and access points secure.").check();
+  // The badge projects the saved offline operation before the server commits it.
+  // Observe this action's sync response, not a notice left by an earlier action.
+  const completionSynced = technician.waitForResponse((response) =>
+    response.url().endsWith(`/api/v1/field/jobs/${jobId}/complete`) && response.request().method() === "POST",
+  );
   await technician.getByRole("button", { name: "Complete job" }).click();
   await expect(technician.getByText(/^completed$/i)).toBeVisible();
+  expect((await completionSynced).status()).toBe(200);
   const completedJob = await technician.request.get(`/api/v1/field/jobs/${jobId}`);
   expect(completedJob.ok()).toBeTruthy();
   expect((await completedJob.json()).item.status).toBe("completed");
@@ -162,7 +169,7 @@ test("V1 lifecycle: estimate approval through field work, billing, and feedback"
   // billing preference, so it remains eligible for the office's manual invoice flow.
   await page.goto("/app/invoices");
   await page.getByRole("button", { name: "New invoice" }).click();
-  await page.getByLabel("Customer", { exact: true }).selectOption({ label: "Carter Household" });
+  await chooseStaffRecord(page, "Customer", "Carter Household");
   await page.getByLabel("Description").fill(invoiceDescription);
   await page.getByLabel("Amount").fill("36");
   const invoiceCreatedResponse = page.waitForResponse((response) =>

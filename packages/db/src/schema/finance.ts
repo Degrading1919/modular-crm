@@ -39,7 +39,9 @@ export const invoiceItems = pgTable("invoice_items", {
 export const payments = pgTable("payments", {
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), customerId: uuid("customer_id").notNull(),
   status: status(), sourceType: text("source_type").notNull(), connectorInstallationId: uuid("connector_installation_id"),
+  recordedMethod: text("recorded_method"), reference: text("reference"),
   providerReference: text("provider_reference"), amountMinor: money("amount_minor"), currency: currency(),
+  feeMinor: bigint("fee_minor", { mode: "bigint" }),
   receivedAt: timestamp("received_at", { withTimezone: true }), failureCode: text("failure_code"), failureMessage: text("failure_message"),
   idempotencyKey: text("idempotency_key").notNull(), recordedByActorType: text("recorded_by_actor_type").notNull(),
   recordedByActorId: text("recorded_by_actor_id"),
@@ -48,6 +50,7 @@ export const payments = pgTable("payments", {
   foreignKey({ columns: [t.tenantId, t.customerId], foreignColumns: [customers.tenantId, customers.id], name: "payments_customer_tenant_fk" }),
   index("payments_customer_idx").on(t.tenantId, t.customerId), index("payments_status_received_idx").on(t.tenantId, t.status, t.receivedAt),
   check("payments_amount_nonnegative", sql`${t.amountMinor} >= 0`),
+  check("payments_recorded_method_valid", sql`${t.recordedMethod} is null or ${t.recordedMethod} in ('cash', 'check', 'card_external', 'card', 'other', 'test')`),
 ]);
 
 export const paymentAllocations = pgTable("payment_allocations", {
@@ -64,11 +67,12 @@ export const refunds = pgTable("refunds", {
   id: uuid("id").defaultRandom().primaryKey(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id),
   paymentId: uuid("payment_id").notNull(), connectorInstallationId: uuid("connector_installation_id"),
   providerReference: text("provider_reference"), amountMinor: money("amount_minor"), currency: currency(), status: status(),
-  reason: text("reason"), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  reason: text("reason"), reviewReason: text("review_reason"), reviewResolution: text("review_resolution"), createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   completedAt: timestamp("completed_at", { withTimezone: true }),
 }, (t) => [
   foreignKey({ columns: [t.tenantId, t.paymentId], foreignColumns: [payments.tenantId, payments.id], name: "refunds_payment_tenant_fk" }),
   index("refunds_payment_idx").on(t.tenantId, t.paymentId), check("refunds_amount_nonnegative", sql`${t.amountMinor} >= 0`),
+  check("refunds_review_resolution_valid", sql`${t.reviewResolution} is null or ${t.reviewResolution} in ('refunded', 'not_refunded')`),
 ]);
 
 export const paymentMethodReferences = pgTable("payment_method_references", {

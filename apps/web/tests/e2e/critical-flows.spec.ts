@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { expectBoundedIdleApiGets } from "./idle-api-guard";
 
 const password = "Demo12345!";
 
@@ -13,6 +14,7 @@ test("owner can find seeded customer details and add a customer", async ({ page 
   await signIn(page, "owner@happyyards.test");
   await expect(page).toHaveURL(/\/app\/dashboard$/);
   await expect(page.getByRole("heading", { name: /Good morning, Olivia/i })).toBeVisible();
+  await expectBoundedIdleApiGets(page);
   await page.getByRole("navigation", { name: "Business navigation" }).getByRole("link", { name: "Customers" }).click();
   await page.getByRole("textbox", { name: "Search customers" }).fill("Carter Household");
   await page.getByRole("link", { name: /Carter Household/ }).first().click();
@@ -34,6 +36,7 @@ test("technician sees only field work and can inspect assigned route", async ({ 
   await signIn(page, "tech@happyyards.test");
   await expect(page).toHaveURL(/\/field\/today$/);
   await expect(page.getByRole("heading", { name: /Good morning, Terry/i })).toBeVisible();
+  await expectBoundedIdleApiGets(page);
   const todayResponse = await page.request.get("/api/v1/field/today");
   expect(todayResponse.ok()).toBeTruthy();
   const todayPayload = await todayResponse.json();
@@ -76,6 +79,17 @@ test("technician sees only field work and can inspect assigned route", async ({ 
 test("customer can see services and submit a change request", async ({ page }) => {
   await signIn(page, "customer@happyyards.test");
   await expect(page).toHaveURL(/\/portal\/home$/);
+  // The loaded home has both welcome and next-visit headings; identify each
+  // explicitly instead of depending on the transient loading state having one.
+  await expect(page.getByRole("heading", { level: 1, name: "Welcome back, Alex.", exact: true })).toBeVisible();
+  const overviewResponse = await page.request.get("/api/v1/portal/overview");
+  expect(overviewResponse.ok()).toBeTruthy();
+  const overview = (await overviewResponse.json()).item;
+  const nextVisit = overview.nextService ? new Intl.DateTimeFormat("en-US", {
+    timeZone: "UTC", weekday: "long", month: "long", day: "numeric",
+  }).format(new Date(`${overview.nextService.scheduledDate}T00:00:00Z`)) : "No visit scheduled";
+  await expect(page.getByRole("heading", { level: 1, name: nextVisit, exact: true })).toBeVisible();
+  await expectBoundedIdleApiGets(page);
   await page.getByRole("navigation", { name: "Customer account" }).getByRole("link", { name: "Services" }).click();
   await expect(page.getByRole("heading", { name: "Services" })).toBeVisible();
   const requestChange = page.getByRole("button", { name: "Request a change" }).first();

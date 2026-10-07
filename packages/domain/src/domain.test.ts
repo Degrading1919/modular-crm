@@ -68,6 +68,10 @@ describe("state and recurrence", () => {
 });
 
 describe("financial history", () => {
+  it("rejects ordinary excess refunds but represents an explicitly confirmed external excess without inflating gross collection", () => {
+    expect(() => invoiceFinancialPosition(1200, 1200, 1300)).toThrow("Refund exceeds payments");
+    expect(invoiceFinancialPosition(1200, 1200, 1300, 0, { confirmedExcessRefund: true })).toMatchObject({ grossPaidCents: 1200, netCollectedCents: -100, balanceCents: 1300, refundedCents: 1300 });
+  });
   it("keeps an issued snapshot and reconciles refund balance", () => {
     const source = [{ description: "Cleanup", quantity: 1, unitAmountCents: 2500 }];
     const invoice = makeInvoiceSnapshot({ lines: source, issuedAt: "2026-09-23T00:00:00Z", customerName: "Carter", businessName: "Happy Yards" });

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, exists, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, exists, inArray, isNull, ne, sql, type SQL } from "drizzle-orm";
 import { CAPABILITY_LABELS, type CapabilityKey, type ConnectorManifest } from "@modular-crm/connectors";
 import { validateAutomationRule, type AutomationAction, type AutomationActionType, type AutomationRule } from "@modular-crm/automations";
-import type { Condition } from "@modular-crm/config";
+import { messagePurpose, readServerConfig, type Condition } from "@modular-crm/config";
 import {
   automationRules, automationRuns, communicationEvents, connectorInstallations, customerContacts, customers, domainEvents,
   hasUsableFeature, jobAssignments, jobs, loadTenantCapabilities, organizationLocations, organizations, outboundMessages, tenants,
@@ -66,6 +66,7 @@ const automationBodySchema = z.object({
 
 const messageBodySchema = z.object({
   channel: z.enum(["email", "sms"]),
+  category: z.enum(["transactional", "service", "marketing"]).default("service"),
   recipient: z.string().trim().max(254).optional(),
   customerId: z.string().uuid().optional(),
   jobId: z.string().uuid().optional(),
@@ -168,7 +169,7 @@ function normalizeActions(value: unknown, simpleAction?: string): AutomationActi
           : new Set(["body"]);
     const configuration: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(configSource)) {
-      if (key === "actionType" || key === "type" || key === "configuration" || key === "delay" || key === "continueOnError" || key === "dedupeKeyTemplate") continue;
+      if (key === "actionType" || key === "type" || key === "configuration" || key === "delay" || key === "continueOnError" || key === "dedupeKeyTemplate" || key === "purpose") continue;
       if (!allowedConfig.has(key)) throw validation(`The ${actionType} action does not support ${key}.`);
       if (typeof item !== "string" || item.length > (key === "body" || key === "description" ? 5_000 : 254)) throw validation(`The ${key} action setting is invalid.`);
       configuration[key] = item.trim();
@@ -188,7 +189,9 @@ function normalizeActions(value: unknown, simpleAction?: string): AutomationActi
     }
     if (raw.continueOnError !== undefined && typeof raw.continueOnError !== "boolean") throw validation("continueOnError must be true or false.");
     if (raw.dedupeKeyTemplate !== undefined && (typeof raw.dedupeKeyTemplate !== "string" || raw.dedupeKeyTemplate.length > 300)) throw validation("The deduplication key is invalid.");
+    if (raw.purpose !== undefined && !["service", "marketing"].includes(String(raw.purpose))) throw validation("Choose Service update or Promotion or follow-up.");
     const action: AutomationAction = {
+      ...(["send_email", "send_sms"].includes(actionType) ? { purpose: (raw.purpose ?? "marketing") as "service" | "marketing" } : {}),
       actionType: actionType as AutomationActionType,
       configuration,
       ...(delay ? { delay } : {}),
@@ -250,6 +253,7 @@ async function listConnections(actor: SessionActor): Promise<Response> {
   requirePermission(actor, "connectors.read");
   requireStaff(actor);
   const registry = await hydrateTenantConnectors(actor.tenantId);
+  const mockPaymentsAvailable = readServerConfig(process.env).mockConnectors;
   const installations = await getDb().select().from(connectorInstallations).where(eq(connectorInstallations.tenantId, actor.tenantId));
   const newestByKey = new Map<string, typeof installations[number]>();
   for (const installation of installations) {
@@ -269,7 +273,8 @@ async function listConnections(actor: SessionActor): Promise<Response> {
         capabilityKey,
         status: connectorStatus,
         health: stored?.status === "connected" ? runtime.health : stored?.status === "expired" || stored?.status === "needs_attention" ? "degraded" : "unavailable",
-        mode: manifest.availability === "mock_complete" ? "mock" : manifest.authType === "oauth2" && manifest.availability === "credentials_ready" ? "oauth_setup" : manifest.availability === "credentials_ready" ? "live_setup" : "local",
+        mode: manifest.guidedPayments ? "online_setup" : manifest.availability === "mock_complete" ? "mock" : manifest.authType === "oauth2" && manifest.availability === "credentials_ready" ? "oauth_setup" : manifest.availability === "credentials_ready" ? "live_setup" : "local",
+        ...(manifest.guidedPayments || (manifest.key === "mock-payments" && mockPaymentsAvailable) ? { onlinePayments: true } : {}),
         environment: manifest.availability === "mock_complete" ? "test" : manifest.availability === "credentials_ready" ? "production" : "local",
         ...(manifest.authType === "oauth2" && manifest.availability === "credentials_ready" ? {
           oauthAvailable: registry.isOAuthAvailable?.(manifest.key) ?? false,
@@ -297,6 +302,7 @@ async function changeConnection(request: Request, path: string[], actor: Session
   const registry = getRegistry();
   const manifest = registry.listCatalog().find((candidate) => candidate.key === connectorKey);
   if (!manifest || manifest.availability === "planned" || manifest.platformManaged) throw new DomainError("NOT_FOUND", "Connection is not available yet.", 404);
+  if (manifest.guidedPayments) throw new DomainError("VALIDATION_ERROR", "Use online payment setup to manage this connection.", 422);
   if (action !== "disconnect") await assertConnectorEntitlement(actor.tenantId, manifest);
   const db = getDb();
   if (manifest.authType === "oauth2") {
@@ -357,6 +363,16 @@ function safeRunError(code: string | null): string | null {
   if (code === "connector_unavailable") return "The connected service is unavailable right now.";
   if (code === "invalid_rule" || code === "invalid_configuration") return "Review the rule setup before trying again.";
   return "This action could not be completed.";
+}
+
+function safeMessageError(code: string | null, channel: string): string | null {
+  if (code === "customer_unsubscribed") return "This customer has stopped promotional emails.";
+  if (code === "business_details_missing") return "Choose a customer and add the business address before sending promotional emails.";
+  if (code === "email_daily_limit") return "Daily email limit reached; this will send tomorrow.";
+  if (code === "email_hourly_limit") return "Hourly email limit reached; this will send next hour.";
+  if (code === "not_connected" || code === "authorization_expired") return channel === "sms" ? "Connect or reconnect a texting service to send this message." : "Reconnect your email service to send this message.";
+  if (code === "provider_error" || code === "timeout") return "The message service could not complete this delivery.";
+  return safeRunError(code);
 }
 
 async function listAutomationRuns(actor: SessionActor, ruleId?: string, requestUrl = "http://localhost"): Promise<Response> {
@@ -557,7 +573,7 @@ async function listCommunications(request: Request, actor: SessionActor): Promis
   const db = getDb();
   const search = new URL(request.url).searchParams;
   const limit = Math.min(200, Math.max(1, Number(search.get("limit")) || 100));
-  const conditions: SQL[] = [eq(outboundMessages.tenantId, actor.tenantId)];
+  const conditions: SQL[] = [eq(outboundMessages.tenantId, actor.tenantId), ne(outboundMessages.category, "account")];
   if (!actor.allLocations) {
     const locationIds = [...actor.locationIds];
     if (!locationIds.length) return json({ items: [] });
@@ -586,16 +602,20 @@ async function listCommunications(request: Request, actor: SessionActor): Promis
   const connectorKeys = new Map(installationRows.map((row) => [row.id, row.connectorKey]));
   return json({ items: messages.map(({ message, customerName, locationId }) => ({
     id: message.id, tenantId: message.tenantId, customerId: message.customerId, customerName: customerName ?? null,
-    jobId: message.jobId, locationId, recipient: message.recipient, channel: message.channel,
+    jobId: message.jobId, locationId, recipient: message.recipient, channel: message.channel, category: message.category,
     subject: message.renderedSubject ?? "", message: message.renderedBody, templateKey: message.templateKey,
     status: message.status, queuedAt: message.queuedAt.toISOString(), sentAt: message.sentAt?.toISOString() ?? null,
     deliveredAt: message.deliveredAt?.toISOString() ?? null, failureCode: message.failureCode,
-    errorMessage: message.failureCode ? safeRunError(message.failureCode) ?? "Delivery could not be completed." : null,
+    errorMessage: message.failureCode ? safeMessageError(message.failureCode, message.channel) : null,
     history: (eventsByMessage.get(message.id) ?? []).map((event) => ({ type: event.eventType, occurredAt: event.occurredAt.toISOString() })),
     mode: message.status === "queued" || message.status === "sending" || message.status === "retry" ? "pending"
+      : !message.sentAt ? "not_sent"
+      : eventsByMessage.get(message.id)?.some((event) => event.eventType === "sent" && event.payload.mode === "platform") ? "platform"
       : message.connectorInstallationId && connectorKeys.get(message.connectorInstallationId)?.startsWith("mock-") === false ? "connected" : "mock",
     environment: message.status === "queued" || message.status === "sending" || message.status === "retry" ? null
-      : message.connectorInstallationId && connectorKeys.get(message.connectorInstallationId)?.startsWith("mock-") === false ? "production" : "test",
+      : !message.sentAt ? null
+      : eventsByMessage.get(message.id)?.find((event) => event.eventType === "sent" && event.payload.mode === "platform")?.payload.environment
+      ?? (message.connectorInstallationId && connectorKeys.get(message.connectorInstallationId)?.startsWith("mock-") === false ? "production" : "test"),
   })) });
 }
 
@@ -643,6 +663,7 @@ async function queueCommunication(request: Request, actor: SessionActor): Promis
     customerId ??= job.customerId;
   }
   if (actor.role === "technician" && !job) throw new DomainError("NOT_FOUND", "Choose an assigned job for this message.", 404);
+  if (body.category === "marketing" && !customerId) throw validation("Choose a customer before sending marketing messages.");
   let locationId = job?.organizationLocationId ?? null;
   if (customerId) {
     const customer = job
@@ -667,7 +688,7 @@ async function queueCommunication(request: Request, actor: SessionActor): Promis
   const db = getDb();
   const inserted = await db.transaction(async (tx) => {
     const [created] = await tx.insert(outboundMessages).values({
-      tenantId: actor.tenantId, customerId: customerId ?? null, jobId: job?.id ?? null, channel: body.channel,
+      tenantId: actor.tenantId, customerId: customerId ?? null, jobId: job?.id ?? null, channel: body.channel, category: messagePurpose(body.category),
       recipient, renderedSubject: body.channel === "email" ? body.subject || "Service update" : null,
       renderedBody: body.message, status: "queued", idempotencyKey, queuedAt: new Date(),
     }).onConflictDoNothing({ target: [outboundMessages.tenantId, outboundMessages.idempotencyKey] }).returning();
@@ -689,31 +710,36 @@ async function queueCommunication(request: Request, actor: SessionActor): Promis
 
 function objectValue(value: unknown): Record<string, unknown> { return isRecord(value) ? value : {}; }
 
-async function primaryLocation(actor: StaffSessionActor, db: ReturnType<typeof getDb> | DbTransaction = getDb()) {
-  const where = actor.defaultLocationId
-    ? and(eq(organizationLocations.id, actor.defaultLocationId), eq(organizationLocations.tenantId, actor.tenantId), eq(organizationLocations.organizationId, actor.organizationId!))
+async function primaryLocation(actor: StaffSessionActor, db: ReturnType<typeof getDb> | DbTransaction = getDb(), requestedLocationId?: string | null) {
+  if (requestedLocationId && !z.uuid().safeParse(requestedLocationId).success) throw new DomainError("NOT_FOUND", "Business location not found.", 404);
+  const selectedId = requestedLocationId ?? actor.defaultLocationId;
+  const where = selectedId
+    ? and(eq(organizationLocations.id, selectedId), eq(organizationLocations.tenantId, actor.tenantId), eq(organizationLocations.organizationId, actor.organizationId!))
     : and(eq(organizationLocations.tenantId, actor.tenantId), eq(organizationLocations.organizationId, actor.organizationId!));
   const [location] = await db.select().from(organizationLocations).where(where).orderBy(organizationLocations.createdAt).limit(1);
+  if (requestedLocationId && (!location || (!actor.allLocations && !actor.locationIds.has(location.id)))) throw new DomainError("NOT_FOUND", "Business location not found.", 404);
   if (location && !actor.allLocations && !actor.locationIds.has(location.id)) return undefined;
   return location;
 }
 
-async function getSettings(actor: SessionActor): Promise<Response> {
+async function getSettings(request: Request, actor: SessionActor): Promise<Response> {
   requirePermission(actor, "tenant.read");
   requireStaff(actor);
   const db = getDb();
+  const requestedLocationId = new URL(request.url).searchParams.get("locationId");
   const [[tenant], [organization], location] = await Promise.all([
     db.select().from(tenants).where(eq(tenants.id, actor.tenantId)).limit(1),
     db.select().from(organizations).where(and(eq(organizations.id, actor.organizationId!), eq(organizations.tenantId, actor.tenantId))).limit(1),
-    primaryLocation(actor),
+    primaryLocation(actor, db, requestedLocationId),
   ]);
   if (!tenant || !organization) throw new DomainError("NOT_FOUND", "Business settings not found.", 404);
   const orgSettings = objectValue(organization.settings);
   return json({ item: {
     id: tenant.id, businessName: organization.displayName || tenant.name,
+    locationName: location?.name,
     phone: organization.phone ?? location?.phone ?? "", email: organization.email ?? location?.email ?? "",
     timezone: organization.timezone || tenant.defaultTimezone,
-    address: location?.addressLine1 ?? String(orgSettings.businessAddress ?? ""),
+    address: location?.addressLine1 ?? (requestedLocationId ? "" : String(orgSettings.businessAddress ?? "")),
     permissions: { canUpdate: actor.permissions.has("tenant.update") },
   } });
 }
@@ -732,12 +758,13 @@ async function patchSettings(request: Request, actor: SessionActor): Promise<Res
     const [tenant] = await tx.select().from(tenants).where(eq(tenants.id, actor.tenantId)).limit(1);
     const [organization] = await tx.select().from(organizations).where(and(eq(organizations.id, actor.organizationId!), eq(organizations.tenantId, actor.tenantId))).limit(1);
     if (!tenant || !organization) throw new DomainError("NOT_FOUND", "Business settings not found.", 404);
-    const location = await primaryLocation(actor, tx);
+    const requestedLocationId = new URL(request.url).searchParams.get("locationId");
+    const location = await primaryLocation(actor, tx, requestedLocationId);
     const priorSettings = objectValue(organization.settings);
     const before = {
       businessName: organization.displayName || tenant.name, phone: organization.phone ?? location?.phone ?? "",
       email: organization.email ?? location?.email ?? "", timezone: organization.timezone || tenant.defaultTimezone,
-      address: location?.addressLine1 ?? String(priorSettings.businessAddress ?? ""),
+      address: location?.addressLine1 ?? (requestedLocationId ? "" : String(priorSettings.businessAddress ?? "")),
     };
     const nextName = body.businessName ?? before.businessName;
     const nextPhone = body.phone === undefined ? before.phone : body.phone;
@@ -750,7 +777,7 @@ async function patchSettings(request: Request, actor: SessionActor): Promise<Res
       phone: body.phone === undefined ? organization.phone : nextPhone || null,
       email: body.email === undefined ? organization.email : nextEmail || null,
       timezone: body.timezone ?? organization.timezone,
-      settings: { ...priorSettings, businessAddress: nextAddress }, updatedAt: now,
+      settings: { ...priorSettings, ...(!requestedLocationId ? { businessAddress: nextAddress } : {}) }, updatedAt: now,
     }).where(and(eq(organizations.id, organization.id), eq(organizations.tenantId, actor.tenantId)));
     await tx.update(tenants).set({ name: nextName, defaultTimezone: nextTimezone, updatedAt: now }).where(eq(tenants.id, actor.tenantId));
     if (location) await tx.update(organizationLocations).set({
@@ -780,7 +807,7 @@ export async function handleCapabilitySettings(request: Request, path: string[],
   }
   if (path[0] === "settings") {
     if (path.length !== 1) throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
-    if (request.method === "GET") return getSettings(actor);
+    if (request.method === "GET") return getSettings(request, actor);
     if (request.method === "PATCH") return patchSettings(request, actor);
     throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
   }

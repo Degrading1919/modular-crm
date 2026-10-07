@@ -20,6 +20,12 @@ Invoice rows identify their actual business and location, including broader owne
 
 User-facing failures must explain the problem and a useful recovery step in plain language, including authentication, connection, and validation failures. Preserve machine-readable status, codes, conflict details, and offline retry behavior; do not expose internal transitions, provider errors, or HTTP status numbers as user instructions. Preserve useful plain-language recovery copy. Failed reads must not masquerade as zero balances or empty successful summaries.
 
+## Staff record selection and payment recording
+
+Staff create forms select named customers, services, open invoices, and saved service addresses rather than asking for internal IDs. Customer searches match name, phone, email, and address on the server within the existing tenant/location authorization; picking a customer offers only their accessible active service addresses. A single available address is selected automatically, while multiple addresses require an explicit choice. Jobs and service plans persist that choice; no eligible saved address requires recovery rather than a guessed address. Their operational branch uses the selected address's branch when assigned, otherwise the customer's owning branch, then the current workspace branch. Validate access to that resolved branch without changing the saved address or relaxing address access.
+
+Recording money already received is distinct from charging a customer. Staff must choose Cash, Check, Card (taken outside the app), or Other and may enter a reference such as a check number. Persist payment method separately from source/connector provenance and show it in payment history and receipts. Keep invoice allocation, permission/capability checks, balance validation, and idempotent retries; a changed method/reference is a different request. Historical unspecified payments remain honestly “Method not recorded,” not guessed as cash or card; new unspecified requests are rejected. Explicit test payments require a connected mock payment service; staff recording never defaults to a test charge. The Payments collection remains a scoped read model; its recording form invokes the existing invoice-payment workflow, not a new generic payment mutation.
+
 ## Core customer outcomes
 
 A business owner should be able to:
@@ -160,6 +166,8 @@ Primary capabilities:
 The technician experience should hide unrelated office functionality by default.
 
 Field job actions must intersect canonical legal transitions with the technician's granted permissions, including an explicit resume action for paused jobs. Device-saved progress must be distinguished from office-synced progress. Failed/conflicted updates retain evidence for review, current-job inspection and deliberate retry; technicians can download saved details before confirming discard of an update and its later dependent updates. Discard must leave unrelated work intact and must explain that it does not undo anything already received by the office.
+
+A stop canceled before the route's first publication is retained as skipped route history, never dispatched or reactivated; valid remaining work can publish. Cancellation does not exempt a stop from tenant, business, branch, assignment, date or other-route ownership checks. A lapsed sign-in stops offline sending without losing evidence. Once the same user and tenant are confirmed signed in again, authentication-failed updates become eligible automatically with unchanged operation IDs and causal ordering; genuine conflicts and permission failures still require review.
 
 ### Customer
 

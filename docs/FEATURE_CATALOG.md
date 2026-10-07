@@ -28,6 +28,22 @@ Accepted behavior should also be represented in the appropriate authoritative pr
 - **Industry scope:** Core
 - **Dependencies:** Connector system, templates, automation engine
 
+### Email delivery webhooks and recipient suppression
+
+- **State:** Deferred
+- **Problem:** SMTP acceptance does not reveal bounces or complaints, so a shared sender needs recipient-level protection beyond volume limits.
+- **Behavior:** A later delivery-webhooks slice will verify provider event authenticity, bind events to tenant/message, deduplicate events and suppress appropriate recipients after permanent bounces or complaints without fabricating delivery outcomes. This protection is accepted; implementation is deferred, not part of the purpose/limits slice.
+- **Industry scope:** Core
+- **Dependencies:** Connector delivery webhooks, outbound-message identity, communication events, tenant-scoped suppression
+
+### Online invoice card payments
+
+- **State:** Accepted
+- **Problem:** Customers could not pay real invoice balances through a guided connected payment service.
+- **Behavior:** Owners enable a hosted Stripe Standard account without handling keys; customers use Pay now in the portal or eligible service invoice email. Full balance is the default, partial payment requires owner opt-in, and signed notifications reconcile receipts/balances/history once. Owners can request partial refunds, which are final only after processor confirmation. Local mocks exercise the complete hosted workflow without moving money.
+- **Industry scope:** Core
+- **Dependencies:** Payments capability, operator configuration, encrypted organization account binding, invoice authorization, notification/event dedupe, existing ledger/receipts and service messaging
+
 ### Automation engine
 
 - **State:** Accepted

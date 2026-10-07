@@ -43,9 +43,9 @@ export function enqueueAutomationRun(boss: PgBoss, job: AutomationRunJob, startA
   required(job.tenantId, "tenantId"); required(job.runId, "runId");
   return boss.send(QUEUES.automationRun, job, { ...(startAfter ? { startAfter } : {}), singletonKey: `${job.tenantId}:${job.runId}`, singletonSeconds: 60 });
 }
-export function enqueueOutboundMessage(boss: PgBoss, job: OutboundMessageJob): Promise<string | null> {
+export function enqueueOutboundMessage(boss: PgBoss, job: OutboundMessageJob, purpose = "marketing"): Promise<string | null> {
   required(job.tenantId, "tenantId"); required(job.messageId, "messageId");
-  return boss.send(QUEUES.outboundMessage, job, { singletonKey: `${job.tenantId}:${job.messageId}`, singletonSeconds: 60 });
+  return boss.send(QUEUES.outboundMessage, job, { priority: purpose === "account" ? 20 : ["service", "transactional"].includes(purpose) ? 10 : 0, singletonKey: `${job.tenantId}:${job.messageId}`, singletonSeconds: 60 });
 }
 export function enqueueWebhookDelivery(boss: PgBoss, job: WebhookDeliveryJob, startAfter?: string): Promise<string | null> {
   required(job.tenantId, "tenantId"); required(job.deliveryId, "deliveryId");

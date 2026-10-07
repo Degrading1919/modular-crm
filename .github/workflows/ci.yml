@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# dotenv-cli preserves inherited variables and tolerates a missing .env.
+# No real provider accounts, deployment credentials, or local .env are needed.
+env:
+  DATABASE_URL: postgresql://modular:modular@127.0.0.1:5432/modular_crm
+  BETTER_AUTH_URL: http://localhost:3000
+  APP_BASE_URL: http://localhost:3000
+  MAILPIT_SMTP_HOST: 127.0.0.1
+  MAILPIT_SMTP_PORT: "1025"
+  MAILPIT_API_URL: http://127.0.0.1:8025
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  containers:
+    name: Production containers smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: /tmp/crm-image-cache
+          key: container-${{ runner.os }}-${{ hashFiles('Dockerfile', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'apps/**', 'packages/**', 'containers/**') }}
+          restore-keys: container-${{ runner.os }}-
+      - name: Build local images (never push)
+        shell: bash
+        run: |
+          for target in web worker migrate; do
+            docker buildx build --load --target "$target" -t "modular-crm:$target" \
+              --cache-from "type=local,src=/tmp/crm-image-cache/$target" \
+              --cache-to "type=local,dest=/tmp/crm-image-cache/$target,mode=max" .
+          done
+      - name: Smoke production containers against isolated PostgreSQL
+        run: node containers/smoke.mjs
+
+  quality:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Lint
+            command: pnpm lint
+          - name: Typecheck
+            command: pnpm typecheck
+          - name: Unit and integration tests
+            command: pnpm test
+          - name: Production build
+            command: pnpm build
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: ${{ matrix.name }}
+        run: ${{ matrix.command }}
+
+  e2e:
+    name: Playwright (PostgreSQL)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: modular
+          POSTGRES_PASSWORD: modular
+          POSTGRES_DB: modular_crm
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U modular -d modular_crm"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+      mailpit:
+        image: axllent/mailpit:v1.27.8
+        ports:
+          - 1025:1025
+          - 8025:8025
+    env:
+      PLAYWRIGHT_HTML_OPEN: never
+      MOCK_CONNECTORS: "true"
+      DOMAIN_VERIFICATION_MODE: mock
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - name: Install Chromium and system dependencies
+        run: pnpm --filter @modular-crm/web exec playwright install --with-deps chromium
+      - name: Migrate PostgreSQL
+        run: pnpm db:migrate
+      - name: Seed isolated test data
+        run: pnpm db:seed
+      - name: Run complete Playwright suite
+        id: playwright
+        run: pnpm test:e2e --reporter=line,html
+      - name: Upload browser failure diagnostics
+        if: failure() && steps.playwright.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: playwright-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          retention-days: 7
+          if-no-files-found: warn

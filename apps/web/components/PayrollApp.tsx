@@ -304,20 +304,21 @@ export default function PayrollApp({ mode = "auto", canManageProfiles, permissio
   }, [mode, reloadKey, permissions]);
 
   const selectedPeriod = periods.find((period) => period.id === selectedPeriodId) ?? periods[0] ?? null;
+  const detailPeriodId = selectedPeriod?.id;
 
   useEffect(() => {
     let active = true;
-    if (view !== "manager" || tab !== "periods" || !selectedPeriod) {
+    if (view !== "manager" || tab !== "periods" || !detailPeriodId) {
       setDetail(null);
       return () => { active = false; };
     }
     setDetailLoading(true);
-    api<{ item?: PayrollDetail } | PayrollDetail>(`/payroll/periods/${selectedPeriod.id}`)
+    api<{ item?: PayrollDetail } | PayrollDetail>(`/payroll/periods/${detailPeriodId}`)
       .then((result) => { if (active) setDetail(unwrapItem(result)); })
       .catch((issue) => { if (active) setError(isAccessError(issue) ? accessCopy("payroll calculation details") : errorMessage(issue)); })
       .finally(() => { if (active) setDetailLoading(false); });
     return () => { active = false; };
-  }, [view, tab, selectedPeriod?.id, reloadKey]);
+  }, [view, tab, detailPeriodId, reloadKey]);
 
   const latest = useMemo(() => latestCalculations(detail?.calculations ?? []), [detail?.calculations]);
   const grossByCurrency = latest.reduce((totals, calculation) => {

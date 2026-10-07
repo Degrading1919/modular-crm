@@ -1,0 +1,28 @@
+name: Set up repository
+description: Install the pinned toolchain and generate isolated CI-only secrets.
+runs:
+  using: composite
+  steps:
+    - name: Set up Node.js 22
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      with:
+        node-version: 22
+    - name: Set up pinned pnpm and store cache
+      uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      with:
+        run_install: false
+        cache: true
+    - name: Install frozen dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
+    - name: Generate temporary secrets
+      shell: bash
+      run: |
+        auth_secret="$(openssl rand -hex 32)"
+        echo "::add-mask::$auth_secret"
+        echo "BETTER_AUTH_SECRET=$auth_secret" >> "$GITHUB_ENV"
+        for key in WEBHOOK_SECRET_ENCRYPTION_KEY CONNECTOR_CREDENTIAL_ENCRYPTION_KEY; do
+          key_value="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')"
+          echo "::add-mask::$key_value"
+          echo "$key=$key_value" >> "$GITHUB_ENV"
+        done

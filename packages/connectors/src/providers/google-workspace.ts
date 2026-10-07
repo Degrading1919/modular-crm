@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { ConnectorError, type CapabilityKey, type OAuthProviderAdapter, type OAuthTokenResponse, type ScopedCapabilities } from "../types.ts";
 import type { ProviderFetch } from "./http.ts";
 import { readBoundedText, requestJson } from "./http.ts";
+import { compileEmailMime } from "../platform-email.ts";
 
 const CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events";
 const CALENDAR_LIST_SCOPE = "https://www.googleapis.com/auth/calendar.calendarlist.readonly";
@@ -260,7 +261,7 @@ function createScope(control: GoogleControl, fetcher: ProviderFetch): ScopedCapa
       throw new ConnectorError("invalid_request", "Enter a valid email subject and message", false);
     }
     // Gmail's send endpoint does not support a caller-supplied idempotency key; the key is validated but not advertised as guaranteed deduplication.
-    const raw = mimeMessage(to, subject, body);
+    const raw = input.html || input.replyTo || input.unsubscribeUrl ? (await compileEmailMime(input)).toString("utf8") : mimeMessage(to, subject, body);
     let uncertainOutcome = false;
     let explicitRateLimit = false;
     let message: { id?: unknown };

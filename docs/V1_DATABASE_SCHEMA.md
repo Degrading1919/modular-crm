@@ -845,6 +845,8 @@ Unique: tenant_id + invoice_number
 - customer_id
 - status
 - source_type
+- recorded_method nullable: cash | check | card_external | other | test; null only for historical unspecified records
+- reference nullable: optional business reference (for example, check number), not a provider credential
 - connector_installation_id nullable
 - provider_reference nullable
 - amount_minor

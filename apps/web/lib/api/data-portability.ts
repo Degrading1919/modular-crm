@@ -779,10 +779,8 @@ async function exportBusinessData(actor: SessionActor): Promise<Response> {
       FROM tenants WHERE id = ${tenantId} LIMIT 1
     `);
     const columns = await queryRows(sql`
-      SELECT c.table_name, c.column_name, c.ordinal_position, pk.primary_key_position
-      FROM information_schema.columns c
-      JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name
-      LEFT JOIN (
+      -- Evaluate key metadata once, not once per column under a nested-loop plan.
+      WITH primary_keys AS MATERIALIZED (
         SELECT tc.table_name, kcu.column_name, kcu.ordinal_position AS primary_key_position
         FROM information_schema.table_constraints tc
         JOIN information_schema.key_column_usage kcu
@@ -791,7 +789,11 @@ async function exportBusinessData(actor: SessionActor): Promise<Response> {
           AND kcu.constraint_name = tc.constraint_name
           AND kcu.table_name = tc.table_name
         WHERE tc.table_schema = 'public' AND tc.constraint_type = 'PRIMARY KEY'
-      ) pk ON pk.table_name = c.table_name AND pk.column_name = c.column_name
+      )
+      SELECT c.table_name, c.column_name, c.ordinal_position, pk.primary_key_position
+      FROM information_schema.columns c
+      JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+      LEFT JOIN primary_keys pk ON pk.table_name = c.table_name AND pk.column_name = c.column_name
       WHERE c.table_schema = 'public' AND t.table_type = 'BASE TABLE'
       ORDER BY c.table_name, c.ordinal_position
     `);

@@ -11,7 +11,7 @@ function normalize(actions: unknown[], source: "industry_pack" | "tenant" = "ten
 
 it("normalizes the legacy message recipe to the versioned automation contract", () => {
   const rule = normalize([{ type: "message.send", channel: "email", template: "completion" }], "industry_pack");
-  expect(rule.actions).toEqual([{ actionType: "send_email", configuration: { templateKey: "completion" } }]);
+  expect(rule.actions).toEqual([{ actionType: "send_email", purpose: "marketing", configuration: { templateKey: "completion" } }]);
   expect(rule.conditions).toBeUndefined();
 });
 
@@ -26,12 +26,12 @@ it("normalizes the flattened default recipe action shapes seeded at signup", () 
   ], "industry_pack");
 
   expect(rule.actions).toEqual([
-    { actionType: "send_email", configuration: { templateKey: "signup-confirmation" } },
+    { actionType: "send_email", purpose: "marketing", configuration: { templateKey: "signup-confirmation" } },
     { actionType: "notify_staff", configuration: { body: "A new signup needs manual review." } },
-    { actionType: "send_sms", configuration: { templateKey: "cleanup-completed" } },
-    { actionType: "send_email", configuration: { templateKey: "payment-failed" } },
+    { actionType: "send_sms", purpose: "marketing", configuration: { templateKey: "cleanup-completed" } },
+    { actionType: "send_email", purpose: "marketing", configuration: { templateKey: "payment-failed" } },
     { actionType: "notify_staff", configuration: { body: "A customer's payment failed." } },
-    { actionType: "send_sms", configuration: { templateKey: "service-day-reminder" } },
+    { actionType: "send_sms", purpose: "marketing", configuration: { templateKey: "service-day-reminder" } },
   ]);
 });
 
@@ -46,11 +46,11 @@ it("accepts the canonical action/configuration shapes for every default recipe",
   const normalized = seededRecipes.map((recipe) => normalize(recipe.actions as unknown as unknown[], "industry_pack", recipe.sourceKey));
 
   expect(normalized.map((rule) => rule.actions)).toEqual([
-    [{ actionType: "send_email", configuration: { templateKey: "signup-confirmation" } }, { actionType: "notify_staff", configuration: { body: "A new signup needs manual review." } }],
-    [{ actionType: "send_sms", configuration: { templateKey: "cleanup-completed" } }],
-    [{ actionType: "send_email", configuration: { templateKey: "payment-failed" } }, { actionType: "notify_staff", configuration: { body: "A customer's payment failed." } }],
+    [{ actionType: "send_email", purpose: "marketing", configuration: { templateKey: "signup-confirmation" } }, { actionType: "notify_staff", configuration: { body: "A new signup needs manual review." } }],
+    [{ actionType: "send_sms", purpose: "marketing", configuration: { templateKey: "cleanup-completed" } }],
+    [{ actionType: "send_email", purpose: "marketing", configuration: { templateKey: "payment-failed" } }, { actionType: "notify_staff", configuration: { body: "A customer's payment failed." } }],
     [{ actionType: "create_ticket", configuration: { type: "plan_change_review" } }],
-    [{ actionType: "send_sms", configuration: { templateKey: "service-day-reminder" } }],
+    [{ actionType: "send_sms", purpose: "marketing", configuration: { templateKey: "service-day-reminder" } }],
   ]);
 });
 
@@ -61,13 +61,13 @@ it("recovers the flattened ticket action whose configured type replaces the reci
 
 it("accepts canonical user-created action and execution metadata shapes", () => {
   const rule = normalize([
-    { actionType: "send_sms", configuration: { templateKey: "cleanup-completed", customerId: "customer-1" }, delay: { afterEventMinutes: 15 }, continueOnError: true, dedupeKeyTemplate: "${event.eventId}" },
+    { actionType: "send_sms", purpose: "marketing", configuration: { templateKey: "cleanup-completed", customerId: "customer-1" }, delay: { afterEventMinutes: 15 }, continueOnError: true, dedupeKeyTemplate: "${event.eventId}" },
     { actionType: "add_note", configuration: { body: "Check the gate access." } },
     { actionType: "notify_staff", configuration: { title: "Review needed", body: "A customer update needs review." } },
     { actionType: "create_ticket", configuration: { type: "general", title: "Follow up", description: "Review this request." } },
   ]);
   expect(rule.actions).toEqual([
-    { actionType: "send_sms", configuration: { templateKey: "cleanup-completed", customerId: "customer-1" }, delay: { afterEventMinutes: 15 }, continueOnError: true, dedupeKeyTemplate: "${event.eventId}" },
+    { actionType: "send_sms", purpose: "marketing", configuration: { templateKey: "cleanup-completed", customerId: "customer-1" }, delay: { afterEventMinutes: 15 }, continueOnError: true, dedupeKeyTemplate: "${event.eventId}" },
     { actionType: "add_note", configuration: { body: "Check the gate access." } },
     { actionType: "notify_staff", configuration: { title: "Review needed", body: "A customer update needs review." } },
     { actionType: "create_ticket", configuration: { type: "general", title: "Follow up", description: "Review this request." } },
@@ -75,8 +75,16 @@ it("accepts canonical user-created action and execution metadata shapes", () => 
 });
 
 it("rejects actions that are unsupported by the worker or its configuration schemas", () => {
+  expect(() => normalize([{ actionType: "send_email", purpose: "unknown", configuration: { body: "Hello" } }])).toThrow("purpose is invalid");
   expect(() => normalize([{ actionType: "update_ticket", configuration: {} }])).toThrow("not supported by the worker");
   expect(() => normalize([{ actionType: "send_email", configuration: { templateKey: "ok", arbitrary: "value" } }])).toThrow("does not support arbitrary");
   expect(() => normalize([{ actionType: "notify_staff", configuration: { reason: "payment_failed" } }])).toThrow("does not support reason");
   expect(() => normalize([{ type: "notify_staff", reason: "unknown_reason" }], "industry_pack")).toThrow("does not support reason");
+});
+
+it("preserves explicit message purposes independently of the event or legacy shape", () => {
+  for (const purpose of ["service", "marketing", "account"] as const) {
+    expect(normalize([{ actionType: "send_email", purpose, configuration: { body: "Message" } }]).actions[0]).toMatchObject({ purpose });
+    expect(normalize([{ type: "message.send", channel: "email", purpose, template: "completion" }]).actions[0]).toMatchObject({ purpose });
+  }
 });

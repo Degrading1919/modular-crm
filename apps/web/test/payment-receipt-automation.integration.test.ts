@@ -21,6 +21,8 @@ vi.mock("../lib/api/capability-enforcement.ts", () => ({ requireTenantFeature: r
 
 process.env.DATABASE_URL ??= "postgres://localhost:5433/modular_crm_test";
 const { handleWorkflow } = await import("../lib/api/workflows.ts");
+const { handleRecords } = await import("../lib/api/records.ts");
+const { handleRoutesField } = await import("../lib/api/routes-field.ts");
 const { processDomainEvent } = await import("../../worker/src/events-db.js");
 const { processAutomationRun } = await import("../../worker/src/automations-db.js");
 const { QUEUES } = await import("../../worker/src/queues.js");
@@ -52,6 +54,47 @@ beforeAll(async () => {
 
 afterAll(async () => { await pglite?.close(); });
 
+it("reschedules through the job API, suppresses old reminders permanently, and executes one fresh enabled reminder for the new date", async () => {
+  const jobId = crypto.randomUUID(), routeId = crypto.randomUUID();
+  const initialDate = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
+  const nextDate = new Date(Date.now() + 4 * 86400000).toISOString().slice(0, 10);
+  await db.insert(schema.jobs).values({ id: jobId, tenantId: owner.tenantId, organizationId: owner.organizationId!, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, serviceId: seedIds.weeklyService, scheduledDate: initialDate, status: "scheduled", serviceWindowStart: new Date(`${initialDate}T14:00:00Z`) });
+  await db.insert(schema.jobAssignments).values({ tenantId: owner.tenantId, jobId, membershipId: seedIds.terryMembership, assignmentRole: "primary" });
+  await db.insert(schema.routePlans).values({ id: routeId, tenantId: owner.tenantId, organizationLocationId: seedIds.augusta, membershipId: seedIds.terryMembership, routeDate: initialDate, status: "draft" });
+  await db.insert(schema.routeStops).values({ tenantId: owner.tenantId, routePlanId: routeId, jobId, sequence: 1, status: "planned" });
+  const [rule] = await db.insert(automationRules).values({ tenantId: owner.tenantId, name: "Date-bound reminder", source: "tenant", status: "active", triggerConfig: { event: "job.dispatched" }, conditions: { field: "event.entityId", operator: "equals", value: jobId }, actions: [
+    { actionType: "send_sms", purpose: "service", configuration: { templateKey: "service-day-reminder", body: "Your service date is ${event.payload.scheduledDate}" } },
+    { actionType: "add_note", configuration: { body: "Only actual dispatch writes this note" } },
+  ] }).returning();
+  const process = async (eventId: string) => {
+    await processDomainEvent(db, boss, { tenantId: owner.tenantId, eventId });
+    const runs = await db.select().from(automationRuns).where(and(eq(automationRuns.tenantId, owner.tenantId), eq(automationRuns.triggeringEventId, eventId)));
+    for (const run of runs) expect(await processAutomationRun(db, boss, { tenantId: owner.tenantId, runId: run.id })).toBe("completed");
+  };
+  expect((await handleRoutesField(new Request("http://localhost", { method: "POST" }), ["routes", routeId, "publish"], owner))!.status).toBe(200);
+  const [dispatch] = await db.select().from(domainEvents).where(and(eq(domainEvents.entityId, jobId), eq(domainEvents.eventType, "job.dispatched")));
+  await process(dispatch!.id);
+  const [old] = await db.select().from(outboundMessages).where(eq(outboundMessages.jobId, jobId));
+  expect(old!.status).toBe("queued");
+  const edit = await handleRecords(new Request("http://localhost", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ scheduledDate: nextDate }) }), ["jobs", jobId], owner);
+  expect(edit!.status).toBe(200);
+  const [reschedule] = await db.select().from(domainEvents).where(and(eq(domainEvents.entityId, jobId), eq(domainEvents.eventType, "job.rescheduled")));
+  expect(reschedule!.payload).toMatchObject({ previousScheduledDate: initialDate, scheduledDate: nextDate, customerId: seedIds.carter });
+  expect((await db.select().from(schema.jobs).where(eq(schema.jobs.id, jobId)))[0]!.serviceWindowStart).toBeNull();
+  await process(reschedule!.id);
+  await processDomainEvent(db, boss, { tenantId: owner.tenantId, eventId: reschedule!.id });
+  const messages = await db.select().from(outboundMessages).where(eq(outboundMessages.jobId, jobId));
+  expect(messages).toHaveLength(2);
+  expect(messages.find((message) => message.id === old!.id)).toMatchObject({ status: "suppressed", failureCode: "visit_rescheduled" });
+  expect(messages.find((message) => message.id !== old!.id)).toMatchObject({ status: "queued", renderedBody: `Your service date is ${nextDate}` });
+  expect(messages.find((message) => message.id !== old!.id)!.expiresAt!.getTime()).toBeGreaterThan(old!.expiresAt!.getTime());
+  expect(await db.select().from(schema.notes).where(and(eq(schema.notes.entityId, jobId), eq(schema.notes.entityType, "job")))).toHaveLength(1);
+  // No-op edits neither revive old mail nor create another scheduling event.
+  await handleRecords(new Request("http://localhost", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ scheduledDate: nextDate }) }), ["jobs", jobId], owner);
+  expect(await db.select().from(domainEvents).where(and(eq(domainEvents.entityId, jobId), eq(domainEvents.eventType, "job.rescheduled")))).toHaveLength(1);
+  await db.update(automationRules).set({ status: "archived" }).where(eq(automationRules.id, rule!.id));
+});
+
 it("routes the successful payment producer event through the default receipt recipe and worker", async () => {
   const recipe = PET_WASTE_REMOVAL_PACK.defaultAutomations.find(({ sourceKey }) => sourceKey === "payment-receipt");
   expect(recipe).toBeDefined();
@@ -77,7 +120,7 @@ it("routes the successful payment producer event through the default receipt rec
 
   const paymentResponse = await handleWorkflow(new Request(`http://localhost/api/v1/invoices/${invoice!.id}/pay`, {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ amountCents: 2_500, method: "manual", idempotencyKey: "receipt-producer-worker" }),
+    body: JSON.stringify({ amountCents: 2_500, method: "cash", idempotencyKey: "receipt-producer-worker" }),
   }), ["invoices", invoice!.id, "pay"], owner);
   expect(paymentResponse?.status).toBe(200);
   const payment = (await paymentResponse!.json() as { item: { id: string; status: string } }).item;

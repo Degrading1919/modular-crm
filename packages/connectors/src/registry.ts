@@ -114,6 +114,17 @@ export class ConnectorRegistry {
     return this.completeAuthorization(tenantId, connectorKey, { state, code: "mock-approved" });
   }
   connectLocal(tenantId: string, connectorKey: string): InstallationView { return this.connectMock(tenantId, connectorKey); }
+  /** Only server-owned, decrypted account bindings may populate a hosted payment scope. */
+  connectGuidedPayments(tenantId: string, connectorKey: string, credentials: Readonly<Record<string, string>>): InstallationView {
+    const definition = this.definitions.get(connectorKey);
+    if (!definition?.manifest.guidedPayments || !definition.createConfiguredScope || !credentials.accountReference) throw new ConnectorError("connector_unavailable", "Online payments are unavailable", false);
+    const installation = this.getOrCreate(tenantId, connectorKey);
+    installation.capabilities = definition.createConfiguredScope({ tenantId, credentials, now: this.now, ensureAvailable: () => this.ensureAvailable(installation) });
+    installation.state = "connected";
+    installation.scenario = "success";
+    installation.connectedAt = this.now().toISOString();
+    return this.getInstallation(tenantId, connectorKey);
+  }
   connectConfigured(tenantId: string, connectorKey: string, credentials: Readonly<Record<string, string>>): InstallationView {
     const definition = this.definitions.get(connectorKey);
     const manifest = definition?.manifest;

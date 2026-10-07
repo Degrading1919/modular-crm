@@ -145,12 +145,14 @@ async function mutateRoute(request: Request, actor: SessionActor, id: string, ac
         // Keep this route's inactive stops as history; re-publication must neither
         // reactivate them nor strand the remaining work after optimization.
         const ownPublishedStop = job.assignedRouteId === id && ["dispatched", "en_route", "in_progress", "paused", "completed", "skipped", "canceled", "missed", "needs_return"].includes(job.status);
+        const canceledBeforePublish = job.status === "canceled" && (job.assignedRouteId === null || job.assignedRouteId === id);
         if (!assignment || job.organizationId !== actor.organizationId || job.organizationLocationId !== currentRoute.organizationLocationId ||
           !locationAllowed(actor, job.organizationLocationId) || job.scheduledDate !== currentRoute.routeDate ||
-          (job.status !== "scheduled" && !ownPublishedStop)) {
+          (job.status !== "scheduled" && !ownPublishedStop && !canceledBeforePublish)) {
           throw new DomainError("CONFLICT", "A route stop changed. Review its date, assignment and status before publishing.", 409);
         }
         if (job.status === "scheduled") assertTransition("job", job.status, "dispatched");
+        if (canceledBeforePublish) await tx.update(routeStops).set({ status: "skipped", updatedAt: new Date() }).where(and(eq(routeStops.tenantId, actor.tenantId), eq(routeStops.routePlanId, id), eq(routeStops.jobId, job.id)));
       }
       if (stopJobs.length !== currentStops.length) throw new DomainError("CONFLICT", "A route stop is no longer available. Review the route before publishing.", 409);
       await tx.update(routePlans).set({ status: "published", publishedAt: new Date(), updatedAt: new Date() }).where(and(eq(routePlans.id, id), eq(routePlans.tenantId, actor.tenantId)));
@@ -161,7 +163,7 @@ async function mutateRoute(request: Request, actor: SessionActor, id: string, ac
         await tx.insert(jobStatusEvents).values({ tenantId: actor.tenantId, jobId: job.id, fromStatus: "scheduled", toStatus: "dispatched", actorType: actor.kind, actorId: actor.userId });
         await recordEvent(actor, {
         type: "job.dispatched", entityType: "job", entityId: job.id,
-        payload: { customerId: job.customerId, jobId: job.id, routeId: id },
+        payload: { customerId: job.customerId, jobId: job.id, routeId: id, scheduledDate: currentRoute.routeDate },
         locationId: job.organizationLocationId,
         }, tx);
       }

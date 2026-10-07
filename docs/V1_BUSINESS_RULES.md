@@ -84,6 +84,9 @@ Conversion is idempotent.
 - Failed automatic payments create actionable retry state and may trigger configured notifications/automations.
 - Invoice numbering is tenant/location configurable and collision-safe.
 - Refunds never delete original payment history.
+- Staff recording of money already received supports `cash`, `check`, `card_external` (card taken outside the app), and `other`, with an optional reference of at most 200 characters. These are recording methods, not charge connectors; `source_type` remains `manual`. Method/reference are shown on payments and receipts and participate in idempotency comparison.
+- Historical unspecified manual records retain a null method (shown as “Method not recorded”); never infer how a historical customer paid. New unspecified requests are rejected. Explicit `test` requests require a connected mock payment service and have mock provenance. No missing method defaults to a test charge. Portal users cannot record manual payments; existing staff collection authority and manual-recording permission are required.
+- Exact retries of pre-migration manual/mock payments replay their existing receipt without relabeling or new side effects, even if the mock service has since been disconnected. This does not permit new unspecified manual or disconnected test payments.
 
 ## Taxes
 

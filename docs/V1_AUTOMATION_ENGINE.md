@@ -68,6 +68,7 @@ An action has:
 
 - action_type
 - configuration
+- message purpose (`service`, `marketing`, `account`) for messaging actions; see [connector contract](CONNECTOR_SYSTEM.md)
 - optional delay
 - optional continue_on_error
 - optional dedupe key template
@@ -181,6 +182,8 @@ Example:
 `When a cleanup is completed -> send the customer the "Cleanup complete" text message.`
 
 Advanced JSON is not exposed to ordinary users.
+
+Custom messages choose **Service update** or **Promotion or follow-up**. Missing purpose defaults to marketing; account access is reserved for system auth/portal delivery. A marketing template keeps its promotional protections even if an action is labeled service.
 
 ## Simulation
 

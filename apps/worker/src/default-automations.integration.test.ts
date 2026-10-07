@@ -52,7 +52,7 @@ beforeAll(async () => {
 
   const [organization] = await db.insert(organizations).values({ tenantId, legalName: "Automation Pack Test", displayName: "Automation Pack Test" }).returning({ id: organizations.id });
   organizationId = organization!.id;
-  const [location] = await db.insert(organizationLocations).values({ tenantId, organizationId, name: "Main", code: "MAIN" }).returning({ id: organizationLocations.id });
+  const [location] = await db.insert(organizationLocations).values({ tenantId, organizationId, name: "Main", code: "MAIN", addressLine1: "1 Main Street", city: "Albany", region: "NY", postalCode: "12207" }).returning({ id: organizationLocations.id });
   locationId = location!.id;
   const [role] = await db.insert(roleTemplates).values({ tenantId, key: "owner", name: "Owner" }).returning({ id: roleTemplates.id });
   const ownerUserId = "automation-pack-owner";
@@ -107,7 +107,7 @@ async function installPackRecipes() {
     version: 1,
     triggerConfig: { event: recipe.event, ...(recipe.filters ? { filters: recipe.filters } : {}) },
     conditions: {},
-    actions: recipe.actions.map((action) => ({ actionType: action.actionType, configuration: action.configuration })),
+    actions: recipe.actions.map((action) => ({ actionType: action.actionType, configuration: action.configuration, ...(action.purpose ? { purpose: action.purpose } : {}) })),
     createdByMembershipId: ownerMembershipId,
   })));
 }
@@ -115,7 +115,8 @@ async function installPackRecipes() {
 async function createJob(customer: typeof customerOne, status: string) {
   const [job] = await db.insert(jobs).values({
     tenantId, organizationId, organizationLocationId: locationId, customerId: customer.id,
-    serviceLocationId: customer.serviceLocationId, serviceId, status, scheduledDate: "2026-09-25",
+    // This test proves eligible reminder delivery, not delivery of a past visit.
+    serviceLocationId: customer.serviceLocationId, serviceId, status, scheduledDate: new Date(Date.now() + 86_400_000).toISOString().slice(0, 10),
   }).returning({ id: jobs.id });
   return job!.id;
 }
@@ -194,7 +195,7 @@ it("matches and executes default pack automation recipes against emitted event c
     type: "job.dispatched", entityType: "job", entityId: secondJobId,
     payload: { customerId: customerTwo.id, jobId: secondJobId, routeId: crypto.randomUUID() },
   });
-  expect(dispatchedOne.messages).toMatchObject([{ customerId: customerOne.id, jobId: firstJobId, recipient: customerOne.phone, channel: "sms", templateKey: "service-day-reminder", status: "queued" }]);
+  expect(dispatchedOne.messages).toMatchObject([{ customerId: customerOne.id, jobId: firstJobId, recipient: customerOne.phone, channel: "sms", category: "service", templateKey: "service-day-reminder", status: "queued" }]);
   expect(dispatchedTwo.messages).toMatchObject([{ customerId: customerTwo.id, jobId: secondJobId, recipient: customerTwo.phone, channel: "sms", templateKey: "service-day-reminder", status: "queued" }]);
   expect(queueSend.mock.calls.filter(([name]) => name === QUEUES.automationRun).length).toBeGreaterThanOrEqual(4);
   expect(queueSend.mock.calls.filter(([name]) => name === QUEUES.outboundMessage).length).toBe(3);
@@ -203,14 +204,14 @@ it("matches and executes default pack automation recipes against emitted event c
     type: "job.completed", entityType: "job", entityId: firstJobId,
     payload: { customerId: customerOne.id, from: "in_progress", to: "completed" },
   });
-  expect(completion.messages).toMatchObject([{ customerId: customerOne.id, jobId: firstJobId, recipient: customerOne.phone, channel: "sms", templateKey: "cleanup-completed", status: "queued" }]);
+  expect(completion.messages).toMatchObject([{ customerId: customerOne.id, jobId: firstJobId, recipient: customerOne.phone, channel: "sms", category: "service", templateKey: "cleanup-completed", status: "queued" }]);
 
   const failedPayment = await createInvoiceAndPayment(customerOne, "failed");
   const failed = await triggerEvent({
     type: "payment.failed", entityType: "payment", entityId: failedPayment.paymentId,
     payload: { invoiceId: failedPayment.invoiceId, customerId: customerOne.id, amountCents: 2_500 },
   });
-  expect(failed.messages).toMatchObject([{ customerId: customerOne.id, recipient: customerOne.email, channel: "email", templateKey: "payment-failed", status: "queued" }]);
+  expect(failed.messages).toMatchObject([{ customerId: customerOne.id, recipient: customerOne.email, channel: "email", category: "service", templateKey: "payment-failed", status: "queued" }]);
   const failedNotifications = await db.select().from(internalNotifications).where(and(
     eq(internalNotifications.tenantId, tenantId), eq(internalNotifications.entityId, failedPayment.paymentId),
   ));

@@ -3,7 +3,7 @@ import { DomainError, requirePermission, settledPaymentStatuses } from "@modular
 import { rows, uuidArray, type DbRow } from "./sql";
 import { requireStaff, type SessionActor } from "./actor";
 import { json } from "./http";
-import { businessTimeZone, jobBusinessDate, openInvoiceBalance, upcomingJob } from "./read-facts";
+import { businessTimeZone, invoiceOverpayment, jobBusinessDate, openInvoiceBalance, upcomingJob } from "./read-facts";
 import { reportColumns, reportValue } from "../presentation";
 
 export type ReportingActor = SessionActor & { kind: "staff"; organizationId: string; membershipId: string };
@@ -289,6 +289,33 @@ async function dashboard(actor: ReportingActor): Promise<Response> {
   ]);
 
   const attention: { id: string; title: string; detail: string; href: string }[] = [];
+  if (actor.permissions.has("invoices.read")) {
+    const extra = await rows(sql`${scope} select i.id,i.invoice_number,i.currency,${invoiceOverpayment()} as extra
+      from invoices i where i.tenant_id=${actor.tenantId} and ${locatedScope(actor, "i", "organization_location_id", "organization_id")}
+      and ${invoiceOverpayment()} > 0 order by i.created_at,i.id limit 5`);
+    for (const invoice of extra) attention.push({ id: `overpayment-${String(invoice.id)}`, title: "Extra payment needs attention",
+      detail: `Invoice ${String(invoice.invoice_number)} has ${formatCents(number(invoice.extra), String(invoice.currency))} extra. Review and refund the extra amount.`, href: `/app/invoices/${String(invoice.id)}#invoice-refund` });
+  }
+  if (actor.role === "owner" && actor.permissions.has("connectors.read")) {
+    const [account] = await rows(sql`select a.id from online_payment_accounts a
+      join connector_installations c on c.tenant_id=a.tenant_id and c.id=a.installation_id
+      where a.tenant_id=${actor.tenantId} and a.organization_id=${actor.organizationId} and c.status <> 'not_connected'
+      and a.provider='stripe-online-payments' and a.account_hash is not null and (a.charges_enabled=false or a.details_needed=true) limit 1`);
+    if (account) attention.push({ id: "payment-account-attention", title: "Stripe needs attention", detail: "Review your payment setup to keep accepting online payments.", href: "/app/connections" });
+  }
+  if (actor.role === "owner" && actor.permissions.has("tenant.update")) {
+    const [blocked] = await rows(sql`${scope} SELECT l.id, l.name FROM organization_locations l
+      WHERE l.tenant_id=${actor.tenantId} AND l.id IN (SELECT id FROM allowed_locations)
+        AND (l.address_line1 IS NULL OR btrim(l.address_line1)='')
+        AND EXISTS (SELECT 1 FROM outbound_messages m LEFT JOIN customers c ON c.id=m.customer_id AND c.tenant_id=m.tenant_id
+          LEFT JOIN jobs j ON j.id=m.job_id AND j.tenant_id=m.tenant_id
+          WHERE m.tenant_id=l.tenant_id AND m.failure_code='business_details_missing'
+            AND coalesce(j.organization_location_id,c.owning_location_id)=l.id)
+      ORDER BY l.name,l.id LIMIT 1`);
+    if (blocked) attention.push({ id: "marketing-business-address", title: "Add your business address",
+      detail: `Promotional emails for ${String(blocked.name)} need a business address. Service updates can still send.`,
+      href: `/app/settings?locationId=${encodeURIComponent(String(blocked.id))}` });
+  }
   if (number(metrics.unassignedJobs) > 0) attention.push({
     id: "unassigned-jobs", title: "Jobs need assignment",
     detail: `${number(metrics.unassignedJobs)} job${number(metrics.unassignedJobs) === 1 ? "" : "s"} scheduled today do not have a technician assigned.`, href: "/app/jobs",

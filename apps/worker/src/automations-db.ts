@@ -2,12 +2,14 @@ import { createHash } from "node:crypto";
 import { and, eq, inArray, isNull, lt, or } from "drizzle-orm";
 import {
   type Database, automationRuns, customerContacts, customers, hasUsableFeature, internalNotifications, invoices,
-  jobs, loadTenantCapabilities, memberships, messageTemplates, notes, outboundMessages, roleTemplates,
-  ticketStatusDefinitions, ticketTypeDefinitions, tickets,
+  jobs, loadTenantCapabilities, memberships, messageTemplates, notes, outboundMessages, roleTemplates, sealAccountEmail,
+  ticketStatusDefinitions, ticketTypeDefinitions, tickets, REMINDER_KEYS, reminderDeadline,
 } from "@modular-crm/db";
 import { evaluateAutomationRule, renderActionConfiguration, type AutomationAction, type AutomationPlan, type AutomationRule, type DomainEvent } from "@modular-crm/automations";
 import type { PgBoss } from "pg-boss";
 import { enqueueAutomationRun, enqueueOutboundMessage } from "./queues.js";
+import { messagePurpose, DEVELOPMENT_AUTH_SECRET } from "@modular-crm/config";
+import { invoicePaymentEmailLink } from "./invoice-payment-email.js";
 
 type RunSnapshot = { rule: AutomationRule; event: DomainEvent; plan: AutomationPlan; completedActionKeys: string[] };
 class ActionError extends Error { constructor(readonly code: string, message: string, readonly retryable = false) { super(message); } }
@@ -45,7 +47,8 @@ async function executeAction(db: Database, boss: PgBoss, snapshot: RunSnapshot, 
   }
   if (action.actionType === "send_email" || action.actionType === "send_sms") {
     const channel = action.actionType === "send_email" ? "email" : "sms";
-    const customerId = typeof configuration.customerId === "string" ? configuration.customerId : typeof event.payload.customerId === "string" ? event.payload.customerId : undefined;
+    const customerId = typeof configuration.customerId === "string" ? configuration.customerId : typeof event.payload.customerId === "string" ? event.payload.customerId : event.entityType === "invoice"
+      ? (await db.select({ customerId: invoices.customerId }).from(invoices).where(and(eq(invoices.tenantId, tenantId), eq(invoices.id, event.entityId))).limit(1))[0]?.customerId : undefined;
     if (customerId) {
       const [customer] = await db.select({ id: customers.id }).from(customers).where(and(eq(customers.id, customerId), eq(customers.tenantId, tenantId))).limit(1);
       if (!customer) throw new ActionError("invalid_event_scope", "Customer is outside the event tenant");
@@ -58,10 +61,19 @@ async function executeAction(db: Database, boss: PgBoss, snapshot: RunSnapshot, 
     const fallback = renderMessageFallback(event.eventType, channel);
     const rendered = template ? renderActionConfiguration({ subject: template.subjectTemplate ?? fallback.subject, body: template.bodyTemplate }, event) : configuration;
     const subject = String(rendered.subject ?? fallback.subject);
-    const body = String(rendered.body ?? fallback.body);
-    const [inserted] = await db.insert(outboundMessages).values({ tenantId, customerId, jobId: event.entityType === "job" ? event.entityId : undefined, invoiceId: event.entityType === "invoice" ? event.entityId : undefined, channel, templateKey, templateVersion: template?.version, recipient, renderedSubject: channel === "email" ? subject : null, renderedBody: body, status: "queued", idempotencyKey: executionKey, queuedAt: now }).onConflictDoNothing({ target: [outboundMessages.tenantId, outboundMessages.idempotencyKey] }).returning({ id: outboundMessages.id });
+    let body = String(rendered.body ?? fallback.body);
+    // Missing action purpose stays promotional. A promotional template cannot be downgraded by an action.
+    const category = template && messagePurpose(template.purpose) === "marketing" ? "marketing" : messagePurpose(action.purpose);
+    if (channel === "email" && category === "service" && event.entityType === "invoice") {
+      const link = await invoicePaymentEmailLink(db, tenantId, event.entityId, customerId, recipient);
+      if (link) body += `\n\nPay now: ${link}`;
+    }
+    const deadline = category === "service" && REMINDER_KEYS.includes(templateKey ?? "") && event.entityType === "job" ? await reminderDeadline(db, tenantId, event.entityId) : undefined;
+    const [currentJob] = deadline ? await db.select({ scheduledDate: jobs.scheduledDate }).from(jobs).where(and(eq(jobs.tenantId, tenantId), eq(jobs.id, event.entityId))).limit(1) : [];
+    const staleReminder = Boolean(deadline && (!deadline.active || !deadline.expiresAt || (event.payload.scheduledDate !== undefined && event.payload.scheduledDate !== currentJob?.scheduledDate)));
+    const [inserted] = await db.insert(outboundMessages).values({ tenantId, customerId, jobId: event.entityType === "job" ? event.entityId : undefined, invoiceId: event.entityType === "invoice" ? event.entityId : undefined, channel, category, templateKey, templateVersion: template?.version, recipient, renderedSubject: channel === "email" ? subject : null, renderedBody: category === "account" ? sealAccountEmail(body, process.env.BETTER_AUTH_SECRET ?? DEVELOPMENT_AUTH_SECRET) : body, expiresAt: deadline?.expiresAt, status: staleReminder ? "suppressed" : "queued", ...(staleReminder ? { failureCode: "visit_rescheduled", failureMessage: "The visit changed. This reminder was not sent." } : {}), idempotencyKey: executionKey, queuedAt: now }).onConflictDoNothing({ target: [outboundMessages.tenantId, outboundMessages.idempotencyKey] }).returning({ id: outboundMessages.id });
     const messageId = inserted?.id ?? (await db.select({ id: outboundMessages.id }).from(outboundMessages).where(and(eq(outboundMessages.tenantId, tenantId), eq(outboundMessages.idempotencyKey, executionKey))).limit(1))[0]?.id;
-    if (messageId) await enqueueOutboundMessage(boss, { tenantId, messageId });
+    if (messageId && !staleReminder) await enqueueOutboundMessage(boss, { tenantId, messageId }, category);
     return;
   }
   if (action.actionType === "notify_staff") {

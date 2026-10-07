@@ -77,6 +77,12 @@ beforeEach(() => {
 const identity = { tenantId: "tenant-a", id: "rule-a", version: 1 };
 
 describe("capability settings automation input", () => {
+  it("defaults unknown messages to promotional and accepts only the two owner-facing purposes", () => {
+    const input = { name: "Reminder", trigger: "job.completed", actions: [{ actionType: "send_email", configuration: { body: "Hello" } }] };
+    expect(normalizeAutomationRuleInput(input, identity).actions[0]).toMatchObject({ purpose: "marketing" });
+    expect(normalizeAutomationRuleInput({ ...input, actions: [{ ...input.actions[0], purpose: "service" }] }, identity).actions[0]).toMatchObject({ purpose: "service" });
+    for (const purpose of ["account", "unknown"]) expect(() => normalizeAutomationRuleInput({ ...input, actions: [{ ...input.actions[0], purpose }] }, identity)).toThrow("Choose Service update");
+  });
   it("converts the compact BusinessApp form into the worker rule contract", () => {
     const rule = normalizeAutomationRuleInput({ name: "Send cleanup update", trigger: "job.completed", action: "send_sms" }, identity);
 

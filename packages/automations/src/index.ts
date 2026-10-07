@@ -1,4 +1,4 @@
-import { evaluateConditions, resolvePath, type Condition } from "@modular-crm/config";
+import { evaluateConditions, resolvePath, type Condition, type MessagePurpose } from "@modular-crm/config";
 
 export type AutomationActionType =
   | "send_email" | "send_sms" | "create_ticket" | "update_ticket" | "create_job" | "reschedule_job"
@@ -9,6 +9,7 @@ export type ActionDelay = { afterEventMinutes: number } | { relativeToField: str
 export type AutomationAction = Readonly<{
   actionType: AutomationActionType;
   configuration: Record<string, unknown>;
+  purpose?: MessagePurpose;
   delay?: ActionDelay;
   continueOnError?: boolean;
   dedupeKeyTemplate?: string;
@@ -60,6 +61,7 @@ export function validateAutomationRule(rule: AutomationRule): void {
   if (!rule.actions.length || rule.actions.length > 20) throw new Error("Automation must have 1–20 actions");
   for (const action of rule.actions) {
     if (!ACTION_TYPES.has(action.actionType)) throw new Error(`Unsupported action: ${action.actionType}`);
+    if (action.purpose !== undefined && !["service", "marketing", "account"].includes(action.purpose)) throw new Error("Invalid message purpose");
     if (action.delay && ("afterEventMinutes" in action.delay ? action.delay.afterEventMinutes : action.delay.offsetMinutes) > 525600) throw new Error("Automation delay exceeds one year");
     if (action.actionType === "enqueue_followup_automation" && action.configuration.ruleId === rule.id) throw new Error("Automation cannot enqueue itself");
     if (OBVIOUS_EVENTS[action.actionType] === rule.trigger.event && !rule.conditions && !rule.trigger.filters) throw new Error("Automation would directly trigger itself");

@@ -4,6 +4,97 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-05 — Close checked-outcome and field recovery dead ends
+
+- **Status:** Accepted
+- **Area:** Connectors / Product / Architecture
+- **Decision:** Let the Owner audit and resolve a refund review from the checked processor outcome without sending another refund or fabricating collection. Rescheduling suppresses old reminders and queues only enabled replacement reminder effects; staff receipts follow invoice-branch scope while customer property grants remain enforced. First publication retains canceled stops without reactivation, reauthentication resumes only the same identity's auth-failed queue work, and local PGlite owns complete wire cycles/transactions rather than individual packets.
+- **Rationale:** Existing permanent review states, stale reminder plans and packet-level emulator interleaving prevented safe recovery or contradicted real financial/work state. No authentication weakening, test retries or new payment collection behavior is permitted.
+- **Authoritative doc:** `docs/CONNECTOR_SYSTEM.md`, `docs/PRODUCT_SCOPE.md`, `docs/ARCHITECTURE.md`
+
+## 2026-10-05 — Payment reconciliation and essential-mail headroom
+
+- **Status:** Accepted
+- **Area:** Connectors / Architecture / Implementation
+- **Decision:** Invalidate excessive hosted payment pages after committed balance changes, preserve late collected money, and expose owner recovery separately from customer receipt language. Signed account health disables collection promptly; immutable checkout retries use the provider default deadline, and irreconcilable refunds become durable owner-review records without changing confirmed money. Reserve service-email capacity and queue priority ahead of marketing, expire stale visit reminders, and protect tenant-exempt account mail with its own global recipient limit; container restart checks use liveness while readiness remains operational.
+- **Rationale:** External acceptance, delayed notifications and shared-sender bursts must not fabricate financial facts, block account access, send obsolete reminders or restart healthy processes during database failover.
+- **Authoritative doc:** `docs/CONNECTOR_SYSTEM.md`, `docs/ARCHITECTURE.md`, `docs/DEPLOYMENT.md`
+- **Supersedes:** Tenant-bound account-mail caps and worker-image readiness checks in the preceding email/health decisions.
+
+## 2026-10-05 — Hosted invoice payments are account-bound and webhook-confirmed
+
+- **Status:** Accepted
+- **Area:** Connectors / Product / Implementation
+- **Decision:** Extend provider-neutral payments with guided onboarding, hosted invoice checkout, authenticated raw notification parsing and partial refunds; implement Stripe Standard direct Checkout behind operator-owned configuration and local signed mock parity. Bind accounts to the invoice business/tenant, calculate collectible amounts server-side, and require verified deduplicated notifications before recording collected or refunded money. Preserve pending refund reservations, account bindings for historical confirmations, canonical balance/receipt/report semantics and owner opt-in for partial customer payments.
+- **Rationale:** A redirect or API acceptance is not payment proof; persistent account, request and event identity protects scope and replay while owners never manage keys or card data.
+- **Authoritative doc:** `docs/CONNECTOR_SYSTEM.md`, `docs/DEPLOYMENT.md`, `docs/FEATURE_CATALOG.md`
+
+## 2026-10-05 — Essential service email and shared-sender protection
+
+- **Status:** Accepted
+- **Area:** Connectors / UX / Implementation
+- **Decision:** Declare service, marketing and account purposes; promotional opt-out/address requirements must not stop service updates, and unknown custom/legacy rules default to marketing. Protect platform SMTP with shared database-backed hourly/daily limits and lower first-week limits; defer excess work durably and identify the shared sender with a configurable “via” name. Separate unsubscribe signing with HKDF and a one-release legacy verification bridge; accept bounce/complaint suppression as deferred delivery-webhook work.
+- **Rationale:** Automation origin did not establish marketing purpose, and unbounded shared sending jeopardized every tenant's sender reputation.
+- **Authoritative doc:** `docs/CONNECTOR_SYSTEM.md`, `docs/DEPLOYMENT.md`, `docs/FEATURE_CATALOG.md`
+- **Supersedes:** Automation/nontransactional equivalence and business-only From naming in “Built-in business email and purpose-scoped unsubscribe”.
+
+## 2026-10-05 — Built-in business email and purpose-scoped unsubscribe
+
+- **Status:** Accepted
+- **Area:** Connectors / UX / Implementation
+- **Decision:** Customer email defaults to provider-neutral platform SMTP without owner setup; a connected business email provider takes precedence, while SMS requires a connector and production workers do not register mocks. Use business From display name, real contact Reply-To and address footer, and signed one-click opt-out for nontransactional email that leaves receipts/account access unaffected. Track acceptance, safe failures and queue retries without claiming exactly-once SMTP delivery; dispatch domain events in bounded sequential batches to avoid a polling delay per event during normal work bursts.
+- **Rationale:** A missing owner connection should not prevent day-one customer email; scanner-safe, tenant-bound opt-out must not disable essential account or payment messages.
+- **Authoritative doc:** `docs/CONNECTOR_SYSTEM.md`, `docs/DEPLOYMENT.md`
+- **Supersedes:** Missing-connection failure for customer email in the background-message connector contract (SMS unchanged).
+
+## 2026-10-05 — Portable images, explicit migration release step and bounded worker progress
+
+- **Status:** Accepted
+- **Area:** Architecture / Implementation
+- **Decision:** Package web, compiled worker and one-shot application/queue migrations as non-root provider-neutral OCI image targets; supply secrets only at runtime and migrate before rolling out services. Production worker boot does not upgrade schemas, and readiness bounds idle polling and in-flight job age. Build and smoke-test images in CI without publishing or deploying them.
+- **Rationale:** A typecheck-only worker build and absent image/release artifacts prevented portable production packaging; an active polling flag alone concealed stalled consumers.
+- **Authoritative doc:** `docs/ARCHITECTURE.md`, `docs/DEPLOYMENT.md`
+
+## 2026-10-05 — Client loading follows selection and explicit refresh, not render identity
+
+- **Status:** Accepted
+- **Area:** Architecture / Implementation
+- **Decision:** Keep client loading dependencies stable and complete: only meaningful endpoint, permission, identity, record selection or explicit refresh changes cause reads. Enforce exhaustive hook dependencies as errors and measure idle API GET counts across owner, field and portal browser flows without retries or increased timeouts.
+- **Rationale:** A render-created default history endpoint continuously retriggered the automation loading effect, generating hundreds of requests and transiently hiding completed/empty results. Lint fixes must not introduce equivalent loops in other effects.
+- **Authoritative doc:** `docs/ARCHITECTURE.md`
+
+## 2026-10-05 — Production startup fails closed; readiness observes database and worker state
+
+- **Status:** Accepted
+- **Area:** Architecture / Implementation
+- **Decision:** Validate the existing shared server configuration once before web/worker runtime starts; aggregate unsafe production settings without secret values. Provide unauthenticated generic liveness and bounded database/migration readiness in both apps, with worker readiness requiring actual job polling. Normalize malformed PostgreSQL input casts centrally to 400 while preserving explicit 404 checks, authorization and other error classifications.
+- **Rationale:** Unused startup validation, inherited local mail defaults, absent health probes and unhandled UUID casts prevented a reliable production configuration boundary. A loopback-only HTTP smoke exception does not bypass the remaining production protections.
+- **Authoritative doc:** `docs/ARCHITECTURE.md`
+
+## 2026-10-05 — Export discovery is evaluated once; field tests observe confirmed sync
+
+- **Status:** Accepted
+- **Area:** Architecture / Implementation
+- **Decision:** Evaluate primary-key catalog metadata once per structured business export while retaining its snapshot, pagination, scope and secret exclusions. Browser tests that inspect persisted field state must await the action's sync response or poll that state, never treat a projected offline badge as proof of a committed update. Keep existing browser timeouts, one worker, zero retries and CI app mode.
+- **Rationale:** PostgreSQL 17 EXPLAIN reproduced a repeated catalog join taking minutes independently of Next.js; materializing the same metadata removes the repeated work. Field completion traces prove an immediate read can race the saved device operation.
+- **Authoritative doc:** `docs/ARCHITECTURE.md`, `docs/V1_DEVELOPER_WORKFLOW.md`
+
+## 2026-10-05 — GitHub quality gates use real PostgreSQL for browser verification
+
+- **Status:** Accepted
+- **Area:** Architecture / Implementation
+- **Decision:** Every pull request on any base branch and each push to `main` runs independent lint, typecheck, unit/integration, production build and complete Playwright gates. Use Node 22, repository-pinned pnpm, frozen installs, fresh PostgreSQL 17/Mailpit browser services and generated temporary secrets; keep existing isolated unit fixtures and reserve PGlite TCP for local convenience. CI does not retry failing tests, merge, deploy, or use production credentials.
+- **Rationale:** Reviewer/laptop-only checks and the documented PGlite TCP isolation defect should not define PostgreSQL browser verification; independent gate names and failure artifacts make failures attributable.
+- **Authoritative doc:** `docs/ARCHITECTURE.md`, `docs/V1_DEVELOPER_WORKFLOW.md`
+
+## 2026-10-05 — Staff select real records and record the actual payment method
+
+- **Status:** Accepted
+- **Area:** Product / UX / Implementation
+- **Decision:** Staff create forms use scoped searchable named records and saved service-address choices, persisting the selected address for jobs/plans and validating the operational branch resolved from address, customer, then workspace. Record money already received with an explicit Cash, Check, externally taken Card, or Other method and optional reference; separate these facts from connector provenance, preserve authorization/allocation/idempotency, and never default to a test charge or infer a historical method.
+- **Rationale:** Raw-ID forms, ignored addresses, and test-only invoice recording prevented usable staff entry and misrepresented real receipts. Payments recording reuses the existing invoice workflow while the collection stays read-only.
+- **Authoritative doc:** `docs/PRODUCT_SCOPE.md`, `docs/V1_BUSINESS_RULES.md`, `docs/V1_DATABASE_SCHEMA.md`
+
 ## 2026-10-05 — Owner-authorized independent PR review loop
 
 - **Status:** Accepted

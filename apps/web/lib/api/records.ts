@@ -16,7 +16,8 @@ import { first, normalized, rows, uuidArray } from "./sql";
 import { calculateServicePlanPrice, servicePlanFrequencyKey, type PlanScheduleVersion } from "./plan-lifecycle";
 import { reviseEstimate } from "./estimate-revisions";
 import { fieldTicketScope } from "./ticket-scope";
-import { openInvoiceBalance, upcomingJob } from "./read-facts";
+import { invoiceOverpayment, openInvoiceBalance, upcomingJob } from "./read-facts";
+import { recordJobReschedule } from "./job-reschedule";
 
 type RecordResource = "leads" | "customers" | "jobs" | "estimates" | "invoices" | "service-plans" | "tickets" | "services";
 const resources = new Set<RecordResource>(["leads", "customers", "jobs", "estimates", "invoices", "service-plans", "tickets", "services"]);
@@ -54,7 +55,15 @@ async function assertTicketAccess(actor: SessionActor, id: string): Promise<void
       and ${locationSql(actor, sql`coalesce(sl.organization_location_id, j.organization_location_id, c.owning_location_id)`)} limit 1`));
 }
 
-function viewQuery(resource: RecordResource, actor: SessionActor, id?: string): SQL {
+function viewQuery(resource: RecordResource, actor: SessionActor, id?: string, search = "", openOnly = false): SQL {
+  // Literal, parameterized substring search: '%' and '_' are not wildcard grants.
+  const contains = (column: SQL) => sql`position(lower(${search}) in lower(coalesce(${column}, ''))) > 0`;
+  const customerSearch = search ? sql`and (${contains(sql`c.display_name`)} or ${contains(sql`c.billing_email`)} or ${contains(sql`c.billing_phone`)}
+    or ${contains(sql`c.billing_address::text`)}
+    or exists (select 1 from customer_contacts cc where cc.tenant_id=c.tenant_id and cc.customer_id=c.id and cc.active=true
+      and (${contains(sql`cc.email`)} or ${contains(sql`cc.phone`)}))
+    or exists (select 1 from service_locations sls where sls.tenant_id=c.tenant_id and sls.customer_id=c.id and sls.active=true
+      and ${locationSql(actor, sql`sls.organization_location_id`)} and ${contains(sql`concat_ws(' ', sls.name, sls.address_line1, sls.address_line2, sls.city, sls.region, sls.postal_code)`)}))` : sql``;
   const byId = id ? sql`and ${sql.raw(`${resource === "service-plans" ? "sp" : resource === "customers" ? "c" : resource === "leads" ? "l" : resource === "jobs" ? "j" : resource === "estimates" ? "e" : resource === "invoices" ? "i" : resource === "tickets" ? "t" : "s"}.id`)} = ${id}` : sql``;
   const limit = id ? 1 : 200;
   switch (resource) {
@@ -64,8 +73,8 @@ function viewQuery(resource: RecordResource, actor: SessionActor, id?: string): 
       coalesce(c.billing_address->>'line1', sl.address_line1, '') as address,
       (select min(j.scheduled_date) from jobs j where j.tenant_id=c.tenant_id and j.customer_id=c.id
         and j.organization_id=c.organization_id and ${locationSql(actor, sql`j.organization_location_id`)} and ${upcomingJob()}) as next_service
-      from customers c left join lateral (select address_line1 from service_locations where tenant_id = c.tenant_id and customer_id = c.id order by created_at limit 1) sl on true
-      where c.tenant_id = ${actor.tenantId} and ${locationSql(actor, sql`c.owning_location_id`)} ${byId} order by c.created_at desc limit ${limit}`;
+      from customers c left join lateral (select slv.address_line1 from service_locations slv where slv.tenant_id = c.tenant_id and slv.customer_id = c.id and slv.active=true and ${locationSql(actor, sql`slv.organization_location_id`)} order by slv.created_at, slv.id limit 1) sl on true
+      where c.tenant_id = ${actor.tenantId} and ${locationSql(actor, sql`c.owning_location_id`)} ${byId} ${customerSearch} order by c.created_at desc, c.id limit ${limit}`;
     case "jobs": return sql`select j.*, c.display_name as customer_name, s.name as service_name, sl.address_line1 as address,
       u.name as technician_name
       from jobs j join customers c on c.id=j.customer_id and c.tenant_id=j.tenant_id
@@ -86,11 +95,13 @@ function viewQuery(resource: RecordResource, actor: SessionActor, id?: string): 
     case "invoices": return sql`select i.*, c.display_name as customer_name, i.invoice_number as number,
       o.display_name as organization_name, case when i.organization_location_id is null then 'Unassigned' else ol.name end as location_name,
       i.total_minor as total_cents, i.paid_minor as paid_cents, i.balance_minor as balance_cents,
-      ${openInvoiceBalance()} as open_balance_cents, i.due_at as due_date
+      ${openInvoiceBalance()} as open_balance_cents, ${invoiceOverpayment()} as overpayment_cents, i.due_at as due_date
       from invoices i join customers c on c.id=i.customer_id and c.tenant_id=i.tenant_id
       left join organizations o on o.id=i.organization_id and o.tenant_id=i.tenant_id
       left join organization_locations ol on ol.id=i.organization_location_id and ol.tenant_id=i.tenant_id and ol.organization_id=i.organization_id
       where i.tenant_id=${actor.tenantId} and ${locationSql(actor, sql`i.organization_location_id`)} ${byId}
+      ${openOnly ? sql`and ${openInvoiceBalance()} > 0` : sql``}
+      ${search ? sql`and (${contains(sql`i.invoice_number`)} or ${contains(sql`c.display_name`)} or ${contains(sql`ol.name`)})` : sql``}
       order by i.created_at desc limit ${limit}`;
     case "service-plans": return sql`select sp.*, c.display_name as customer_name, s.name as service_name,
       coalesce((select case
@@ -122,15 +133,16 @@ function viewQuery(resource: RecordResource, actor: SessionActor, id?: string): 
       where t.tenant_id=${actor.tenantId} and ${locationSql(actor, sql`coalesce(sl.organization_location_id, j.organization_location_id, c.owning_location_id)`)} ${byId} order by t.created_at desc limit ${limit}`;
     case "services": return sql`select s.*, s.default_duration_minutes as duration_minutes,
       (select pr.effects->>'amountMinor' from price_rules pr where pr.tenant_id=s.tenant_id and pr.conditions->>'serviceId'=s.id::text and pr.active=true order by pr.priority desc limit 1) as base_price_cents
-      from services s where s.tenant_id=${actor.tenantId} ${byId} order by s.name limit ${limit}`;
+      from services s where s.tenant_id=${actor.tenantId} ${byId}
+      ${search ? sql`and (${contains(sql`s.name`)} or ${contains(sql`s.description`)})` : sql``} order by s.name, s.id limit ${limit}`;
   }
 }
 
-async function readResource(resource: RecordResource, actor: SessionActor, id?: string): Promise<Response> {
+async function readResource(resource: RecordResource, actor: SessionActor, id?: string, search = "", openOnly = false): Promise<Response> {
   requirePermission(actor, readPermissions[resource]);
   requireStaff(actor);
   if (actor.role === "technician") throw new DomainError("FORBIDDEN", "Use your assigned work view.", 403);
-  const result = await rows(viewQuery(resource, actor, id));
+  const result = await rows(viewQuery(resource, actor, id, search, openOnly));
   if (id) {
     const item = normalized(first(result)) as Record<string, unknown>;
     if (resource === "estimates") {
@@ -177,7 +189,7 @@ async function readResource(resource: RecordResource, actor: SessionActor, id?: 
     if (resource === "customers") {
       const [contacts, locations, pets] = await Promise.all([
         rows(sql`select * from customer_contacts where tenant_id=${actor.tenantId} and customer_id=${id}`),
-        rows(sql`select id,name,address_line1,city,region,postal_code from service_locations where tenant_id=${actor.tenantId} and customer_id=${id}`),
+        rows(sql`select id,name,address_line1,city,region,postal_code from service_locations where tenant_id=${actor.tenantId} and customer_id=${id} and active=true and ${locationSql(actor, sql`organization_location_id`)} order by created_at,id`),
         rows(sql`select id,name,custom_fields from customer_assets where tenant_id=${actor.tenantId} and customer_id=${id} and archived_at is null`),
       ]);
       item.contacts = normalized(contacts); item.locations = normalized(locations); item.pets = normalized(pets);
@@ -189,7 +201,7 @@ async function readResource(resource: RecordResource, actor: SessionActor, id?: 
 
 const customerSchema = z.object({ name: z.string().min(2), email: z.email().optional().or(z.literal("")), phone: z.string().optional(), address: z.string().optional(), customerType: z.enum(["residential", "commercial"]).default("residential") });
 const leadSchema = z.object({ name: z.string().min(2), email: z.email().optional().or(z.literal("")), phone: z.string().optional(), source: z.string().optional(), address: z.string().optional(), notes: z.string().optional() });
-const jobSchema = z.object({ customerId: z.uuid(), serviceId: z.uuid().optional(), serviceName: z.string().optional(), address: z.string().optional(), scheduledDate: z.iso.date().optional(), notes: z.string().optional() });
+const jobSchema = z.object({ customerId: z.uuid(), serviceLocationId: z.uuid().optional(), serviceId: z.uuid().optional(), serviceName: z.string().optional(), address: z.string().optional(), scheduledDate: z.iso.date().optional(), notes: z.string().optional() });
 const estimateSchema = z.object({
   customerId: z.uuid().optional(), leadId: z.uuid().optional(), serviceId: z.uuid().optional(),
   title: z.string().min(1), totalCents: z.number().int().nonnegative(), notes: z.string().optional(),
@@ -198,12 +210,23 @@ const estimateSchema = z.object({
 });
 const invoiceSchema = z.object({ customerId: z.uuid(), description: z.string().min(1), totalCents: z.number().int().nonnegative(), dueDate: z.iso.date().optional() });
 const planSchema = z.object({
-  customerId: z.uuid(), serviceId: z.uuid(), frequency: z.string().default("weekly"), startDate: z.iso.date().optional(),
+  customerId: z.uuid(), serviceLocationId: z.uuid().optional(), serviceId: z.uuid(), frequency: z.string().default("weekly"), startDate: z.iso.date().optional(),
   interval: z.number().int().min(1).max(52).optional(), daysOfWeek: z.array(z.number().int().min(0).max(6)).min(1).max(7).optional(),
   dayOfMonth: z.number().int().min(1).max(31).optional(),
 });
 const ticketSchema = z.object({ subject: z.string().min(2), customerId: z.uuid().optional(), type: z.string().optional(), description: z.string().min(1) });
 const serviceSchema = z.object({ name: z.string().min(2), description: z.string().optional(), basePriceCents: z.number().int().nonnegative().optional(), durationMinutes: z.number().int().positive().optional() });
+
+async function chosenServiceLocation(actor: SessionActor, customerId: string, serviceLocationId?: string) {
+  const result = await getDb().select().from(serviceLocations).where(and(
+    eq(serviceLocations.tenantId, actor.tenantId), eq(serviceLocations.customerId, customerId), eq(serviceLocations.active, true),
+    serviceLocationId ? eq(serviceLocations.id, serviceLocationId) : undefined,
+    locationSql(actor, sql`${serviceLocations.organizationLocationId}`),
+  )).orderBy(asc(serviceLocations.createdAt), asc(serviceLocations.id)).limit(2);
+  if (!result.length) throw new DomainError(serviceLocationId ? "NOT_FOUND" : "VALIDATION_ERROR", serviceLocationId ? "Service address not found." : "Add a service address for this customer first.", serviceLocationId ? 404 : 422);
+  if (result.length > 1) throw new DomainError("VALIDATION_ERROR", "Choose a saved service address for this customer.", 422);
+  return result[0]!;
+}
 
 async function createResource(resource: RecordResource, request: Request, actor: SessionActor): Promise<Response> {
   requireStaff(actor);
@@ -258,12 +281,12 @@ async function createResource(resource: RecordResource, request: Request, actor:
     assertLocationAccess(actor, customer.owningLocationId);
     const [service] = await db.select().from(services).where(and(eq(services.tenantId, actor.tenantId), body.serviceId ? eq(services.id, body.serviceId) : eq(services.name, body.serviceName ?? ""))).limit(1);
     if (!service) throw new DomainError("VALIDATION_ERROR", "Choose a service from your catalog.", 422);
-    const [location] = await db.select().from(serviceLocations).where(and(eq(serviceLocations.tenantId, actor.tenantId), eq(serviceLocations.customerId, customer.id))).limit(1);
-    if (!location) throw new DomainError("VALIDATION_ERROR", "Add a service address for this customer first.", 422);
-    assertLocationAccess(actor, location.organizationLocationId);
+    const location = await chosenServiceLocation(actor, customer.id, body.serviceLocationId);
+    const organizationLocationId = location.organizationLocationId ?? customer.owningLocationId ?? locationId;
+    assertLocationAccess(actor, organizationLocationId);
     const status = body.scheduledDate ? "scheduled" : "unscheduled";
     const job = await db.transaction(async (tx) => {
-      const [created] = await tx.insert(jobs).values({ tenantId: actor.tenantId, organizationId, organizationLocationId: customer.owningLocationId ?? locationId, customerId: customer.id, serviceLocationId: location.id, serviceId: service.id, status, scheduledDate: body.scheduledDate, estimatedDurationMinutes: service.defaultDurationMinutes, internalSummary: body.notes }).returning();
+      const [created] = await tx.insert(jobs).values({ tenantId: actor.tenantId, organizationId: customer.organizationId, organizationLocationId, customerId: customer.id, serviceLocationId: location.id, serviceId: service.id, status, scheduledDate: body.scheduledDate, estimatedDurationMinutes: service.defaultDurationMinutes, internalSummary: body.notes }).returning();
       if (!created) throw new Error("Could not create job");
       await tx.insert(jobStatusEvents).values({ tenantId: actor.tenantId, jobId: created.id, fromStatus: null, toStatus: status, actorType: "staff", actorId: actor.userId });
       await recordEvent(actor, { type: "job.created", entityType: "job", entityId: created.id, payload: { status }, auditAction: "job.create", locationId: created.organizationLocationId }, tx);
@@ -342,9 +365,9 @@ async function createResource(resource: RecordResource, request: Request, actor:
     const [service] = await db.select().from(services).where(and(eq(services.id, body.serviceId), eq(services.tenantId, actor.tenantId))).limit(1);
     if (!customer || !service) throw new DomainError("NOT_FOUND", "Customer or service not found.", 404);
     assertLocationAccess(actor, customer.owningLocationId);
-    const [location] = await db.select().from(serviceLocations).where(and(eq(serviceLocations.tenantId, actor.tenantId), eq(serviceLocations.customerId, customer.id))).limit(1);
-    if (!location) throw new DomainError("VALIDATION_ERROR", "Add a service address first.", 422);
-    assertLocationAccess(actor, location.organizationLocationId);
+    const location = await chosenServiceLocation(actor, customer.id, body.serviceLocationId);
+    const organizationLocationId = location.organizationLocationId ?? customer.owningLocationId ?? locationId;
+    assertLocationAccess(actor, organizationLocationId);
     const [tenant] = await db.select({ timezone: tenants.defaultTimezone }).from(tenants).where(eq(tenants.id, actor.tenantId));
     const timezone = tenant?.timezone ?? "America/New_York";
     const effectiveFrom = body.startDate ?? new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date());
@@ -378,7 +401,7 @@ async function createResource(resource: RecordResource, request: Request, actor:
       if (!rule) throw new Error("Could not create recurrence");
       const [plan] = await tx.insert(servicePlans).values({
         tenantId: actor.tenantId, customerId: customer.id, serviceLocationId: location.id,
-        organizationLocationId: customer.owningLocationId ?? location.organizationLocationId ?? locationId,
+        organizationLocationId,
         serviceId: service.id, recurrenceRuleId: rule.id, status: "active", effectiveFrom,
         pricingSnapshot: planPriceSnapshot, billingConfiguration: { type: "per_job" },
       }).returning();
@@ -456,6 +479,9 @@ async function patchResource(resource: RecordResource, id: string, request: Requ
     const [before] = (await tx.execute(sql`select * from ${table} where id = ${id} and tenant_id = ${actor.tenantId} and ${locationScope} limit 1 for update`)).rows;
     if (!before) throw new DomainError("NOT_FOUND", "Record not found.", 404);
     const changes = Object.fromEntries(entries.map(([key, value]) => [config.fields[key]!, value]));
+    const rescheduled = resource === "jobs" && body.scheduledDate !== undefined && body.scheduledDate !== before.scheduled_date;
+    // A date-only edit cannot truthfully retain a window on the previous date.
+    if (rescheduled) { changes.service_window_start = null; changes.service_window_end = null; }
     const assignments = sql.join(Object.entries(changes).map(([column, value]) => {
       const encoded = value !== null && typeof value === "object" && !(value instanceof Date)
         ? sql`${JSON.stringify(value)}::jsonb`
@@ -464,6 +490,7 @@ async function patchResource(resource: RecordResource, id: string, request: Requ
     }), sql`, `);
     const [after] = (await tx.execute(sql`update ${table} set ${assignments}, updated_at = now() where id = ${id} and tenant_id = ${actor.tenantId} and ${locationScope} returning *`)).rows;
     if (!after) throw new DomainError("NOT_FOUND", "Record not found.", 404);
+    if (rescheduled) await recordJobReschedule(tx, actor, { id, customerId: String(before.customer_id), organizationLocationId: before.organization_location_id as string | null, scheduledDate: before.scheduled_date as string | null }, body.scheduledDate as string | null);
     await recordEvent(actor, { type: `${resource.replace(/s$/, "")}.updated`, entityType: resource.replace(/s$/, ""), entityId: id, auditAction: `${resource}.update`, before, after }, tx);
     return after;
   });
@@ -477,7 +504,11 @@ export async function handleRecords(request: Request, path: string[], actor: Ses
   const id = path[1];
   // A malformed ID cannot name a record; answer as the public API does instead of failing in the database.
   if (id !== undefined && !z.uuid().safeParse(id).success) throw new DomainError("NOT_FOUND", "Record not found.", 404);
-  if (request.method === "GET") return readResource(resource, actor, id);
+  if (request.method === "GET") {
+    const params = new URL(request.url).searchParams;
+    const search = z.string().trim().max(120).parse(params.get("search") ?? "");
+    return readResource(resource, actor, id, id ? "" : search, !id && params.get("open") === "1");
+  }
   if (request.method === "POST" && !id) return createResource(resource, request, actor);
   if (request.method === "PATCH" && id) {
     if (resource === "service-plans") return changeServicePlan(request, id, actor);

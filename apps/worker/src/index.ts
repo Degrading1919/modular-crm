@@ -1,11 +1,13 @@
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { PgBoss } from "pg-boss";
+import { readServerConfig, type ServerConfig } from "@modular-crm/config";
 import { closeDatabase, createDatabase, type Database } from "@modular-crm/db";
 import { isSecretEnvelope, openSecret } from "@modular-crm/domain";
-import { createMockConnectorRegistry } from "@modular-crm/connectors";
+import { createConnectorRegistry } from "@modular-crm/connectors";
 import { enqueuePendingAutomationRuns, processAutomationRun } from "./automations-db.js";
 import { processDomainEvent, publishPendingDomainEvents } from "./events-db.js";
+import { jobLoopRunning, startHealthServer } from "./health.js";
 import { enqueuePendingMessages, processOutboundMessage } from "./messages-db.js";
 import { QUEUES, registerWorkerQueues, type AutomationRunJob, type DomainEventJob, type OutboundMessageJob, type RecurringGenerationJob, type WebhookDeliveryJob } from "./queues.js";
 import { generateRecurringJobs } from "./recurring-db.js";
@@ -31,7 +33,7 @@ export function environmentSecretResolver(env: Record<string, string | undefined
   };
 }
 
-export async function registerWorkerHandlers(db: Database, boss: PgBoss, resolveSecret: WebhookSecretResolver): Promise<void> {
+export async function registerWorkerHandlers(db: Database, boss: PgBoss, resolveSecret: WebhookSecretResolver, config: ServerConfig = readServerConfig(process.env)): Promise<void> {
   await boss.work(QUEUES.publishOutbox, async () => {
     const [events, messages, automations, webhooks] = await Promise.all([
       publishPendingDomainEvents(db, boss), enqueuePendingMessages(db, boss),
@@ -45,14 +47,16 @@ export async function registerWorkerHandlers(db: Database, boss: PgBoss, resolve
       log("recurring.generated", { tenantId: job.data.tenantId ?? "all", ...result });
     }
   });
-  await boss.work<DomainEventJob>(QUEUES.domainEvent, async (jobs) => {
+  // One poll per event can strand customer mail behind ordinary work bursts.
+  // Drain a bounded batch serially; tenant claims and replay protection remain.
+  await boss.work<DomainEventJob>(QUEUES.domainEvent, { batchSize: 10 }, async (jobs) => {
     for (const job of jobs) await processDomainEvent(db, boss, job.data);
   });
   await boss.work<AutomationRunJob>(QUEUES.automationRun, async (jobs) => {
     for (const job of jobs) await processAutomationRun(db, boss, job.data);
   });
   await boss.work<OutboundMessageJob>(QUEUES.outboundMessage, async (jobs) => {
-    for (const job of jobs) await processOutboundMessage(db, createMockConnectorRegistry({ includePlannedProviders: true }), job.data);
+    for (const job of jobs) await processOutboundMessage(db, createConnectorRegistry({ mockConnectors: config.mockConnectors, includePlannedProviders: true }), job.data, new Date(), config);
   });
   await boss.work<WebhookDeliveryJob>(QUEUES.webhookDelivery, async (jobs) => {
     for (const job of jobs) await processWebhookDelivery(db, boss, job.data, resolveSecret);
@@ -60,25 +64,32 @@ export async function registerWorkerHandlers(db: Database, boss: PgBoss, resolve
 }
 
 export async function startWorker(env: Record<string, string | undefined> = process.env): Promise<{ stop: () => Promise<void>; boss: PgBoss; db: Database }> {
-  const connectionString = env.DATABASE_URL;
+  const config = readServerConfig(env);
+  const connectionString = config.databaseUrl;
   if (!connectionString) throw new Error("DATABASE_URL is required for the background worker");
   const db = createDatabase(connectionString);
-  const boss = new PgBoss({ connectionString });
+  const boss = new PgBoss({ connectionString, migrate: config.environment !== "production", createSchema: config.environment !== "production" });
+  let stopping = false;
+  let health: Awaited<ReturnType<typeof startHealthServer>> | undefined;
   boss.on("error", (error) => log("queue.error", { message: error.message }));
   try {
     await boss.start();
     await registerWorkerQueues(boss);
-    await registerWorkerHandlers(db, boss, environmentSecretResolver(env));
+    await registerWorkerHandlers(db, boss, environmentSecretResolver(env), config);
     await boss.schedule(QUEUES.publishOutbox, "* * * * *", {}, { tz: "UTC" });
     await boss.schedule(QUEUES.recurringGeneration, "0 3 * * *", {}, { tz: "UTC" });
     await boss.send(QUEUES.publishOutbox, {});
     await boss.send(QUEUES.recurringGeneration, {});
+    health = await startHealthServer({ port: config.workerHealthPort, connectionString, isRunning: () => !stopping && jobLoopRunning(boss,
+      { pollStaleMs: config.workerPollStaleMs, jobMaxMs: config.workerJobMaxMs }) });
     const outboxSweep = setInterval(() => {
       void boss.send(QUEUES.publishOutbox, {}).catch(() => log("outbox.enqueue_failed"));
     }, 15_000);
     log("started", { queues: Object.values(QUEUES) });
-    return { boss, db, stop: async () => { clearInterval(outboxSweep); await boss.stop(); await closeDatabase(db); log("stopped"); } };
+    return { boss, db, stop: async () => { stopping = true; clearInterval(outboxSweep); await health?.stop(); await boss.stop(); await closeDatabase(db); log("stopped"); } };
   } catch (error) {
+    stopping = true;
+    await health?.stop().catch(() => undefined);
     await boss.stop().catch(() => undefined);
     await closeDatabase(db);
     throw error;

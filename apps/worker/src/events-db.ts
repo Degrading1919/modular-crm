@@ -1,7 +1,7 @@
 import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
 import {
   type Database, automationRules, automationRuns, domainEvents, hasUsableFeature, loadTenantCapabilities,
-  webhookDeliveries, webhookSubscriptions,
+  webhookDeliveries, webhookSubscriptions, REMINDER_KEYS,
 } from "@modular-crm/db";
 import { automationRunKey, planAutomationRun, type AutomationAction, type AutomationRule, type DomainEvent } from "@modular-crm/automations";
 import type { PgBoss } from "pg-boss";
@@ -18,7 +18,7 @@ const WORKER_ACTION_CONFIG_KEYS: Readonly<Record<string, ReadonlySet<string>>> =
   add_note: new Set(["body"]),
   notify_staff: new Set(["title", "body"]),
 };
-const ACTION_METADATA_KEYS = new Set(["delay", "continueOnError", "dedupeKeyTemplate"]);
+const ACTION_METADATA_KEYS = new Set(["delay", "continueOnError", "dedupeKeyTemplate", "purpose"]);
 const SEEDED_NOTIFICATION_COPY: Readonly<Record<string, string>> = {
   manual_review: "A new signup needs manual review.",
   payment_failed: "A customer's payment failed.",
@@ -28,7 +28,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function normalizeActionMetadata(item: Record<string, unknown>): Pick<AutomationAction, "delay" | "continueOnError" | "dedupeKeyTemplate"> {
+function normalizeActionMetadata(item: Record<string, unknown>): Pick<AutomationAction, "delay" | "continueOnError" | "dedupeKeyTemplate" | "purpose"> {
+  if (item.purpose !== undefined && !["service", "marketing", "account"].includes(String(item.purpose))) throw new Error("Automation message purpose is invalid");
   let delay: AutomationAction["delay"];
   if (item.delay !== undefined) {
     if (!isRecord(item.delay)) throw new Error("Automation delay is invalid");
@@ -46,6 +47,7 @@ function normalizeActionMetadata(item: Record<string, unknown>): Pick<Automation
     throw new Error("Automation deduplication key is invalid");
   }
   return {
+    ...(item.purpose !== undefined ? { purpose: item.purpose as AutomationAction["purpose"] } : {}),
     ...(delay ? { delay } : {}),
     ...(typeof item.continueOnError === "boolean" ? { continueOnError: item.continueOnError } : {}),
     ...(typeof item.dedupeKeyTemplate === "string" ? { dedupeKeyTemplate: item.dedupeKeyTemplate } : {}),
@@ -71,6 +73,7 @@ function normalizeAutomationAction(item: Record<string, unknown>, source: RuleRo
     const metadata = normalizeActionMetadata(item);
     return {
       actionType: item.channel === "email" ? "send_email" : "send_sms",
+      purpose: "marketing",
       configuration: { templateKey: typeof item.template === "string" ? item.template : "" },
       ...metadata,
     };
@@ -115,7 +118,7 @@ function normalizeAutomationAction(item: Record<string, unknown>, source: RuleRo
       throw new Error(`The ${rawType} action does not support ${key}`);
     }
   }
-  return { actionType: rawType as AutomationAction["actionType"], configuration, ...normalizeActionMetadata(item) };
+  return { actionType: rawType as AutomationAction["actionType"], configuration, ...(["send_email", "send_sms"].includes(rawType) ? { purpose: "marketing" as const } : {}), ...normalizeActionMetadata(item) };
 }
 
 export function toAutomationEvent(row: EventRow): DomainEvent | undefined {
@@ -177,6 +180,15 @@ export async function processDomainEvent(db: Database, boss: PgBoss, input: { te
     let plan: ReturnType<typeof planAutomationRun>;
     try {
       rule = normalizeAutomationRule(ruleRow);
+      if (event.eventType === "job.rescheduled" && event.entityType === "job" && event.payload.scheduledDate) {
+        // Rescheduling repeats only enabled visit-reminder actions, never the
+        // unrelated effects of a dispatch rule or a disabled pack recipe.
+        if (rule.trigger.event === "job.dispatched") {
+          const actions = rule.actions.filter((action) => action.purpose === "service" && ["send_email", "send_sms"].includes(action.actionType) && REMINDER_KEYS.includes(String(action.configuration.templateKey ?? "")));
+          if (!actions.length) continue;
+          rule = { ...rule, trigger: { ...rule.trigger, event: "job.rescheduled" }, actions };
+        }
+      }
       if (ruleRow.activeFrom && ruleRow.activeFrom > row.occurredAt) continue;
       plan = planAutomationRun(rule, event);
     } catch (error) {

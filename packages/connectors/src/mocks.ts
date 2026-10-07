@@ -6,6 +6,7 @@ import { createGoogleMapsConfiguredScope } from "./providers/google-maps.ts";
 import { createMapboxConfiguredScope } from "./providers/mapbox.ts";
 import { createGoogleWorkspaceConnector } from "./providers/google-workspace.ts";
 import { createMicrosoft365ConnectorDefinition } from "./providers/microsoft-365.ts";
+import { createMockOnlinePayments } from "./providers/mock-online-payments.ts";
 
 function manifest(key: string, name: string, description: string, category: ConnectorCategory, capabilities: readonly CapabilityKey[], resources: readonly string[] = [], webhookSupport = false): ConnectorManifest {
   return { key, name, description, provider: "Modular CRM Test", icon: "flask", categories: [category], capabilities, authType: "local_mock", requiredScopes: [], environments: ["local", "test"], setupComplexity: "easy", discoverableResources: resources, webhookSupport, syncModes: [], version: "1.0.0", availability: "mock_complete" };
@@ -21,7 +22,7 @@ function checkedKey(key: string): void {
   if (!key.trim()) throw new ConnectorError("invalid_request", "Idempotency key is required", false);
 }
 
-function createPayments(ensureAvailable: () => void): ScopedCapabilities {
+function createPayments(ensureAvailable: () => void, tenantId: string): ScopedCapabilities {
   let nextMethod = 0;
   let nextPayment = 0;
   let nextRefund = 0;
@@ -30,6 +31,7 @@ function createPayments(ensureAvailable: () => void): ScopedCapabilities {
   const charges = new Map<string, { request: string; result: { reference: string; status: "succeeded" | "failed"; amountMinor: number; currency: string } }>();
   const refunds = new Map<string, { request: string; result: { reference: string; paymentReference: string; amountMinor: number; status: "succeeded" } }>();
   return { payments: {
+    online: createMockOnlinePayments(tenantId, ensureAvailable),
     async createPaymentMethod(input) {
       ensureAvailable();
       if (!input.customerId.trim()) throw new ConnectorError("invalid_request", "Customer is required", false);
@@ -180,7 +182,7 @@ function createImport(ensureAvailable: () => void): ScopedCapabilities {
 }
 
 export const MOCK_CONNECTOR_DEFINITIONS: readonly ConnectorDefinition[] = [
-  { manifest: manifest("mock-payments", "Test payments", "Try payment, failure and refund flows without real money.", "get_paid", ["payments"], ["business"], true), createScope: ({ ensureAvailable }) => createPayments(ensureAvailable) },
+  { manifest: manifest("mock-payments", "Test payments", "Try payment, failure and refund flows without real money.", "get_paid", ["payments"], ["business"], true), createScope: ({ ensureAvailable, tenantId }) => createPayments(ensureAvailable, tenantId) },
   { manifest: manifest("mock-communication", "Test messages", "Send test emails and text messages.", "communication", ["email", "sms"], ["sender"], true), createScope: ({ ensureAvailable }) => createMessaging(ensureAvailable) },
   { manifest: manifest("mock-routing", "Test maps and routes", "Geocode addresses and plan deterministic routes.", "maps_routing", ["geocoding", "routing"]), createScope: ({ ensureAvailable }) => createRouting(ensureAvailable) },
   { manifest: manifest("mock-storage", "Test files", "Keep protected files in memory for local use.", "files", ["storage"]), createScope: ({ ensureAvailable, now }) => createStorage(ensureAvailable, now) },
@@ -231,8 +233,13 @@ export const OAUTH_CONNECTOR_DEFINITIONS: readonly ConnectorDefinition[] = [
 ];
 
 export function createMockConnectorRegistry(options: { includePlannedProviders?: boolean; now?: () => Date } = {}): ConnectorRegistry {
+  return createConnectorRegistry({ ...options, mockConnectors: true });
+}
+
+/** Live definitions in production; mocks are an explicit development choice. */
+export function createConnectorRegistry(options: { mockConnectors?: boolean; includePlannedProviders?: boolean; now?: () => Date } = {}): ConnectorRegistry {
   const registry = new ConnectorRegistry(options.now);
-  for (const definition of MOCK_CONNECTOR_DEFINITIONS) registry.register(definition);
+  if (options.mockConnectors) for (const definition of MOCK_CONNECTOR_DEFINITIONS) registry.register(definition);
   for (const definition of OAUTH_CONNECTOR_DEFINITIONS) registry.register(definition);
   if (options.includePlannedProviders) for (const definition of PLANNED_PROVIDER_DEFINITIONS) registry.register(definition);
   return registry;

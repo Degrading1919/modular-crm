@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { chooseStaffRecord } from "./staff-picker";
 
 const password = "Demo12345!";
 const baseURL = process.env.PLAYWRIGHT_BASE_URL || "http://localhost:3000";
@@ -39,8 +40,8 @@ test("owner publishes an ordered route and technician completes the field workda
       const instruction = `Field access note ${unique} ${customer}`;
       await owner.goto("/app/jobs");
       await owner.getByRole("button", { name: /^New job$/i }).click();
-      await owner.getByLabel("Customer", { exact: true }).selectOption({ label: customer });
-      await owner.getByLabel("Service", { exact: true }).selectOption({ label: "Yard cleanup" });
+      await chooseStaffRecord(owner, "Customer", customer);
+      await chooseStaffRecord(owner, "Service", "Yard cleanup");
       await owner.getByLabel("Service day").fill(today);
       await owner.getByLabel("Job instructions").fill(instruction);
       const createdResponse = owner.waitForResponse((response) =>
