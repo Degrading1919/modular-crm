@@ -3,7 +3,7 @@ import type { Permission } from "@modular-crm/domain";
 export type WorkspaceAccess = {
   role: string;
   permissions: readonly string[];
-  features: Record<string, { usable?: boolean; visible?: boolean }>;
+  features: Record<string, { usable?: boolean; visible?: boolean; historicalRead?: boolean }>;
 };
 type Requirement = { feature?: string; permissions: readonly Permission[]; owner?: boolean };
 type AccessRule = readonly Requirement[];
@@ -35,6 +35,7 @@ export const workspaceRules: Record<string, AccessRule> = {
   franchise: tool("multi_location_management", "organization.franchise_manage"),
   import: [...tool("data_import_export", "customers.create"), ...tool("data_import_export", "customers.export")],
   capabilities: tool(undefined, "tenant.billing_manage"),
+  "plan-billing": [{ owner: true, permissions: ["tenant.billing_manage"] }],
   settings: tool("platform_settings", "tenant.read"),
   // Developer endpoints explicitly require an owner, not a granular permission.
   developer: [{ owner: true, permissions: [] }],
@@ -62,7 +63,7 @@ export function surfaceAccess(access: WorkspaceAccess, surface: string, navigati
   if (!rules) return "permission-denied"; // Unmapped destinations fail closed.
   const permitted = rules.filter((rule) => (!rule.owner || access.role === "owner") && rule.permissions.every((key) => access.permissions.includes(key)));
   if (!permitted.length) return "permission-denied";
-  return permitted.some((rule) => !rule.feature || (access.features[rule.feature]?.usable === true && (!navigation || access.features[rule.feature]?.visible === true))) ? "allowed" : "capability-unavailable";
+  return permitted.some((rule) => !rule.feature || access.features[rule.feature]?.historicalRead === true || (access.features[rule.feature]?.usable === true && (!navigation || access.features[rule.feature]?.visible === true))) ? "allowed" : "capability-unavailable";
 }
 
 export function canUseSurface(access: WorkspaceAccess, destination: string, navigation = false): boolean {
@@ -73,6 +74,7 @@ export function canUseSurface(access: WorkspaceAccess, destination: string, navi
 
 export function canUseAction(access: WorkspaceAccess, surface: string, permissions: readonly Permission[], feature?: string): boolean {
   return canUseSurface(access, surface) && permissions.every((key) => access.permissions.includes(key))
+    && workspaceRules[surface]?.some(rule => (!rule.owner || access.role === "owner") && rule.permissions.every(key => access.permissions.includes(key)) && (!rule.feature || access.features[rule.feature]?.usable === true))
     && (!feature || access.features[feature]?.usable === true);
 }
 

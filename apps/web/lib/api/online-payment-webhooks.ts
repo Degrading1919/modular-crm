@@ -23,6 +23,7 @@ export async function processOnlinePaymentEvent(provider: string, event: OnlineP
   const [account] = await db.select().from(onlinePaymentAccounts).where(and(eq(onlinePaymentAccounts.provider, provider), eq(onlinePaymentAccounts.accountHash, paymentAccountHash(event.accountReference)))).limit(1);
   if (!account) return { duplicate: false, ignored: true }; // Another platform's connected account is not ours.
   const result = await db.transaction(async (tx) => {
+    await tx.execute(sql`select set_config('crm.billing_payment_tenant', ${account.tenantId}, true)`);
     await tx.execute(sql`select id from online_payment_accounts where tenant_id=${account.tenantId} and id=${account.id} for update`);
     const [priorEvent] = await tx.select().from(onlinePaymentEvents).where(and(eq(onlinePaymentEvents.accountId, account.id), eq(onlinePaymentEvents.providerEventId, event.id))).limit(1);
     if (priorEvent) {

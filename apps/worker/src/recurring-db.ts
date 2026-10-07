@@ -1,7 +1,7 @@
 import { and, eq, ne } from "drizzle-orm";
 import {
   type Database, customers, domainEvents, hasUsableFeature, jobStatusEvents, jobs, loadTenantCapabilities,
-  recurrenceRules, recurringGenerationLedger, servicePlans, services,
+  recurrenceRules, recurringGenerationLedger, servicePlans, services, platformSubscription,
 } from "@modular-crm/db";
 import { addCalendarDays, localDate, planRecurringOccurrences, priceSnapshotForDate, type RecurrenceVersion, type RecurringPlan } from "./recurrence.js";
 
@@ -28,7 +28,9 @@ export async function generateRecurringJobs(db: Database, request: RecurringGene
   for (const row of rows) {
     let usable = usableByTenant.get(row.plan.tenantId);
     if (usable === undefined) {
-      usable = hasUsableFeature(await loadTenantCapabilities(db, row.plan.tenantId, now), "recurring_service_management");
+      const subscription = await platformSubscription(db, row.plan.tenantId);
+      usable = !subscription || !["read_only", "canceled"].includes(subscription.status);
+      if (usable) usable = hasUsableFeature(await loadTenantCapabilities(db, row.plan.tenantId, now), "recurring_service_management");
       usableByTenant.set(row.plan.tenantId, usable);
     }
     if (!usable) continue;

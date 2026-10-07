@@ -67,6 +67,16 @@ export async function processOutboundMessage(db: Database, registry: ConnectorRe
     .returning();
   if (!message) return "skipped";
   const purpose = messagePurpose(message.category);
+  const { platformSubscription } = await import("@modular-crm/db");
+  const subscription = await platformSubscription(db, input.tenantId);
+  if (purpose !== "account" && subscription && ["read_only", "canceled"].includes(subscription.status)) {
+    await db.transaction(async tx => {
+      await tx.update(outboundMessages).set({ status: "suppressed", failureCode: "workspace_read_only", failureMessage: "Not sent because the business workspace is read-only. Review reminders after billing recovers.", nextSendAt: null, updatedAt: now }).where(and(eq(outboundMessages.tenantId, input.tenantId), eq(outboundMessages.id, message.id)));
+      await tx.insert(communicationEvents).values({ tenantId: input.tenantId, outboundMessageId: message.id, eventType: "suppressed", occurredAt: now, payload: { reason: "workspace_read_only" } });
+      await recordReminderNotSent(tx, message, "workspace_read_only", now, "Workspace is read-only. Review reminders after billing recovers.");
+    });
+    return "suppressed";
+  }
   if (message.templateKey === "visit-review-request" && message.jobId) {
     const [job] = await db.select({ status: jobs.status }).from(jobs).where(and(eq(jobs.tenantId, input.tenantId), eq(jobs.id, message.jobId))).limit(1);
     if (!job || job.status !== "completed") {

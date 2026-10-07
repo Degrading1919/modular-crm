@@ -3,6 +3,7 @@ type Failure = { code?: string; message?: string };
 /** Public copy only: machine status, codes and details remain untouched. */
 export function userError(failure: Failure | undefined, status: number, path: string): string {
   const code = failure?.code;
+  if (code === "BILLING_REQUIRED" || status === 402) return failure?.message || "Update Plan and billing to continue editing. You can still view and export your data.";
   const authMessages: Record<string, string> = {
     INVALID_EMAIL_OR_PASSWORD: "The email address or password is incorrect. Please try again.",
     INVALID_PASSWORD: "The email address or password is incorrect. Please try again.",

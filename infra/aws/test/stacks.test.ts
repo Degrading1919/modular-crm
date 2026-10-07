@@ -65,6 +65,10 @@ describe("AWS local-only infrastructure", () => {
       for (const container of resource.Properties.ContainerDefinitions) {
         for (const variable of container.Environment ?? []) expect(variable.Name).not.toMatch(/PASSWORD|TOKEN|SECRET|ACCESS_KEY|DATABASE_URL/);
         expect(container.Secrets.map((secret: { Name: string }) => secret.Name)).toContain("DB_PASSWORD");
+        for (const name of ["PLATFORM_STRIPE_SECRET_KEY", "PLATFORM_STRIPE_WEBHOOK_SECRET", "PLATFORM_STRIPE_MODE", "PLATFORM_BILLING_PLANS_JSON", "PLATFORM_OPERATOR_USER_IDS", "PLATFORM_BILLING_TRIAL_DAYS", "PLATFORM_BILLING_GRACE_DAYS"]) {
+          expect(container.Secrets.map((secret: { Name: string }) => secret.Name).includes(name)).toBe(container.Name !== "migrate");
+          expect((container.Environment ?? []).some((variable: { Name: string }) => variable.Name === name)).toBe(false);
+        }
         expect(container.Image).toEqual(expect.objectContaining({ "Fn::Join": expect.anything() }));
         if (container.Name === "worker") expect(container.HealthCheck.Command).toEqual(["CMD", "node", "containers/probe.mjs", "live", "worker"]);
       }
@@ -109,9 +113,14 @@ describe("AWS local-only infrastructure", () => {
   it("reports missing context and invalid values clearly", () => {
     for (const key of ["domain", "alarmEmail"]) expect(() => readStageConfig((name) => name === key ? undefined : ({ ...fixture, stage: "staging" } as Record<string, unknown>)[name])).toThrow(`${key} is required`);
     expect(() => readStageConfig((key) => ({ ...fixture, stage: "staging", imageSha: "latest" } as Record<string, unknown>)[key])).toThrow("full lowercase git SHA");
+    for (const stage of ["staging", "production"]) {
+      const ceiling = stage === "production" ? 1000 : 100, minimum = stage === "production" ? 100 : 20;
+      for (const restoreAllocatedStorage of [minimum - 1, ceiling, "", "wrong", 50.5]) expect(() => readStageConfig(key => ({ ...fixture, stage, restoreSnapshot: "crm-snapshot", restoreAllocatedStorage } as Record<string, unknown>)[key])).toThrow("restoreAllocatedStorage");
+    }
+    expect(() => readStageConfig(key => ({ ...fixture, stage: "production", restoreAllocatedStorage: 300 } as Record<string, unknown>)[key])).toThrow("requires restoreSnapshot");
   });
   it("restores into a parallel protected database and activates only migrated task capacity", () => {
-    const values: Record<string, unknown> = { ...fixture, stage: "production", active: true, restoreSnapshot: "crm-reviewed-snapshot", sesDomain: "example.test" };
+    const values: Record<string, unknown> = { ...fixture, stage: "production", active: true, restoreSnapshot: "crm-reviewed-snapshot", restoreAllocatedStorage: 300, sesDomain: "example.test" };
     const app = new App({ outdir: mkdtempSync(join(tmpdir(), "crm-cdk-restore-")) });
     const stacks = createInfrastructure(app, readStageConfig((key) => values[key]));
     const assembly = app.synth();
@@ -120,11 +129,23 @@ describe("AWS local-only infrastructure", () => {
     data.resourceCountIs("AWS::RDS::DBInstance", 2);
     data.hasResourceProperties("AWS::RDS::DBInstance", { DBSnapshotIdentifier: "crm-reviewed-snapshot", DeletionProtection: true, PubliclyAccessible: false });
     const restored = Object.values(data.findResources("AWS::RDS::DBInstance")).find((resource) => resource.Properties.DBSnapshotIdentifier);
+    expect(Number(restored!.Properties.AllocatedStorage)).toBe(300);
     for (const forbidden of ["StorageEncrypted", "KmsKeyId", "DBName", "MasterUsername", "MasterUserPassword"]) expect(restored!.Properties[forbidden]).toBeUndefined();
     const application = Template.fromJSON(assembly.getStackArtifact(stacks.application.artifactId).template);
     application.hasResourceProperties("AWS::ECS::Service", { DesiredCount: 2 });
     application.hasResourceProperties("AWS::ApplicationAutoScaling::ScalableTarget", { MinCapacity: 2, MaxCapacity: 6 });
     application.resourceCountIs("AWS::SES::EmailIdentity", 1);
+  });
+  it("inherits snapshot storage when the operator has not requested an increase", () => {
+    const values: Record<string, unknown> = { ...fixture, stage: "staging", restoreSnapshot: "crm-grown-snapshot" };
+    const app = new App({ outdir: mkdtempSync(join(tmpdir(), "crm-cdk-inherit-")) });
+    const stacks = createInfrastructure(app, readStageConfig(key => values[key]));
+    const assembly = app.synth();
+    const data = Template.fromJSON(assembly.getStackArtifact(stacks.data.artifactId).template);
+    const restored = Object.values(data.findResources("AWS::RDS::DBInstance")).find(resource => resource.Properties.DBSnapshotIdentifier);
+    expect(restored!.Properties.AllocatedStorage).toBeUndefined();
+    const original = Object.values(data.findResources("AWS::RDS::DBInstance")).find(resource => !resource.Properties.DBSnapshotIdentifier);
+    expect(Number(original!.Properties.AllocatedStorage)).toBe(20);
   });
   it("keeps release out of CI and migration before rollout", () => {
     const script = readFileSync(new URL("../scripts/release.sh", import.meta.url), "utf8");

@@ -77,7 +77,10 @@ export function createInfrastructure(app: App, config: StageConfig) {
     const restoredId = `${prefix}-restore-${suffix}`;
     const restoredLogs = ["postgresql", "upgrade"].map((name) => new logs.LogGroup(data, `${name}RestoreLogs${suffix}`, { logGroupName: `/aws/rds/instance/${restoredId}/${name}`, retention, removalPolicy: RemovalPolicy.RETAIN }));
     database = new rds.DatabaseInstanceFromSnapshot(data, `RestoredDatabase${suffix}`, { ...databaseProps, instanceIdentifier: restoredId,
-      snapshotIdentifier: config.restoreSnapshot, credentials: undefined, databaseName: undefined });
+      snapshotIdentifier: config.restoreSnapshot, credentials: undefined, databaseName: undefined, allocatedStorage: config.restoreAllocatedStorage });
+    // L2 defaults an omitted allocation to 100 GiB. Omit that creation-time default
+    // from CloudFormation too, so a grown snapshot inherits its own storage size.
+    if (config.restoreAllocatedStorage === undefined) (database.node.defaultChild as rds.CfnDBInstance).addPropertyDeletionOverride("AllocatedStorage");
     // Snapshot encryption/master identity are inherited, not creation properties. The operator
     // must verify encryption and restore the matching administrator password before release.
     NagSuppressions.addResourceSuppressions(database, [{ id: "AwsSolutions-RDS2", reason: "Restore inherits encryption/KMS from the operator-verified encrypted snapshot; CloudFormation forbids creation-time encryption overrides when restoring." }]);
@@ -137,6 +140,7 @@ export function createInfrastructure(app: App, config: StageConfig) {
     }
     if (name !== "migrate") {
       for (const key of ["BETTER_AUTH_SECRET", "WEBHOOK_SECRET_ENCRYPTION_KEY", "CONNECTOR_CREDENTIAL_ENCRYPTION_KEY"]) injected[key] = ecs.Secret.fromSecretsManager(runtime, key);
+      for (const key of ["PLATFORM_STRIPE_SECRET_KEY", "PLATFORM_STRIPE_WEBHOOK_SECRET", "PLATFORM_STRIPE_MODE", "PLATFORM_BILLING_PLANS_JSON", "PLATFORM_OPERATOR_USER_IDS", "PLATFORM_BILLING_TRIAL_DAYS", "PLATFORM_BILLING_GRACE_DAYS"]) injected[key] = ecs.Secret.fromSecretsManager(runtime, key);
       injected.SMTP_USER = ecs.Secret.fromSecretsManager(mail, "username");
       injected.SMTP_PASSWORD = ecs.Secret.fromSecretsManager(mail, "password");
     }

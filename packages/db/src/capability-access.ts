@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import type { Database } from "./client.ts";
+import { platformSubscription } from "./platform-billing.ts";
 import {
   capabilityFeatureDependencies, capabilityFeatures, capabilityModuleDependencies, capabilityModuleFeatures,
   capabilityModules, tenantCapabilityGrants, tenantCapabilitySettings,
@@ -39,6 +40,7 @@ export type ModuleCapabilityState = {
 };
 
 export type FeatureCapabilityState = {
+  historicalRead?: boolean;
   id: string;
   key: string;
   name: string;
@@ -70,7 +72,7 @@ function effectiveGrant(grant: Grant, tenantId: string, at: Date): boolean {
 }
 
 /** Resolve catalog data without inferring entitlement from pack recommendations or UI visibility. */
-export function evaluateTenantCapabilities(tenantId: string, rows: CapabilityCatalogRows, at = new Date()): TenantCapabilityState {
+export function evaluateTenantCapabilities(tenantId: string, rows: CapabilityCatalogRows, at = new Date(), planFeatures?: ReadonlySet<string>): TenantCapabilityState {
   const moduleById = new Map(rows.modules.map((module) => [module.id, module]));
   const featureById = new Map(rows.features.map((feature) => [feature.id, feature]));
   const settingByModule = new Map(rows.settings.filter((setting) => setting.tenantId === tenantId).map((setting) => [setting.moduleId, setting]));
@@ -159,6 +161,10 @@ export function evaluateTenantCapabilities(tenantId: string, rows: CapabilityCat
       return state;
     }
     resolvingFeatures.add(id);
+    if (planFeatures && !planFeatures.has(feature.key)) {
+      state.entitled = false;
+      state.blockedBy.push("plan_not_entitled");
+    }
     if (!state.entitled) state.blockedBy.push("not_entitled");
     if (!state.available) state.blockedBy.push("unavailable");
     if (!providers.some((provider) => provider.usable)) state.blockedBy.push("module_unusable");
@@ -200,7 +206,17 @@ export async function loadTenantCapabilities(db: Database, tenantId: string, at 
     db.select().from(tenantCapabilityGrants).where(eq(tenantCapabilityGrants.tenantId, tenantId)),
     db.select().from(tenantCapabilitySettings).where(eq(tenantCapabilitySettings.tenantId, tenantId)),
   ]);
-  return evaluateTenantCapabilities(tenantId, { modules, features, moduleFeatures, moduleDependencies, featureDependencies, grants, settings }, at);
+  const subscription = await platformSubscription(db, tenantId);
+  const rows = { modules, features, moduleFeatures, moduleDependencies, featureDependencies, grants, settings };
+  const baseline = evaluateTenantCapabilities(tenantId, rows, at);
+  if (!subscription || subscription.capabilities.includes("*")) return baseline;
+  // Apply plan restrictions inside dependency resolution, not after it. Otherwise a
+  // paid feature could remain usable when its required prerequisite is excluded.
+  const state = evaluateTenantCapabilities(tenantId, rows, at, new Set(subscription.capabilities));
+  for (const feature of Object.values(state.features)) {
+    if (!feature.usable && baseline.features[feature.key]?.usable) feature.historicalRead = true;
+  }
+  return state;
 }
 
 export function hasUsableFeature(state: TenantCapabilityState, featureKey: string): boolean {

@@ -29,6 +29,13 @@ function fixture(): CapabilityCatalogRows {
 }
 
 describe("effective tenant capabilities", () => {
+  it("evaluates plan restrictions before resolving required feature dependencies", () => {
+    const state = evaluateTenantCapabilities("tenant-a", fixture(), at, new Set(["route_planning"]));
+    expect(state.features.service_scheduling).toMatchObject({ entitled: false, usable: false });
+    expect(state.features.service_scheduling?.blockedBy).toContain("plan_not_entitled");
+    expect(state.features.route_planning).toMatchObject({ entitled: true, usable: false, visible: false });
+    expect(state.features.route_planning?.blockedBy).toContain("requires:service_scheduling");
+  });
   it("separates entitlement, enablement, and UI prominence", () => {
     const rows = fixture();
     rows.settings = [{

@@ -1,4 +1,5 @@
 "use client";
+import PlanBilling, { BillingBanner } from "./PlanBilling";
 import ServiceDetails from "./ServiceDetails";
 import { PackDetails } from "./PackFields";
 import { DocumentEditor } from "./DocumentEditor";
@@ -57,7 +58,7 @@ const resources: Record<string, Resource> = {
 const nav = [
   { label: "Workspace", items: [{ key: "dashboard", label: "Overview", icon: "grid" }, { key: "leads", label: "Leads", icon: "spark" }, { key: "customers", label: "Customers", icon: "users" }, { key: "schedule", label: "Schedule", icon: "calendar" }, { key: "routes", label: "Routes", icon: "route" }, { key: "jobs", label: "Jobs", icon: "briefcase" }] },
   { label: "Business", items: [{ key: "sales", label: "Sales & services", icon: "receipt" }, { key: "billing", label: "Get paid", icon: "wallet" }, { key: "tickets", label: "Requests", icon: "ticket" }, { key: "reports", label: "Reports", icon: "chart" }, { key: "website", label: "Website", icon: "globe" }, { key: "connections", label: "Connections", icon: "plug" }] },
-  { label: "More", items: [{ key: "staff", label: "Staff", icon: "person" }, { key: "payroll", label: "Pay & time", icon: "clock" }, { key: "inventory", label: "Inventory", icon: "box" }, { key: "automations", label: "Automations", icon: "spark" }, { key: "communications", label: "Messages", icon: "send" }, { key: "organization", label: "Locations", icon: "building" }, { key: "franchise", label: "Franchise", icon: "building" }, { key: "import", label: "Import & export", icon: "download" }, { key: "capabilities", label: "My capabilities", icon: "box" }, { key: "settings", label: "Settings", icon: "settings" }, { key: "developer", label: "Developer", icon: "more" }] },
+  { label: "More", items: [{ key: "plan-billing", label: "Plan and billing", icon: "wallet" }, { key: "staff", label: "Staff", icon: "person" }, { key: "payroll", label: "Pay & time", icon: "clock" }, { key: "inventory", label: "Inventory", icon: "box" }, { key: "automations", label: "Automations", icon: "spark" }, { key: "communications", label: "Messages", icon: "send" }, { key: "organization", label: "Locations", icon: "building" }, { key: "franchise", label: "Franchise", icon: "building" }, { key: "import", label: "Import & export", icon: "download" }, { key: "capabilities", label: "My capabilities", icon: "box" }, { key: "settings", label: "Settings", icon: "settings" }, { key: "developer", label: "Developer", icon: "more" }] },
 ] as const;
 
 type BusinessUser = { user?: { name?: string; email?: string; role?: string; permissions?: string[] }; tenant?: { name?: string; packKey?: string; timezone?: string } };
@@ -99,7 +100,7 @@ export default function BusinessApp({ section }: { section: string[] }) {
       <div className="sidebar-bottom"><button type="button" className="sidebar-link" style={{ width: "100%", border: 0, background: "transparent" }} onClick={logout}><Icon name="arrow"/>Sign out</button><div className="sidebar-account"><div className="avatar">{displayedName.slice(0, 1)}</div><div><strong>{displayedName}</strong><span>{friendly(identity.data.user?.role)}</span></div></div></div>
     </aside>
     <main className="app-main"><header className="topbar"><div className="topbar-left"><button type="button" className="icon-button mobile-menu" aria-label="Open menu" onClick={() => setMenuOpen(true)}><Icon name="menu"/></button><span className="location-chip"><Icon name="building" size={16}/>{tenantName}</span><span className="topbar-date">{date(new Date().toISOString(), { weekday: "long", month: "long", day: "numeric", timeZone: tenantTimeZone })}</span></div><div className="topbar-right"><Link href="/app/tickets" className="icon-button" aria-label="Requests"><Icon name="bell"/></Link><div className="avatar" title={displayedName}>{displayedName.slice(0, 1)}</div></div></header><div className="content">
-      {waitingForCapabilities ? <Loading label="Checking your workspace tools…"/> : capabilityResult.error ? <Notice kind="error" text={capabilityResult.error}/> : workspaceRules[current] && decision === "permission-denied" ? <Empty title="You don’t have access to this tool" description="Ask a business owner to review your access."/> : workspaceRules[current] && decision === "capability-unavailable" ? <CapabilityUnavailable features={features} featureKeys={workspaceRules[current].flatMap((rule) => rule.feature ? [rule.feature] : [])} canManage={canManageCapabilities}/> : <>
+      <BillingBanner/>{waitingForCapabilities ? <Loading label="Checking your workspace tools…"/> : capabilityResult.error ? <Notice kind="error" text={capabilityResult.error}/> : workspaceRules[current] && decision === "permission-denied" ? <Empty title="You don’t have access to this tool" description="Ask a business owner to review your access."/> : workspaceRules[current] && decision === "capability-unavailable" ? <CapabilityUnavailable features={features} featureKeys={workspaceRules[current].flatMap((rule) => rule.feature ? [rule.feature] : [])} canManage={canManageCapabilities}/> : <>
         {current === "dashboard" && <Dashboard name={displayedName} />}
         {current === "schedule" && <Schedule timeZone={tenantTimeZone} />}
         {current === "routes" && <Routes timeZone={tenantTimeZone} />}
@@ -113,11 +114,12 @@ export default function BusinessApp({ section }: { section: string[] }) {
         {current === "import" && <ImportExport />}
         {current === "capabilities" && <CapabilitySetup mode="manage" canManage={identity.data.user?.permissions?.includes("tenant.billing_manage") === true} onSaved={capabilityResult.reload}/>}
         {current === "settings" && <Settings />}
+        {current === "plan-billing" && <PlanBilling />}
         {current === "developer" && <DeveloperApp />}
         {current === "franchise" && <FranchiseApp />}
         {current === "inventory" && <><Header eyebrow="Your business" title="Inventory" subtitle="Keep supplies ready across branches, vehicles, and jobs."/><InventoryOperations permissions={access.permissions}/></>}
         {resources[current] && current !== "inventory" && current !== "automations" && (section[1] && ["customers", "jobs", "invoices", "leads"].includes(current) ? <RecordDetail key={`${current}/${section[1]}`} resource={current} id={section[1]}/> : <ResourcePage resourceKey={current} resource={resources[current]} id={section[1]} features={features} permissions={identity.data.user?.permissions} />)}
-        {!resources[current] && !["dashboard", "schedule", "routes", "sales", "billing", "connections", "website", "automations", "reports", "payroll", "import", "capabilities", "settings", "developer", "franchise", "inventory"].includes(current) && <Empty title="Page not found" description="This area is not part of your workspace." action={<Link className="btn btn-primary" href="/app/dashboard">Back to overview</Link>} />}
+        {!resources[current] && !["dashboard", "schedule", "routes", "sales", "billing", "connections", "website", "automations", "reports", "payroll", "import", "capabilities", "settings", "developer", "franchise", "inventory", "plan-billing"].includes(current) && <Empty title="Page not found" description="This area is not part of your workspace." action={<Link className="btn btn-primary" href="/app/dashboard">Back to overview</Link>} />}
       </>}
     </div></main>
   </div></WorkspaceAccessContext.Provider>;
@@ -535,7 +537,13 @@ function Reports() {
 }
 
 function Settings() {
-  return <><BusinessProfileSettings/><InvoiceRemindersSettings/></>;
+  return <><BusinessProfileSettings/><PlanBillingSettingsLink/><InvoiceRemindersSettings/></>;
+}
+
+function PlanBillingSettingsLink() {
+  const access = useWorkspaceAccess();
+  if (!canUseSurface(access, "plan-billing")) return null;
+  return <section className="card card-pad" style={{ marginTop: 20 }}><h2>Plan and billing</h2><p>Review your free trial, change your plan, update your card or see your plan invoices.</p><Link href="/app/plan-billing" className="btn btn-secondary">Open Plan and billing</Link></section>;
 }
 
 function BusinessProfileSettings() {

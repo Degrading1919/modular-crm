@@ -16,6 +16,7 @@ export type StageConfig = Readonly<{
   webCount: number;
   workerCount: number;
   restoreSnapshot?: string;
+  restoreAllocatedStorage?: number;
 }>;
 
 /** No AWS calls, lookups, plaintext secrets or committed deployment identifiers. */
@@ -60,8 +61,10 @@ export function readStageConfig(get: (key: string) => unknown): StageConfig {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(smtpFrom)) throw new Error("AWS configuration: smtpFrom must be a sender email address");
   const restoreSnapshot = get("restoreSnapshot");
   if (restoreSnapshot !== undefined && (typeof restoreSnapshot !== "string" || !/^[a-z][a-z0-9-]{0,253}[a-z0-9]$/.test(restoreSnapshot))) throw new Error("AWS configuration: restoreSnapshot must be a same-account snapshot identifier");
+  const restoreAllocatedStorage = get("restoreAllocatedStorage") === undefined ? undefined : integer("restoreAllocatedStorage", 0, production ? 100 : 20, (production ? 1000 : 100) - 1);
+  if (restoreAllocatedStorage !== undefined && !restoreSnapshot) throw new Error("AWS configuration: restoreAllocatedStorage requires restoreSnapshot");
   return Object.freeze({ stage, region, account: account as string | undefined, domain, alarmEmail, imageSha, postgresVersion,
     natGateways: integer("natGateways", production ? 2 : 1, 0, 2), multiAz: boolean("multiAz", production), waf: boolean("waf", production),
     active: boolean("active", false), sesDomain: sesDomain as string | undefined, smtpHost, smtpFrom,
-    webCount: integer("webCount", production ? 2 : 1, 1, 6), workerCount: integer("workerCount", 1, 1, 4), restoreSnapshot: restoreSnapshot as string | undefined });
+    webCount: integer("webCount", production ? 2 : 1, 1, 6), workerCount: integer("workerCount", 1, 1, 4), restoreSnapshot: restoreSnapshot as string | undefined, restoreAllocatedStorage });
 }

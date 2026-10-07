@@ -1,5 +1,6 @@
 export type DomainErrorCode =
   | "UNAUTHENTICATED"
+  | "BILLING_REQUIRED"
   | "FORBIDDEN"
   | "CAPABILITY_UNAVAILABLE"
   | "NOT_FOUND"

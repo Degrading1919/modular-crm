@@ -8,6 +8,7 @@ const names = { postgres: `${prefix}-db`, web: `${prefix}-web`, worker: `${prefi
 const images = { web: process.env.SMOKE_WEB_IMAGE || "modular-crm:web", worker: process.env.SMOKE_WORKER_IMAGE || "modular-crm:worker", migrate: process.env.SMOKE_MIGRATE_IMAGE || "modular-crm:migrate" };
 const env = { ...process.env, POSTGRES_USER: "smoke", POSTGRES_DB: "crm", POSTGRES_PASSWORD: randomBytes(24).toString("hex"),
   NODE_ENV: "production", LOCAL_SMOKE_TEST: "true", MOCK_CONNECTORS: "false", DOMAIN_VERIFICATION_MODE: "dns",
+  PLATFORM_BILLING_PROVIDER: "mock", PLATFORM_BILLING_PLANS_JSON: JSON.stringify([{ key: "container-fixture", name: "Isolated container fixture", seats: 10, capabilities: ["*"], prices: { USD: { monthly: 100 } } }]),
   BETTER_AUTH_SECRET: randomBytes(32).toString("hex"), WEBHOOK_SECRET_ENCRYPTION_KEY: randomBytes(32).toString("base64url"), CONNECTOR_CREDENTIAL_ENCRYPTION_KEY: randomBytes(32).toString("base64url"),
   APP_BASE_URL: "http://localhost:3000", BETTER_AUTH_URL: "http://localhost:3000", PUBLIC_BASE_URL: "http://localhost:3000",
   SMTP_HOST: "smtp.invalid", SMTP_PORT: "587", SMTP_FROM: "smoke@example.invalid", WORKER_HEALTH_PORT: "3001",
@@ -20,7 +21,7 @@ function docker(args, allowFailure = false, timeout = 60_000) {
   if (!allowFailure && result.status !== 0) throw new Error(`Docker ${args[0]} failed: ${sanitize(result.stderr || result.error?.message || "unknown error")}`);
   return result;
 }
-const options = Object.keys(env).filter((key) => ["DATABASE_URL", "NODE_ENV", "LOCAL_SMOKE_TEST", "MOCK_CONNECTORS", "DOMAIN_VERIFICATION_MODE", "BETTER_AUTH_SECRET", "WEBHOOK_SECRET_ENCRYPTION_KEY", "CONNECTOR_CREDENTIAL_ENCRYPTION_KEY", "APP_BASE_URL", "BETTER_AUTH_URL", "PUBLIC_BASE_URL", "SMTP_HOST", "SMTP_PORT", "SMTP_FROM", "WORKER_HEALTH_PORT"].includes(key)).flatMap((key) => ["-e", key]);
+const options = Object.keys(env).filter((key) => ["PLATFORM_BILLING_PROVIDER", "PLATFORM_BILLING_PLANS_JSON", "DATABASE_URL", "NODE_ENV", "LOCAL_SMOKE_TEST", "MOCK_CONNECTORS", "DOMAIN_VERIFICATION_MODE", "BETTER_AUTH_SECRET", "WEBHOOK_SECRET_ENCRYPTION_KEY", "CONNECTOR_CREDENTIAL_ENCRYPTION_KEY", "APP_BASE_URL", "BETTER_AUTH_URL", "PUBLIC_BASE_URL", "SMTP_HOST", "SMTP_PORT", "SMTP_FROM", "WORKER_HEALTH_PORT"].includes(key)).flatMap((key) => ["-e", key]);
 // Bounded startup polling waits for a real condition, never repeats a failed test.
 async function until(check, label) {
   const deadline = Date.now() + 90_000;

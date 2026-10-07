@@ -1,4 +1,4 @@
-export type CapabilityKey = "payments" | "email" | "sms" | "accounting" | "calendar" | "routing" | "geocoding" | "storage" | "payroll" | "crm_import" | "ai";
+export type CapabilityKey = "platform-billing" | "payments" | "email" | "sms" | "accounting" | "calendar" | "routing" | "geocoding" | "storage" | "payroll" | "crm_import" | "ai";
 export type ConnectorCategory = "get_paid" | "accounting" | "calendar" | "communication" | "maps_routing" | "files" | "payroll" | "import" | "ai";
 export type ConnectorState = "not_connected" | "authorizing" | "connected" | "needs_attention" | "expired" | "disabled" | "error";
 export type MockScenario = "success" | "authorization_expired" | "provider_error" | "timeout";
@@ -148,6 +148,7 @@ export interface PayrollCapability { exportGrossPay(input: { periodId: string; r
 export interface AiCapability { proposeStructuredContent(input: { businessName: string; industry: string }): Promise<{ headline: string; description: string }> }
 export interface CrmImportCapability { importCustomers(input: { rows: readonly Record<string, string>[]; idempotencyKey: string }): Promise<{ reference: string; customers: readonly { name: string; email?: string; phone?: string }[] }> }
 export type ConnectorCapabilities = {
+  "platform-billing": import("./platform-billing.ts").PlatformBillingCapability;
   payments: PaymentCapability;
   email: EmailCapability;
   sms: SmsCapability;

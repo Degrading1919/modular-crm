@@ -1,4 +1,6 @@
 import { readObjectStorageConfig } from "./object-storage.ts";
+import { readPlatformBillingConfig, type PlatformBillingConfig } from "./platform-billing.ts";
+export * from "./platform-billing.ts";
 export { readObjectStorageConfig } from "./object-storage.ts";
 
 export type ComparisonOperator =
@@ -119,6 +121,7 @@ export type ServerConfig = Readonly<{
   platformName: string;
   platformEmailLimits: Readonly<{ hourly: number; daily: number; firstWeekHourly: number; firstWeekDaily: number }>;
   stripePayments?: Readonly<{ secretKey: string; webhookSecret: string; mode: "test" | "live" }>;
+  platformBilling: PlatformBillingConfig;
 }>;
 
 export const DEVELOPMENT_AUTH_SECRET = "dev-only-replace-before-deploying-0123456789";
@@ -143,6 +146,7 @@ export const SERVER_CONFIGURATION_KEYS: ReadonlySet<string> = new Set([
   "WORKER_HEALTH_PORT", "WORKER_POLL_STALE_MS", "WORKER_JOB_MAX_MS", "PLATFORM_NAME",
   "PLATFORM_EMAIL_HOURLY_LIMIT", "PLATFORM_EMAIL_DAILY_LIMIT", "PLATFORM_EMAIL_FIRST_WEEK_HOURLY_LIMIT", "PLATFORM_EMAIL_FIRST_WEEK_DAILY_LIMIT",
   "PAYMENTS_STRIPE_SECRET_KEY", "PAYMENTS_STRIPE_WEBHOOK_SECRET", "PAYMENTS_STRIPE_MODE", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "TRUSTED_PROXY_HOPS",
+  "PLATFORM_BILLING_PLANS_JSON", "PLATFORM_BILLING_PROVIDER", "PLATFORM_BILLING_TRIAL_DAYS", "PLATFORM_BILLING_GRACE_DAYS", "PLATFORM_STRIPE_SECRET_KEY", "PLATFORM_STRIPE_WEBHOOK_SECRET", "PLATFORM_STRIPE_MODE", "PLATFORM_OPERATOR_USER_IDS",
 ]);
 export class ServerConfigurationError extends Error {
   readonly configurationKeys: string[];
@@ -229,6 +233,8 @@ export function readServerConfig(env: Record<string, string | undefined>): Serve
     || !env.PAYMENTS_STRIPE_SECRET_KEY?.startsWith(`sk_${env.PAYMENTS_STRIPE_MODE}_`))) problems.push("PAYMENTS_STRIPE_SECRET_KEY, PAYMENTS_STRIPE_WEBHOOK_SECRET and PAYMENTS_STRIPE_MODE must be complete and use the same test/live mode");
   if (stripeConfigured && environment === "test" && env.PAYMENTS_STRIPE_MODE === "live") problems.push("Live payment credentials must not be used in tests");
   try { readObjectStorageConfig(env); } catch (error) { problems.push(error instanceof Error ? error.message : "Invalid object storage configuration"); }
+  let platformBilling: PlatformBillingConfig | undefined;
+  try { platformBilling = readPlatformBillingConfig(env); } catch (error) { problems.push(error instanceof Error ? error.message : "Invalid platform billing configuration"); }
   if (problems.length) throw new ServerConfigurationError(problems);
   if (env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT) {
     let endpoint: URL;
@@ -238,7 +244,7 @@ export function readServerConfig(env: Record<string, string | undefined>): Serve
   } else if (production) {
     console.warn(JSON.stringify({ level: "warn", time: new Date().toISOString(), requestId: null, tenantId: null, route: "startup", status: null, durationMs: 0, event: "error.reporter_not_configured" }));
   }
-  return Object.freeze({ environment, databaseUrl, mockConnectors, publicBaseUrl, authBaseUrl, appBaseUrl, localSmokeTest, trustedProxyHops: proxyHops, workerHealthPort, workerPollStaleMs, workerJobMaxMs,
+  return Object.freeze({ environment, databaseUrl, mockConnectors, platformBilling: platformBilling!, publicBaseUrl, authBaseUrl, appBaseUrl, localSmokeTest, trustedProxyHops: proxyHops, workerHealthPort, workerPollStaleMs, workerJobMaxMs,
     smtp: Object.freeze({ host, port, secure, user: env.SMTP_USER, password: env.SMTP_PASSWORD, from }), platformName, platformEmailLimits,
     storageEndpoint: env.STORAGE_ENDPOINT?.trim() || undefined, storageBucket: env.STORAGE_BUCKET?.trim() || "modular-crm",
     ...(stripeConfigured ? { stripePayments: Object.freeze({ secretKey: env.PAYMENTS_STRIPE_SECRET_KEY!, webhookSecret: env.PAYMENTS_STRIPE_WEBHOOK_SECRET!, mode: env.PAYMENTS_STRIPE_MODE as "test" | "live" }) } : {}) });

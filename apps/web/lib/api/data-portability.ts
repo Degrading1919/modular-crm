@@ -21,6 +21,7 @@ const MAX_HEADER_CHARS = 200;
 const MAX_CELL_CHARS = 20_000;
 const BUSINESS_EXPORT_EXCLUDED_TABLES = new Set([
   "account", "session", "verification", "api_credentials", "connector_oauth_transactions", "payment_method_references",
+  "platform_billing_sessions", // Hosted checkout/portal URLs are bearer credentials, not business records.
 ]);
 const BUSINESS_EXPORT_SENSITIVE_KEY = /password|secret|token|credential|authorization|api[_-]?key|access[_-]?instructions?|private[_-]?key|storage[_-]?key|signed[_-]?url|encrypted|verifier|signature|(?:^|[_-])hash(?:$|[_-])|(?:^|[_-])digest(?:$|[_-])/i;
 const BUSINESS_EXPORT_NAME_OVERRIDES: Readonly<Record<string, string>> = { organization_locations: "locations" };

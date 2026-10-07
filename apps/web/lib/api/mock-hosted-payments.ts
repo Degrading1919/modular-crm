@@ -10,13 +10,13 @@ import { readableOnlineInvoice } from "./online-payment-sessions";
 import { onlineForAccount } from "./online-payment-accounts";
 import { handleOnlinePaymentWebhook } from "./online-payment-webhooks";
 import { json, readBody } from "./http";
-import { requireTenantFeature } from "./capability-enforcement";
+import { requirePaymentLinkFeature } from "./capability-enforcement";
 
 /** Local mock processor UI; never available in production or when mocks are disabled. */
 export async function handleMockHostedPayment(request: Request, path: string[], actor: SessionActor): Promise<Response | null> {
   if (path.length !== 3 || path[0] !== "payments" || path[1] !== "test-checkout") return null;
   if (!readServerConfig(process.env).mockConnectors || process.env.NODE_ENV === "production") throw new DomainError("NOT_FOUND", "Payment page not found.", 404);
-  await requireTenantFeature(actor.tenantId, "payment_collection");
+  await requirePaymentLinkFeature(actor.tenantId, "payment_collection");
   const [session] = await getDb().select().from(onlinePaymentSessions).where(and(eq(onlinePaymentSessions.tenantId, actor.tenantId), eq(onlinePaymentSessions.providerReference, path[2]!))).limit(1);
   if (!session) throw new DomainError("NOT_FOUND", "Payment page not found.", 404);
   const invoice = await readableOnlineInvoice(actor, session.invoiceId);
