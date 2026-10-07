@@ -6,9 +6,9 @@ export async function register() {
       const config = getServerConfig();
       const { createPlatformBillingProvider } = await import("@modular-crm/connectors");
       await createPlatformBillingProvider(config.platformBilling).validatePlans();
-      const { initializePlatformTrials } = await import("@modular-crm/db");
-      const { getDb } = await import("./lib/db");
-      await initializePlatformTrials(getDb(), config.platformBilling);
+      // Legacy trial backfill belongs to the worker after migrations, before jobs start.
+      // Web liveness must remain available when the database/schema is unavailable;
+      // the bounded readiness probe separately keeps this instance out of traffic.
     }
     catch (error) {
       // Next catches a rejected hook without terminating its HTTP listener.

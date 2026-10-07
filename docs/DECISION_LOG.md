@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-07 — Keep web liveness independent of billing backfill
+
+- **Status:** Accepted
+- **Area:** Architecture / Implementation
+- **Decision:** Run legacy trial backfill in worker startup after migrations and before job processing, not in web instrumentation. Web startup still rejects invalid configuration/provider plans; database/schema availability belongs to the existing bounded readiness probe, never liveness or automatic migrations.
+- **Rationale:** Container CI exposed a cold-start regression when trial backfill queried an unmigrated database and terminated the web process.
+- **Authoritative doc:** docs/ARCHITECTURE.md
+
 ## 2026-10-07 — Platform workspace subscriptions and recovery
 
 - **Status:** Accepted
