@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-07 — Breadth-first 1.0, then owner playtesting
+
+- **Status:** Accepted
+- **Area:** Product / Implementation
+- **Decision:** Finish a complete, coherent, deployable 1.0 across accepted capability breadth, then freeze features for whole-product owner playtesting; do not substitute a reduced MVP. Prioritize broken/safety-critical workflows and predictable practical-use friction, while speculative hardening is deferred without creating work. Existing safety, correctness and verification contracts remain mandatory.
+- **Rationale:** Owner-authorized Claude handoff [6044847337](https://github.com/Degrading1919/modular-crm/pull/29#issuecomment-6044847337) narrows pre-1.0 work to usable capability completion; it does not authorize new tasks, merges, deployments or weakened tests.
+- **Authoritative doc:** docs/PRODUCT_SCOPE.md
+
 ## 2026-10-07 — Validate bundled worker runtime imports
 
 - **Status:** Accepted

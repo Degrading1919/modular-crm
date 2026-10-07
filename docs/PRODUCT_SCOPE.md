@@ -8,6 +8,14 @@ The system should let a business owner go from signup to a usable business stack
 
 The product should be specified deeply enough before the first major Codex implementation task that Codex can build the initial backend and frontend end to end with minimal clarification or architectural rework.
 
+## 1.0 completion and evaluation
+
+Complete a coherent, deployable 1.0 breadth-first across the accepted product scope; do not release a reduced MVP first. Once that breadth is practically usable, freeze features and let the owner playtest the whole product. Implement only separately authorized capability slices, not an invented roadmap while waiting for review.
+
+Before the freeze, prioritize **BLOCKER** findings (a broken primary workflow, tenant/security leak, data loss, wrong money or deployment failure) and **1.0 FIX** findings (predictable meaningful friction, a dead end, misleading information or a capability that is technically present but not practically usable). **HARDEN LATER** findings are deferred and create no implementation work now. Do not add speculative edge-case hardening unrelated to normal owner workflows.
+
+Tenant isolation, permissions, money correctness, state machines, idempotency, migrations, data preservation, webhook correctness, security boundaries, real PostgreSQL verification and deployment safety remain mandatory. Feature freeze does not relax these contracts or authorize agent merges or deployment.
+
 ## Truthful operational presentation
 
 Upcoming work and **Next service** must come from actual eligible scheduled jobs (scheduled, dispatched, en route, in progress, or paused), using each job's business-location calendar date and the viewer's authorized scope. Customer summaries include one-time jobs as well as recurring-plan jobs. Recurrence is not proof of a booked visit; absent jobs remain explicitly not scheduled. A missing service time must not be replaced with “Today.”
