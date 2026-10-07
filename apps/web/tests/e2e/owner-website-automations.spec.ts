@@ -16,27 +16,53 @@ test("owner connects, verifies, and selects a custom website address", async ({ 
   await signInAsOwner(page);
   await page.goto("/app/website");
 
-  const domainName = `www.happy-yards-e2e-${Date.now()}.com`;
+  const domainName = `www.happy-yards-e2e-${Date.now()}.example.test`;
   const domainCard = page.locator("article.card").filter({ has: page.getByRole("heading", { name: domainName, exact: true }) });
 
   await page.getByRole("textbox", { name: "Domain name" }).fill(domainName);
   await page.getByRole("button", { name: "Add domain" }).click();
-  await expect(page.getByText("Domain added. Add the DNS record below to prove you control it.")).toBeVisible();
+  await expect(page.getByText("Domain added. Add the records below, then choose Check now.")).toBeVisible();
 
-  await expect(domainCard.getByText("TXT", { exact: true })).toBeVisible();
+  await expect(domainCard.getByText("TXT", { exact: true })).toHaveCount(2);
+  await expect(domainCard.getByText("CNAME", { exact: true })).toBeVisible();
+  await expect(domainCard.getByRole("status", { name: "Domain setup status" })).toHaveText("Waiting for DNS");
+  await expect(domainCard.getByRole("button", { name: /Copy .* record value/ })).toHaveCount(3);
+  await expect(domainCard.getByRole("button", { name: "Make primary" })).toHaveCount(0);
   await expect(domainCard.getByText(`_modular-crm-verification.${domainName}`, { exact: true })).toBeVisible();
   await expect(domainCard.locator("code").filter({ hasText: /^modular-crm-verification=/ })).toBeVisible();
   await expect(domainCard.getByText("Local demo mode can simulate DNS verification for this test domain.")).toBeVisible();
 
-  await domainCard.getByRole("button", { name: "Simulate verification (local)" }).click();
-  await expect(page.getByText("Domain verified in local demo mode.")).toBeVisible();
-  await expect(domainCard.getByText("Verified", { exact: true })).toBeVisible();
+  await domainCard.getByRole("button", { name: "Check now" }).click();
+  await expect(page.getByText("Domain check finished. See its status below.")).toBeVisible();
+  await expect(domainCard.getByRole("status", { name: "Domain setup status" })).toHaveText("Waiting for DNS");
+  await domainCard.getByRole("button", { name: "Add test DNS records (local)" }).click();
+  await expect(page.getByText("Local test records added. Choose Check now to verify them.")).toBeVisible();
+  await domainCard.getByRole("button", { name: "Check now" }).click();
+  await expect(domainCard.getByRole("status", { name: "Domain setup status" })).toHaveText("Live");
 
   await domainCard.getByRole("button", { name: "Make primary" }).click();
   await expect(page.getByText("Primary website address updated.")).toBeVisible();
   await expect(domainCard.getByText("Primary website address", { exact: true })).toBeVisible();
   await expect(domainCard.getByText("Primary", { exact: true })).toBeVisible();
   await expect(domainCard.getByRole("button", { name: "Make primary" })).toHaveCount(0);
+  await page.screenshot({ path: "../../.local-data/custom-domain-owner.png", fullPage: true });
+  // Real Host routing on the running server, with no real DNS lookup or zone writes.
+  const site = await page.request.get("/api/v1/public/site?slug=happy-yards", { headers: { host: domainName } });
+  expect(site.status()).toBe(200);
+  const foreign = await page.request.get("/api/v1/public/site?slug=cleanpaws", { headers: { host: domainName } });
+  expect(foreign.status()).toBe(404);
+  expect((await page.request.get("/app/dashboard", { headers: { host: domainName } })).status()).toBe(404);
+  expect((await page.request.get("/login", { headers: { host: "unknown.example.test" } })).status()).toBe(404);
+  const domains = await (await page.request.get("/api/v1/website/domains")).json();
+  const id = domains.items.find((item: { hostname: string }) => item.hostname === domainName).id;
+  expect((await page.request.post(`/api/v1/website/domains/${id}/mock-dns`, { data: { ownership: "valid", routing: "wrong", certificate: "ready" } })).status()).toBe(200);
+  await domainCard.getByRole("button", { name: "Check now" }).click();
+  await expect(domainCard.getByRole("status", { name: "Domain setup status" })).toHaveText("Needs attention");
+  await expect(domainCard.getByText("This record points somewhere else. Update the website address record shown below.")).toBeVisible();
+  expect((await page.request.get("/api/v1/public/site?slug=happy-yards", { headers: { host: domainName } })).status()).toBe(404);
+  await domainCard.getByRole("button", { name: "Remove domain" }).click();
+  await expect(domainCard).toHaveCount(0);
+  await expect(page.getByText("No custom domains yet", { exact: true })).toBeVisible();
 });
 
 test("owner creates a useful automation and finds it in run history", async ({ page }) => {

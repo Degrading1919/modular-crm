@@ -19,6 +19,7 @@ import * as ses from "aws-cdk-lib/aws-ses";
 import { AwsSolutionsChecks, NagSuppressions } from "cdk-nag";
 import type { StageConfig } from "./config.ts";
 import { createHash } from "node:crypto";
+import { createWebsiteEdge } from "./website-edge.ts";
 
 export function createInfrastructure(app: App, config: StageConfig) {
   const prod = config.stage === "production";
@@ -112,7 +113,8 @@ export function createInfrastructure(app: App, config: StageConfig) {
   const cluster = new ecs.Cluster(application, "Cluster", { vpc, containerInsightsV2: ecs.ContainerInsights.ENABLED });
   const repositories: Record<string, ecr.Repository> = {};
   const definitions: Record<string, ecs.FargateTaskDefinition> = {};
-  const commonEnvironment = { NODE_ENV: "production", MOCK_CONNECTORS: "false", DOMAIN_VERIFICATION_MODE: "dns",
+  const websiteEdge = createWebsiteEdge(application, prefix, config.domain);
+  const commonEnvironment = { ...websiteEdge.environment, NODE_ENV: "production", MOCK_CONNECTORS: "false", DOMAIN_VERIFICATION_MODE: "dns",
     TRUSTED_PROXY_HOPS: "1", APP_BASE_URL: `https://${config.domain}`, BETTER_AUTH_URL: `https://${config.domain}`, PUBLIC_BASE_URL: `https://${config.domain}`,
     DB_HOST: database.dbInstanceEndpointAddress, DB_PORT: database.dbInstanceEndpointPort, DB_NAME: "modular_crm", DB_SSL: "true",
     NODE_EXTRA_CA_CERTS: "/app/containers/rds-ca.pem", SMTP_HOST: config.smtpHost, SMTP_PORT: "587", SMTP_SECURE: "false", SMTP_FROM: config.smtpFrom,
@@ -124,6 +126,8 @@ export function createInfrastructure(app: App, config: StageConfig) {
     repositories[name] = repository;
     const taskRole = new iam.Role(application, `${name}TaskRole`, { assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com") });
     if (name !== "migrate") {
+      for (const permission of websiteEdge.permissions) taskRole.addToPolicy(permission);
+      NagSuppressions.addResourceSuppressions(taskRole, [{ id: "AwsSolutions-IAM5", reason: "CloudFront CreateDistributionTenant requires Resource * with mandatory stage tag; existing tenant actions are account- and ResourceTag-scoped, and only that tag key can be applied." }], true);
       files.grantReadWrite(taskRole, "tenants/*");
       NagSuppressions.addResourceSuppressions(taskRole, [{ id: "AwsSolutions-IAM5", reason: "Storage methods need object operations on this bucket's tenant-prefixed keys; CDK grants no other bucket, and the adapter enforces tenant ownership." }], true);
     }
@@ -139,6 +143,7 @@ export function createInfrastructure(app: App, config: StageConfig) {
       injected.DB_RUNTIME_PASSWORD = ecs.Secret.fromSecretsManager(runtimeDatabase, "password");
     }
     if (name !== "migrate") {
+      if (name === "web") injected.WEBSITE_ORIGIN_SECRET = ecs.Secret.fromSecretsManager(websiteEdge.originSecret);
       for (const key of ["BETTER_AUTH_SECRET", "WEBHOOK_SECRET_ENCRYPTION_KEY", "CONNECTOR_CREDENTIAL_ENCRYPTION_KEY"]) injected[key] = ecs.Secret.fromSecretsManager(runtime, key);
       for (const key of ["PLATFORM_STRIPE_SECRET_KEY", "PLATFORM_STRIPE_WEBHOOK_SECRET", "PLATFORM_STRIPE_MODE", "PLATFORM_BILLING_PLANS_JSON", "PLATFORM_OPERATOR_USER_IDS", "PLATFORM_BILLING_TRIAL_DAYS", "PLATFORM_BILLING_GRACE_DAYS"]) injected[key] = ecs.Secret.fromSecretsManager(runtime, key);
       injected.SMTP_USER = ecs.Secret.fromSecretsManager(mail, "username");
@@ -214,6 +219,8 @@ export function createInfrastructure(app: App, config: StageConfig) {
   alarm("DatabaseConnections", database.metricDatabaseConnections({ period: Duration.minutes(1) }), prod ? 200 : 100);
   const output = (id: string, value: string) => { const result = new CfnOutput(application, `Output${id}`, { value }); result.overrideLogicalId(id); };
   output("Stage", config.stage); output("Region", config.region); output("Cluster", cluster.clusterName);
+  output("WebsiteDistributionId", websiteEdge.distribution.ref); output("WebsiteConnectionGroupId", websiteEdge.group.attrId);
+  output("WebsiteRoutingTarget", websiteEdge.group.attrRoutingEndpoint); output("WebsiteOriginSecretArn", websiteEdge.originSecret.secretArn);
   output("WebService", web.serviceName); output("WorkerService", worker.serviceName);
   output("WebCount", String(config.webCount)); output("WorkerCount", String(config.workerCount));
   output("PrivateSubnets", vpc.selectSubnets(privateSubnets).subnetIds.join(",")); output("MigrateSecurityGroup", migrateSg.securityGroupId);

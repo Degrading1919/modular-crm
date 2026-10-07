@@ -3,6 +3,7 @@ import { requestContext } from "@modular-crm/config/observability";
 
 export const QUEUES = {
   publishOutbox: "mcrm.publish-outbox",
+  websiteDomainSweep: "mcrm.website-domain-sweep",
   recurringGeneration: "mcrm.recurring-generation",
   domainEvent: "mcrm.domain-event",
   automationRun: "mcrm.automation-run",
@@ -20,6 +21,7 @@ export type WebhookDeliveryJob = TenantJob & { deliveryId: string };
 export async function registerWorkerQueues(boss: PgBoss): Promise<void> {
   await Promise.all([
     boss.createQueue(QUEUES.publishOutbox, { retryLimit: 3, retryDelay: 5, retryBackoff: true }),
+    boss.createQueue(QUEUES.websiteDomainSweep, { retryLimit: 3, retryDelay: 10, retryBackoff: true }),
     boss.createQueue(QUEUES.recurringGeneration, { retryLimit: 3, retryDelay: 10, retryBackoff: true }),
     boss.createQueue(QUEUES.domainEvent, { retryLimit: 5, retryDelay: 5, retryBackoff: true }),
     boss.createQueue(QUEUES.automationRun, { retryLimit: 3, retryDelay: 10, retryBackoff: true }),

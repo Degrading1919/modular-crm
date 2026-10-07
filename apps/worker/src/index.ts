@@ -6,7 +6,8 @@ import { PgBoss } from "pg-boss";
 import { readServerConfig, type ServerConfig } from "@modular-crm/config";
 import { cleanupRateLimits, closeDatabase, createDatabase, type Database } from "@modular-crm/db";
 import { isSecretEnvelope, openSecret } from "@modular-crm/domain";
-import { createConnectorRegistry } from "@modular-crm/connectors";
+import { createConnectorRegistry, createWebsiteHosting } from "@modular-crm/connectors";
+import { sweepWebsiteDomains } from "@modular-crm/db";
 import { enqueuePendingAutomationRuns, processAutomationRun } from "./automations-db.js";
 import { processDomainEvent, publishPendingDomainEvents } from "./events-db.js";
 import { jobLoopRunning, startHealthServer } from "./health.js";
@@ -52,6 +53,14 @@ export async function registerWorkerHandlers(db: Database, boss: PgBoss, resolve
       if (events || messages || automations || webhooks) log("outbox.published", { events, messages, automations, webhooks });
     });
   });
+  // External DNS/certificate checks cannot hold up reminders or the event outbox.
+  await boss.work(QUEUES.websiteDomainSweep, async jobs => {
+    for (const job of jobs) await observeJob(QUEUES.websiteDomainSweep, job.data, async () => {
+      if (process.env.WEBSITE_DOMAIN_PROVIDER === "cloudfront" || (config.environment !== "production" && process.env.DOMAIN_VERIFICATION_MODE === "mock")) {
+        await sweepWebsiteDomains(db, createWebsiteHosting());
+      }
+    });
+  });
   await boss.work<RecurringGenerationJob>(QUEUES.recurringGeneration, async (jobs) => {
     for (const job of jobs) {
       await observeJob(QUEUES.recurringGeneration, job.data, async () => {
@@ -94,8 +103,10 @@ export async function startWorker(env: Record<string, string | undefined> = proc
     await registerWorkerQueues(boss);
     await registerWorkerHandlers(db, boss, environmentSecretResolver(env), config);
     await boss.schedule(QUEUES.publishOutbox, "* * * * *", {}, { tz: "UTC" });
+    await boss.schedule(QUEUES.websiteDomainSweep, "* * * * *", {}, { tz: "UTC" });
     await boss.schedule(QUEUES.recurringGeneration, "0 3 * * *", {}, { tz: "UTC" });
     await boss.send(QUEUES.publishOutbox, {});
+    await boss.send(QUEUES.websiteDomainSweep, {});
     await boss.send(QUEUES.recurringGeneration, {});
     health = await startHealthServer({ port: config.workerHealthPort, connectionString, isRunning: () => !stopping && jobLoopRunning(boss,
       { pollStaleMs: config.workerPollStaleMs, jobMaxMs: config.workerJobMaxMs }) });

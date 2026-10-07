@@ -13,6 +13,7 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "tldts": "7.4.16",
     "@better-auth/drizzle-adapter": "1.7.5",
     "@modular-crm/automations": "workspace:*",
     "@modular-crm/config": "workspace:*",

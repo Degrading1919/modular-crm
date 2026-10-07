@@ -24,6 +24,21 @@ const { requireApiCapability, requirePaymentLinkFeature } = await import("../lib
 const config = readPlatformBillingConfig({});
 const mail = { secret: DEVELOPMENT_AUTH_SECRET, baseUrl: "http://localhost:3000" };
 const owner: SessionActor = { kind: "staff", role: "owner", userId: "demo-happy-owner", tenantId: seedIds.happyTenant, tenantName: "Happy Yards", packKey: "pet-waste-removal", email: "owner@happyyards.test", name: "Olivia", permissions: permissionsForRole("owner"), allLocations: true, locationIds: new Set([seedIds.augusta]), membershipId: seedIds.oliviaMembership, organizationId: seedIds.happyOrganization };
+// Exhaustive, intentional exemptions from the business-write subscription guard.
+// These are recovery/provider bookkeeping, immutable delivery/audit ledgers or
+// operator-maintained projections, not owner-writable business data. New tenant
+// tables must install the trigger or receive an explicitly reviewed entry here.
+const BILLING_GUARD_EXEMPT_TABLES = [
+  "platform_subscriptions", "platform_billing_events", "platform_billing_sessions", // Billing and card recovery remain available.
+  "online_payment_events", "online_payment_sessions", // Signed customer-payment recovery.
+  "domain_events", "audit_events", "activity_events", "internal_notifications", // Internal event/audit delivery.
+  "outbound_messages", "communication_events", "automation_runs", "webhook_deliveries", "webhook_events", // In-flight delivery ledgers.
+  "platform_email_usage", "platform_email_policies", // Platform email accounting/policy.
+  "api_credentials", "connector_oauth_transactions", "sync_states", "metric_snapshots", // Revocation, OAuth recovery and internal projections.
+  "commercial_account_entries", "commercial_usage_events", "usage_allowances", // Immutable platform usage accounting.
+  "tenant_capability_grants", "tenant_capability_settings", // Operator-maintained entitlements.
+  "website_domain_checks", // Internal DNS/TLS projection and cleanup; owner domain mutations remain guarded.
+];
 let pglite: PGlite; let db: Database;
 function request(path: string, data: unknown = {}, method = "POST") { return new Request(`http://localhost:3000/api/v1/${path}`, { method, ...(method === "GET" ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(data) }) }); }
 async function call(path = "", data: unknown = {}, method = "POST", actor = owner) { return handlePlatformBilling(request(`platform-billing${path ? `/${path}` : ""}`, data, method), ["platform-billing", ...path.split("/").filter(Boolean)], actor); }
@@ -106,8 +121,16 @@ describe("platform subscriptions, recovery and tenant-safe enforcement", () => {
   });
   it("protects direct database writes throughout seeded modules, including deletes, not just HTTP routes", async () => {
     await db.update(platformSubscriptions).set({ status: "read_only" }).where(eq(platformSubscriptions.tenantId, owner.tenantId));
-    const tables = await pglite.query<{ table_name: string }>("select event_object_table as table_name from information_schema.triggers where trigger_name='platform_business_write_guard' and event_manipulation='UPDATE'");
-    expect(tables.rows.length).toBeGreaterThan(90);
+    const tenantTables = await pglite.query<{ table_name: string }>(`select t.table_name from information_schema.tables t
+      where t.table_schema='public' and t.table_type='BASE TABLE' and (t.table_name='tenants' or exists (
+        select 1 from information_schema.columns c where c.table_schema=t.table_schema and c.table_name=t.table_name and c.column_name='tenant_id'))`);
+    const triggers = await pglite.query<{ table_name: string; operation: string }>("select event_object_table as table_name, event_manipulation as operation from information_schema.triggers where trigger_schema='public' and trigger_name='platform_business_write_guard'");
+    const expectedGuarded = tenantTables.rows.map(row => row.table_name).filter(name => !BILLING_GUARD_EXEMPT_TABLES.includes(name)).sort();
+    expect([...new Set(triggers.rows.map(row => row.table_name))].sort()).toEqual(expectedGuarded);
+    expect(BILLING_GUARD_EXEMPT_TABLES.every(name => tenantTables.rows.some(row => row.table_name === name))).toBe(true);
+    for (const table of expectedGuarded) expect(triggers.rows.filter(row => row.table_name === table).map(row => row.operation).sort())
+      .toEqual(table === "tenants" ? ["DELETE", "UPDATE"] : ["DELETE", "INSERT", "UPDATE"]);
+    const tables = { rows: expectedGuarded.map(table_name => ({ table_name })) };
     const blocked: string[] = [];
     for (const { table_name: table } of tables.rows) {
       expect(table).toMatch(/^[a-z_]+$/);
