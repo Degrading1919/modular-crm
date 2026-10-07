@@ -4,6 +4,22 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-06 — Payment due defaults at invoice issuance
+
+- **Status:** Accepted
+- **Area:** Product / Implementation
+- **Decision:** Business Payment due defaults to On receipt, with 7, 15 and 30-day alternatives. All new issuance paths preserve explicit due dates and the existing completion-plan/customer term precedence before using the issuing business's default; drafts without a chosen date receive their deadline at actual issuance. Do not silently backfill historical issued invoices or change their due dates when settings change.
+- **Rationale:** Opt-in overdue reminders need a real due date even for customers without bespoke terms. One shared rule avoids inconsistent deadlines between manual and automatic billing.
+- **Authoritative doc:** `docs/PRODUCT_SCOPE.md`
+
+## 2026-10-06 — Once-only charges, durable visit billing and opt-in overdue reminders
+
+- **Status:** Accepted
+- **Area:** Product / Implementation
+- **Decision:** Separate accepted Once lines from Every visit plan prices and claim setup charges under the plan lock on the first completed visit's invoice. Refuse estimate conversion for automatically per-visit billed plans; share estimate → job locks and durable job-invoice ownership across conversion, manual billing and per-customer batch receipts, retaining branch/currency separation and job-scoped document lines. Overdue emails are opt-in service messages with bounded schedules, delivery-time payment/dispute/settings checks and invoice timeline facts through the existing email path.
+- **Rationale:** Owners must not retype finished work, charge setup fees on every visit, or unknowingly bill a quote and its visits twice. Frozen amounts and explicit scope reconcile billing; ordinary replay does not duplicate invoices or reminders, without claiming exactly-once external SMTP delivery.
+- **Authoritative docs:** `docs/PRODUCT_SCOPE.md`, `docs/ARCHITECTURE.md` (durable billing ownership)
+
 ## 2026-10-06 — Itemized approval snapshots and per-document tax rounding
 
 - **Status:** Accepted

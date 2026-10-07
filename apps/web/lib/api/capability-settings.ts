@@ -7,7 +7,7 @@ import {
   automationRules, automationRuns, communicationEvents, connectorInstallations, customerContacts, customers, domainEvents,
   hasUsableFeature, jobAssignments, jobs, loadTenantCapabilities, organizationLocations, organizations, outboundMessages, tenants,
 } from "@modular-crm/db";
-import { DomainError, requirePermission } from "@modular-crm/domain";
+import { businessPaymentDueDays, paymentDueOptions, DomainError, requirePermission } from "@modular-crm/domain";
 import { z } from "zod";
 import { applyConnectorInstallationToRegistry, getRegistry, hydrateTenantConnectors, setConnectorState } from "../connectors";
 import { getDb } from "../db";
@@ -76,6 +76,8 @@ const messageBodySchema = z.object({
 });
 
 const settingsBodySchema = z.object({
+  paymentDueDays: z.union(paymentDueOptions.map(days => z.literal(days))).optional(),
+  overdueReminders: z.object({ enabled: z.boolean(), firstAfterDays: z.number().int().min(1).max(90), intervalDays: z.number().int().min(1).max(90), maxReminders: z.number().int().min(1).max(10) }).strict().optional(),
   defaultTaxRateBasisPoints: z.number().int().min(0).max(10000).optional(),
   businessName: z.string().trim().min(2).max(160).optional(),
   phone: z.string().trim().max(40).optional(),
@@ -738,6 +740,8 @@ async function getSettings(request: Request, actor: SessionActor): Promise<Respo
   return json({ item: {
     id: tenant.id, businessName: organization.displayName || tenant.name,
     defaultTaxRateBasisPoints: Number(orgSettings.defaultTaxRateBasisPoints ?? 0),
+    paymentDueDays: businessPaymentDueDays(orgSettings.paymentDueDays),
+    overdueReminders: orgSettings.overdueReminders ?? { enabled: false, firstAfterDays: 3, intervalDays: 7, maxReminders: 3 },
     locationName: location?.name,
     phone: organization.phone ?? location?.phone ?? "", email: organization.email ?? location?.email ?? "",
     timezone: organization.timezone || tenant.defaultTimezone,
@@ -765,6 +769,8 @@ async function patchSettings(request: Request, actor: SessionActor): Promise<Res
     const priorSettings = objectValue(organization.settings);
     const before = {
       defaultTaxRateBasisPoints: Number(priorSettings.defaultTaxRateBasisPoints ?? 0),
+      paymentDueDays: businessPaymentDueDays(priorSettings.paymentDueDays),
+      overdueReminders: priorSettings.overdueReminders ?? { enabled: false, firstAfterDays: 3, intervalDays: 7, maxReminders: 3 },
       businessName: organization.displayName || tenant.name, phone: organization.phone ?? location?.phone ?? "",
       email: organization.email ?? location?.email ?? "", timezone: organization.timezone || tenant.defaultTimezone,
       address: location?.addressLine1 ?? (requestedLocationId ? "" : String(priorSettings.businessAddress ?? "")),
@@ -780,7 +786,7 @@ async function patchSettings(request: Request, actor: SessionActor): Promise<Res
       phone: body.phone === undefined ? organization.phone : nextPhone || null,
       email: body.email === undefined ? organization.email : nextEmail || null,
       timezone: body.timezone ?? organization.timezone,
-      settings: { ...priorSettings, defaultTaxRateBasisPoints: body.defaultTaxRateBasisPoints ?? before.defaultTaxRateBasisPoints, ...(!requestedLocationId ? { businessAddress: nextAddress } : {}) }, updatedAt: now,
+      settings: { ...priorSettings, paymentDueDays: body.paymentDueDays ?? before.paymentDueDays, overdueReminders: body.overdueReminders ?? before.overdueReminders, defaultTaxRateBasisPoints: body.defaultTaxRateBasisPoints ?? before.defaultTaxRateBasisPoints, ...(!requestedLocationId ? { businessAddress: nextAddress } : {}) }, updatedAt: now,
     }).where(and(eq(organizations.id, organization.id), eq(organizations.tenantId, actor.tenantId)));
     await tx.update(tenants).set({ name: nextName, defaultTimezone: nextTimezone, updatedAt: now }).where(eq(tenants.id, actor.tenantId));
     if (location) await tx.update(organizationLocations).set({
@@ -789,7 +795,7 @@ async function patchSettings(request: Request, actor: SessionActor): Promise<Res
       email: body.email === undefined ? location.email : nextEmail || null,
       timezone: body.timezone ?? location.timezone, updatedAt: now,
     }).where(and(eq(organizationLocations.id, location.id), eq(organizationLocations.tenantId, actor.tenantId), eq(organizationLocations.organizationId, organization.id)));
-    const after = { businessName: nextName, phone: nextPhone, email: nextEmail, timezone: nextTimezone, address: nextAddress,defaultTaxRateBasisPoints:body.defaultTaxRateBasisPoints ?? before.defaultTaxRateBasisPoints };
+    const after = { businessName: nextName, phone: nextPhone, email: nextEmail, timezone: nextTimezone, address: nextAddress, paymentDueDays: body.paymentDueDays ?? before.paymentDueDays, defaultTaxRateBasisPoints:body.defaultTaxRateBasisPoints ?? before.defaultTaxRateBasisPoints, overdueReminders: body.overdueReminders ?? before.overdueReminders };
     await recordEvent(actor, { type: "tenant.settings_updated", entityType: "tenant", entityId: tenant.id, auditAction: "tenant.settings_update", before, after }, tx);
     return after;
   });

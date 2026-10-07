@@ -7,6 +7,7 @@ import { json } from "./http";
 import { normalized, rows, uuidArray } from "./sql";
 
 const names: Record<string, string> = {
+  reminder_sent: "Unpaid invoice reminder sent",
   created: "Record created", updated: "Details updated", converted: "Converted to a customer", contacted: "Contacted", qualified: "Qualified", quoted: "Quote prepared",
   assigned: "Technician assigned", rescheduled: "Visit rescheduled", schedule_changed: "Schedule updated", dispatched: "Added to a published route", en_route: "Technician on the way", in_progress: "Work started", paused: "Work paused", completed: "Work completed", skipped: "Visit skipped", missed: "Visit missed", canceled: "Job canceled", needs_return: "Return visit needed",
   issued: "Invoice issued", paid: "Payment recorded", partially_paid: "Partial payment recorded", refunded: "Refund recorded", refund_review_resolved: "Refund review resolved", void: "Invoice voided", overdue: "Invoice overdue", lost: "Lead closed", disqualified: "Lead closed",

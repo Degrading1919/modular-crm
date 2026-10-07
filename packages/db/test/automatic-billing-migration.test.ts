@@ -1,0 +1,23 @@
+import { afterAll, beforeAll, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { PGlite } from "@electric-sql/pglite";
+import { drizzle } from "drizzle-orm/pglite";
+import { migrate } from "drizzle-orm/pglite/migrator";
+import { eq } from "drizzle-orm";
+import { priceDocument } from "@modular-crm/domain";
+import { schema, seedDevelopment, seedIds, type Database } from "../src/index.ts";
+let pg: PGlite, db: Database;
+beforeAll(async () => { pg = new PGlite(); const raw = drizzle(pg, { schema }); await migrate(raw, { migrationsFolder: fileURLToPath(new URL("../drizzle", import.meta.url)) }); db = raw as unknown as Database; await seedDevelopment(db); }, 120_000);
+afterAll(async () => { await pg?.close(); });
+it("adds legacy recurring semantics and visit billing ownership without changing recorded amounts", async () => {
+  const pricing = priceDocument([{ description: "Historical work", quantity: "1", unitAmountMinor: 2500, taxable: true }], 750);
+  const snapshot = { ...pricing, currency: "USD", priceVersions: [{ effectiveFrom: "2026-01-01", snapshot: pricing }] };
+  await db.update(schema.servicePlans).set({ pricingSnapshot: snapshot }).where(eq(schema.servicePlans.id, seedIds.carterPlan));
+  const dataSql = (await readFile(fileURLToPath(new URL("../drizzle/0018_rich_tana_nile.sql", import.meta.url)), "utf8")).split("--> statement-breakpoint").slice(5).join(";\n");
+  await pg.exec(dataSql); await pg.exec(dataSql);
+  const [plan] = await db.select().from(schema.servicePlans).where(eq(schema.servicePlans.id, seedIds.carterPlan));
+  expect(plan!.pricingSnapshot).toMatchObject({ subtotalMinor: 2500, taxMinor: 188, totalMinor: 2688, items: [{ charge: "every_visit" }], priceVersions: [{ snapshot: { totalMinor: 2688, items: [{ charge: "every_visit" }] } }] });
+  const allInvoices = await db.select().from(schema.invoiceItems);
+  for (const line of allInvoices.filter(line => line.jobId)) expect((await db.select().from(schema.jobInvoiceLinks).where(eq(schema.jobInvoiceLinks.jobId, line.jobId!)))).toHaveLength(1);
+});
