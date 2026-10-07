@@ -36,11 +36,19 @@ Public signup renders the selected pack's ordered `formSteps`, assets and locati
 
 `customerVisible` permits portal reads; `customerEditable` separately permits portal changes and requires visibility. Sensitive fields cannot be customer-editable, never enter pricing context, public submission history, import history, ordinary record/portal responses or logs, and use the existing encrypted service-access envelope. Only the authorized assigned service team receives decrypted instructions. Existing tenant/customer/location boundaries remain mandatory.
 
+Media fields remain read-only in the portal until a validated upload flow exists, even if a pack accidentally marks them editable. Pet Waste Removal 1.3.2 removes photo editability; an existing reference must never be replaced by arbitrary profile text.
+
+Signup replay evidence includes tenant- and field-separated HMAC fingerprints of supplied sensitive values, using the server signing secret and a distinct purpose. Adding, changing or removing a private value under an existing request key returns a conflict; an identical retry remains a duplicate. Neither plaintext nor unkeyed hashes of short codes enter submission history. Older submissions without verifiable private evidence fail closed when resubmitted with private values rather than silently losing an update.
+
+Both staff and secure-estimate lead conversion copy recorded signup property fields and service items to the new customer/address in the same transaction, scoped to the tenant and current pack. Pack-owned legacy collection/property aliases normalize older leads without inventing input defaults. The encrypted access envelope transfers unchanged to the address; conversion never decrypts it into logs or audit events. Repeated conversion must not duplicate addresses or items, and a missing service address blocks conversion when service facts or access instructions would otherwise be lost.
+
 Compatibility aliases and storage keys belong to the pack. Pet Waste Removal 1.3 retains the legacy signup/quote input shapes and stored property keys without rewriting seeded customer rows. Pack-defined checklist and skip reasons drive field completion, with neutral defaults for businesses without a selected pack.
 
 Read views show recorded field values only; defaults prefill input forms and schemas, never invent historical facts. Pack `displayAs: "warning"` renders recorded warning text prominently in staff records and assigned jobs while respecting portal visibility. Pet Waste Removal 1.3.1 maps the stored `safetyFlag` key, including legacy string warnings. Pack-owned `noncompletionReasonAliases` normalize older queued skip keys to current keys before validation and storage, while retaining the original payload fingerprint for offline replay. Its `customer_requested` and `address_issue` aliases target `customer_skip` and `address_problem`; no customer-data migration is required.
 
 Industry selection is an initial-setup choice, not a migration tool. Switching before customers exist retires the previous pack's service choices and recipes without deleting them; completed setup or existing customers prevents a pack switch. New pack recipes start as drafts.
+
+Retired recipes set both archived status and `archivedAt`, update their timestamp and increment their version, matching ordinary archive semantics. Switching back creates one visible draft per current-pack recipe; archived history remains hidden from list/edit paths.
 
 House Cleaning 1.0 is the second executable reference: room assets, property details of all five field types, room-count pricing and private entry instructions. The separate Tidy Home fixture demonstrates signup, quoting, owner records, portal editing, CSV import and technician completion without replacing existing demo businesses. See [its research profile](./research/industry-packs/house-cleaning.md). No new industry-specific table is introduced.
 

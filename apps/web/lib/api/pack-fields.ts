@@ -5,6 +5,8 @@ import { z } from "zod";
 import { DomainError } from "@modular-crm/domain";
 import { getDb } from "../db";
 import { encryptServiceAccessInstructions } from "./service-access";
+import { createHmac } from "node:crypto";
+import { authSigningSecret } from "../runtime-secret";
 
 export async function tenantIndustryPack(tenantId: string): Promise<IndustryPack> {
   const [tenant] = await getDb().select({ key: tenants.industryPackKey }).from(tenants).where(and(eq(tenants.id, tenantId), eq(tenants.status, "active"))).limit(1);
@@ -28,8 +30,47 @@ export function packFieldSchema(field: PackField, partial = false): z.ZodType {
   return schema;
 }
 
-export function fieldsSchema(fields: readonly PackField[], partial = false) {
-  return z.object(Object.fromEntries(fields.map(field => [field.key, packFieldSchema(field, partial)]))).strict();
+export function fieldsSchema(fields: readonly PackField[], partial = false, customerEdit = false) {
+  return z.object(Object.fromEntries(fields.filter(field => !customerEdit || field.type !== "media").map(field => [field.key, packFieldSchema(field, partial)]))).strict();
+}
+
+/** Deterministic, domain-separated replay evidence; short private codes must not be plain hashes. */
+export function privatePackFingerprints(pack: IndustryPack, input: ServiceDetailsInput, tenantId: string) {
+  const evidence: Record<string, string> = {};
+  const add = (scope: string, fields: readonly PackField[], values: Record<string, unknown>) => {
+    for (const field of fields.filter(field => field.sensitive)) {
+      const value = values[field.key];
+      if (value === undefined || value === null || value === "") continue;
+      const key = `${scope}.${field.key}`;
+      evidence[key] = createHmac("sha256", authSigningSecret()).update(JSON.stringify(["modular-crm:signup-private:v1", tenantId, pack.key, key, value])).digest("hex");
+    }
+  };
+  add("location", pack.locationFields, input.locationFields);
+  input.assets.forEach((asset, index) => add(`asset.${index}.${asset.assetTypeKey}`, pack.assets.find(def => def.key === asset.assetTypeKey)!.fields, asset.customFields));
+  return evidence;
+}
+
+/** Restore recorded signup facts, not form defaults, using pack-owned legacy/storage mappings. */
+export function savedSignupDetails(pack: IndustryPack, raw: unknown) {
+  const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const signup = object(raw);
+  const stored = (fields: readonly PackField[], values: Record<string, unknown>) => Object.fromEntries(fields.filter(field => !field.sensitive && field.key !== "name")
+    .map(field => [field.storageKey ?? field.key, values[field.storageKey ?? field.key] ?? values[field.key]])
+    .filter(([, value]) => value !== undefined));
+  const legacy = pack.intake?.legacy;
+  const location = { ...object(signup.locationFields) };
+  if (legacy) {
+    for (const [alias, key] of Object.entries(legacy.quoteFields)) if (signup[alias] !== undefined) location[key] = signup[alias];
+    for (const [alias, key] of Object.entries(legacy.locationFields)) if (object(signup[legacy.locationObject])[alias] !== undefined) location[key] = object(signup[legacy.locationObject])[alias];
+  }
+  const rows = Array.isArray(signup.assets) ? signup.assets : legacy && Array.isArray(signup[legacy.assetCollection]) ? signup[legacy.assetCollection] as unknown[] : [];
+  const assets = rows.map(value => {
+    const row = object(value);
+    const definition = pack.assets.find(def => def.key === row.assetTypeKey) ?? (row.assetTypeKey === undefined ? pack.assets[0] : undefined);
+    if (!definition || typeof row.name !== "string" || !row.name.trim()) throw new DomainError("VALIDATION_ERROR", "Check the saved service details before converting this request.", 422);
+    return { assetTypeKey: definition.key, name: row.name, customFields: stored(definition.fields, row.customFields ? object(row.customFields) : row) };
+  });
+  return { assets, customFields: { ...stored(pack.locationFields, location), ...(typeof signup.preferredDay === "string" ? { preferredDay: signup.preferredDay } : {}) } };
 }
 
 export function packInputSchema(pack: IndustryPack, partial = false) {
@@ -98,7 +139,7 @@ export function safePackDetails(pack: IndustryPack, input: ServiceDetailsInput) 
 
 export function assetView(pack: IndustryPack, row: { id: unknown; name: string; assetTypeKey: string; customFields: Record<string, unknown> }, portal = false) {
   const definition = pack.assets.find(asset => asset.key === row.assetTypeKey);
-  const fields = (definition?.fields ?? []).filter(field => !field.sensitive && (!portal || field.customerVisible));
+  const fields = (definition?.fields ?? []).filter(field => !field.sensitive && (!portal || field.customerVisible)).map(field => portal && field.type === "media" ? { ...field, customerEditable: false } : field);
   const name = !portal || fields.some(field => field.key === "name") ? row.name : "Service item";
   return { id: row.id, name, assetTypeKey: row.assetTypeKey, label: definition?.label ?? "Service item", pluralLabel: definition?.pluralLabel ?? "Service details", fields, customFields: packFieldValues(fields, row.customFields, name) };
 }

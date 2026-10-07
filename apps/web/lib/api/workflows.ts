@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
-  auditEvents, completionProofs, connectorInstallations, customerContacts, customers, domainEvents, estimateApprovals, estimateRevisions, estimates, hasUsableFeature, invoiceItems, invoices, jobAssignments, jobStatusEvents,
+  auditEvents, completionProofs, connectorInstallations, customerAssets, customerContacts, customers, domainEvents, estimateApprovals, estimateRevisions, estimates, hasUsableFeature, invoiceItems, invoices, jobAssignments, jobStatusEvents,
   jobs, jobInvoiceLinks, leads, loadTenantCapabilities, paymentAllocations, payments, recurrenceRules, serviceLocations, servicePlans, services, tenants,
   secureEstimateTokens, organizations,
 } from "@modular-crm/db";
@@ -28,6 +28,8 @@ import { finishedWork, jobInvoice } from "./job-billing";
 import { voidInvoice } from "./invoice-void";
 import { storedLine } from "./document-lines";
 import type { DocumentPricing } from "@modular-crm/domain";
+import { getIndustryPack, NEUTRAL_SERVICE_PACK } from "@modular-crm/industry-packs";
+import { savedSignupDetails } from "./pack-fields";
 
 export async function getAssignedJob(actor: SessionActor, jobId: string, permission: Permission = "jobs.read") {
   const db = getDb();
@@ -54,6 +56,13 @@ async function convertLeadCoreInTransaction(tenantId: string, leadId: string, tx
   if ("actor" in source && !source.actor.allLocations && (!lead.owningLocationId || !source.actor.locationIds.has(lead.owningLocationId))) throw new DomainError("NOT_FOUND", "Lead not found.", 404);
   if (lead.customerId) return { lead, customerId: lead.customerId, serviceLocationId: lead.serviceLocationId, alreadyConverted: true };
   assertTransition("lead", lead.status, "converted");
+  const [tenant] = await tx.select({ packKey: tenants.industryPackKey }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+  const pack = tenant?.packKey ? getIndustryPack(tenant.packKey) : NEUTRAL_SERVICE_PACK;
+  if (!pack) throw new DomainError("VALIDATION_ERROR", "Business service details are unavailable. Contact the office.", 422);
+  const signup = savedSignupDetails(pack, lead.customFields?.websiteSignup);
+  const envelope = lead.customFields?.accessInstructionsEncrypted;
+  // Transfer the envelope byte-for-byte. Conversion never decrypts customer instructions.
+  const accessInstructionsEncrypted = typeof envelope === "string" ? envelope : null;
   const name = lead.companyName || [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "New customer";
   const [customer] = await tx.insert(customers).values({ tenantId, organizationId: lead.organizationId, owningLocationId: lead.owningLocationId, displayName: name, companyName: lead.companyName, customerType: lead.companyName ? "commercial" : "residential", billingEmail: lead.email, billingPhone: lead.phone, status: "active" }).returning();
   if (!customer) throw new Error("Could not convert lead");
@@ -61,9 +70,11 @@ async function convertLeadCoreInTransaction(tenantId: string, leadId: string, tx
   const address = lead.address as Record<string, unknown> | null;
   let serviceLocationId: string | null = null;
   if (address?.line1) {
-    const [location] = await tx.insert(serviceLocations).values({ tenantId, customerId: customer.id, organizationLocationId: lead.owningLocationId, name: "Primary address", addressLine1: String(address.line1), city: String(address.city ?? ""), region: String(address.region ?? ""), postalCode: String(address.postalCode ?? "") }).returning();
+    const [location] = await tx.insert(serviceLocations).values({ tenantId, customerId: customer.id, organizationLocationId: lead.owningLocationId, name: "Primary address", addressLine1: String(address.line1), city: String(address.city ?? ""), region: String(address.region ?? ""), postalCode: String(address.postalCode ?? ""), customFields: signup.customFields, accessInstructionsEncrypted }).returning();
     serviceLocationId = location?.id ?? null;
   }
+  if (!serviceLocationId && (signup.assets.length || Object.keys(signup.customFields).length || accessInstructionsEncrypted)) throw new DomainError("VALIDATION_ERROR", "Add a service address before converting this request so its service details can be kept.", 422);
+  if (serviceLocationId && signup.assets.length) await tx.insert(customerAssets).values(signup.assets.map(asset => ({ tenantId, customerId: customer.id, serviceLocationId, ...asset, status: "active", customerVisible: true })));
   await tx.update(leads).set({ status: "converted", customerId: customer.id, serviceLocationId, convertedAt: new Date(), updatedAt: new Date() }).where(and(eq(leads.id, lead.id), eq(leads.tenantId, tenantId)));
   if ("actor" in source) {
     await recordEvent(source.actor, { type: "lead.converted", entityType: "lead", entityId: leadId, payload: { customerId: customer.id }, auditAction: "lead.convert", before: { status: lead.status }, after: { status: "converted", customerId: customer.id }, locationId: lead.owningLocationId }, tx);

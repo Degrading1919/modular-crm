@@ -4,7 +4,7 @@ import { HOUSE_CLEANING_PACK, PET_WASTE_REMOVAL_PACK, packFieldValues, packQuant
 vi.mock("../lib/db.ts", () => ({ getDb: vi.fn() }));
 process.env.DATABASE_URL ??= "postgres://localhost:5433/modular_crm_test";
 const { publicPackSchema } = await import("../lib/api/public-site.ts");
-const { assetView, importedPackDetails, packImportAliases, safePackDetails, storePackFields } = await import("../lib/api/pack-fields.ts");
+const { assetView, fieldsSchema, importedPackDetails, packImportAliases, privatePackFingerprints, savedSignupDetails, safePackDetails, storePackFields } = await import("../lib/api/pack-fields.ts");
 const { decryptServiceAccessInstructions } = await import("../lib/api/service-access.ts");
 const { apiError } = await import("../lib/api/http.ts");
 
@@ -12,6 +12,27 @@ const base = { slug: "tidy-home", address: "12 Birch Street", zip: "30909", serv
 const details = { assets: [{ assetTypeKey: "room", name: "Kitchen", customFields: { floor_surface: "tile", care_notes: "Soft cloth" } }], locationFields: { room_count: 3, home_type: "house", supplies_provided: true, first_visit: "2026-10-08", entry_instructions: "private-entry-7812" } };
 
 describe("pack-selected service details", () => {
+  it("rejects customer edits to media even if a future pack marks it editable", () => {
+    const media = { key: "photo", label: "Photo", type: "media" as const, customerVisible: true, customerEditable: true };
+    expect(fieldsSchema([media], true, true).safeParse({ photo: "anything" }).success).toBe(false);
+    expect(fieldsSchema([media], true, true).parse({})).toEqual({});
+    const pack = { ...PET_WASTE_REMOVAL_PACK, assets: [{ ...PET_WASTE_REMOVAL_PACK.assets[0]!, fields: [media] }] };
+    expect(assetView(pack, { id: "item", name: "Item", assetTypeKey: "pet", customFields: { photo: "existing-reference" } }, true).fields[0]!.customerEditable).toBe(false);
+    expect(PET_WASTE_REMOVAL_PACK.assets[0]!.fields.find(field => field.key === "photo")!.customerEditable).not.toBe(true);
+  });
+  it("uses tenant/field-separated keyed private evidence for both location and asset fields", () => {
+    const pack: IndustryPack = { ...HOUSE_CLEANING_PACK, assets: [{ ...HOUSE_CLEANING_PACK.assets[0]!, fields: [{ key: "private_note", label: "Private note", type: "text", sensitive: true }] }] };
+    const input = { assets: [{ assetTypeKey: "room", name: "Room", customFields: { private_note: "1234" } }], locationFields: { entry_instructions: "1234" } };
+    const first = privatePackFingerprints(pack, input, "tenant-one");
+    expect(first).toEqual(privatePackFingerprints(pack, input, "tenant-one"));
+    expect(first["location.entry_instructions"]).not.toBe(first["asset.0.room.private_note"]);
+    expect(first).not.toEqual(privatePackFingerprints(pack, input, "tenant-two"));
+    expect(JSON.stringify(first)).not.toContain("1234");
+  });
+  it("maps older signup leads through pack legacy names without adding form defaults or private plaintext", () => {
+    expect(savedSignupDetails(PET_WASTE_REMOVAL_PACK, { pets: [{ name: "Legacy", species: "dog" }], yardSize: "large" })).toEqual({ assets: [{ assetTypeKey: "pet", name: "Legacy", customFields: { species: "dog" } }], customFields: { yardSize: "large" } });
+    expect(savedSignupDetails(HOUSE_CLEANING_PACK, { assets: [{ assetTypeKey: "room", name: "Room", customFields: { floor_surface: "tile", unknown: "discard" } }], locationFields: { room_count: 4, entry_instructions: "discard-private" } }).customFields).toEqual({ room_count: 4 });
+  });
   it("validates both packs and uses declared numeric quantity rather than item count", () => {
     for (const pack of [HOUSE_CLEANING_PACK, PET_WASTE_REMOVAL_PACK]) expect(() => validateIndustryPack(pack)).not.toThrow();
     const parsed = publicPackSchema(HOUSE_CLEANING_PACK, "quote").parse({ ...base, ...details }) as unknown as typeof details;
