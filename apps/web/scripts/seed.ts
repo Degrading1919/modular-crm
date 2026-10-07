@@ -20,5 +20,5 @@ for (const userId of Object.values(seedUserIds)) {
     password,
   }).onConflictDoNothing();
 }
-console.log(`Seeded ${Object.keys(result.actors).length} demo users across two tenants. Password: Demo12345!`);
+console.log(`Seeded ${Object.keys(result.actors).length} demo users across three tenants. Password: Demo12345!`);
 process.exit(0);

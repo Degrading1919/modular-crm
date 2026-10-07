@@ -1,4 +1,5 @@
 import { PET_WASTE_REMOVAL_PACK } from "./pet-waste-removal.ts";
+import { HOUSE_CLEANING_PACK } from "./house-cleaning.ts";
 
 export type PackField = Readonly<{
   key: string;
@@ -7,6 +8,9 @@ export type PackField = Readonly<{
   required?: boolean;
   sensitive?: boolean;
   customerVisible?: boolean;
+  customerEditable?: boolean;
+  signupVisible?: boolean;
+  storageKey?: string;
   options?: readonly string[];
   defaultValue?: string | number | boolean;
   reportable?: boolean;
@@ -78,6 +82,13 @@ export type IndustryPack = Readonly<{
   defaultAutomations: readonly PackRecipe[];
   reports: readonly PackReport[];
   pricingTemplates: readonly PackPricingTemplate[];
+  intake?: Readonly<{
+    quantity: { assetTypeKey?: string; locationField?: string; aliases?: readonly string[] };
+    legacy?: { assetCollection: string; locationObject: string; locationFields: Readonly<Record<string, string>>; quoteFields: Readonly<Record<string, string>>; countField: string; locationStorageFields?: Readonly<Record<string, string>> };
+    serviceAliases?: Readonly<Record<string, string>>;
+    quantityReview?: { setting: string; ruleName: string; reason: string; prompt: string };
+  }>;
+  importAliases?: Readonly<Record<string, readonly string[]>>;
   recommendationQuestions: readonly PackOnboardingQuestion[];
   productCapabilityRecommendations: readonly ProductCapabilityRecommendation[];
   recommendedConnectorCapabilities: readonly ConnectorCapabilityKey[];
@@ -85,8 +96,19 @@ export type IndustryPack = Readonly<{
   website: Readonly<{ template: string; sections: readonly string[]; signupSteps: readonly string[]; heroHeadline: string; heroDescription: string }>;
 }>;
 
-export { PET_WASTE_REMOVAL_PACK };
-const PACKS: ReadonlyMap<string, IndustryPack> = new Map([[PET_WASTE_REMOVAL_PACK.key, PET_WASTE_REMOVAL_PACK]]);
+export { PET_WASTE_REMOVAL_PACK, HOUSE_CLEANING_PACK };
+export const DEFAULT_INDUSTRY_PACK_KEY = PET_WASTE_REMOVAL_PACK.key;
+export const DEFAULT_INDUSTRY_PACK = PET_WASTE_REMOVAL_PACK;
+export const DEFAULT_JOB_CHECKLIST = [{ key: "propertyConfirmed", label: "Confirmed the correct property", required: true }, { key: "propertySecured", label: "Left the property secure", required: true }] as const;
+export const DEFAULT_SKIP_REASONS = [{ key: "no_access", label: "Unable to access the property", billableByDefault: false }, { key: "customer_requested", label: "Customer requested skip", billableByDefault: false }, { key: "other", label: "Other", billableByDefault: false }] as const;
+export const NEUTRAL_SERVICE_PACK: IndustryPack = {
+  key: "service-business", version: "1.0.0", displayName: "Service Business", customerTypes: [], terminology: {},
+  locationFields: [], assets: [], services: [], recurrencePresets: [], formSteps: [], jobChecklist: DEFAULT_JOB_CHECKLIST,
+  noncompletionReasons: DEFAULT_SKIP_REASONS, workflows: {}, defaultAutomations: [], reports: [], pricingTemplates: [],
+  recommendationQuestions: [], productCapabilityRecommendations: [], recommendedConnectorCapabilities: [], inventoryDefaults: [],
+  website: { template: "service-home", sections: [], signupSteps: [], heroHeadline: "Helpful local service", heroDescription: "A reliable team for your property." },
+};
+const PACKS: ReadonlyMap<string, IndustryPack> = new Map([PET_WASTE_REMOVAL_PACK, HOUSE_CLEANING_PACK].map(pack => [pack.key, pack]));
 const CONNECTOR_CAPABILITY_KEY_SET: ReadonlySet<string> = new Set(CONNECTOR_CAPABILITY_KEYS);
 const KEY_PATTERN = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
 const RECOMMENDATION_STATUSES = new Set<RecommendationStatus>(["normally_recommended", "optional", "usually_unnecessary", "conditional"]);
@@ -95,6 +117,18 @@ const UNSAFE_DATA_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 
 export function listIndustryPacks(): readonly IndustryPack[] { return Array.from(PACKS.values()); }
 export function getIndustryPack(key: string): IndustryPack | undefined { return PACKS.get(key); }
+
+/** Resolve old storage keys without rewriting existing customer data. */
+export function packFieldValues(fields: readonly PackField[], stored: Record<string, unknown>, name?: string): Record<string, unknown> {
+  return Object.fromEntries(fields.filter(field => !field.sensitive).map(field => [field.key, field.key === "name" && name !== undefined ? name : stored[field.storageKey ?? field.key] ?? stored[field.key] ?? field.defaultValue]).filter(([, value]) => value !== undefined));
+}
+
+export function packQuantity(pack: IndustryPack | undefined, assets: readonly { assetTypeKey: string }[], fields: Record<string, unknown>): { quantity: number; fields: Record<string, unknown> } {
+  const source = pack?.intake?.quantity;
+  const raw = source?.assetTypeKey ? assets.filter(asset => asset.assetTypeKey === source.assetTypeKey).length : source?.locationField ? Number(fields[source.locationField]) : 1;
+  const quantity = Number.isFinite(raw) && raw > 0 ? raw : 1;
+  return { quantity, fields: { ...fields, ...Object.fromEntries((source?.aliases ?? []).map(key => [key, quantity])) } };
+}
 
 type UnknownRecord = Record<string, unknown>;
 type ConditionResult = Readonly<{ value: boolean | undefined; pendingAnswers: readonly string[] }>;
@@ -228,12 +262,13 @@ function validateRecommendation(recommendation: unknown, questions: ReadonlyMap<
 
 function validateField(field: unknown, path: string): asserts field is PackField {
   requireRecord(field, path);
-  const allowed = ["key", "label", "type", "required", "sensitive", "customerVisible", "options", "defaultValue", "reportable"];
+  const allowed = ["key", "label", "type", "required", "sensitive", "customerVisible", "customerEditable", "signupVisible", "storageKey", "options", "defaultValue", "reportable"];
   exactKeys(field, allowed, path);
   requireNonEmptyString(field.key, `${path} key`);
   requireNonEmptyString(field.label, `${path} label`);
   if (!["text", "number", "boolean", "date", "enum", "media", "location"].includes(field.type as string)) throw new Error(`Invalid ${path} type`);
-  for (const flag of ["required", "sensitive", "customerVisible", "reportable"] as const) if (field[flag] !== undefined && typeof field[flag] !== "boolean") throw new Error(`Invalid ${path} ${flag}`);
+  for (const flag of ["required", "sensitive", "customerVisible", "customerEditable", "signupVisible", "reportable"] as const) if (field[flag] !== undefined && typeof field[flag] !== "boolean") throw new Error(`Invalid ${path} ${flag}`);
+  if (field.customerEditable && (!field.customerVisible || field.sensitive)) throw new Error(`Editable ${field.key} must be visible and not sensitive`);
   if (field.type === "enum") {
     requireArray(field.options, `${path} options`);
     if (field.options.length === 0 || field.options.some((option) => typeof option !== "string" || option.length === 0)) throw new Error(`Enum ${field.key} needs options`);
@@ -242,6 +277,11 @@ function validateField(field: unknown, path: string): asserts field is PackField
     throw new Error(`${path} options are only valid for enum fields`);
   }
   if (field.defaultValue !== undefined && typeof field.defaultValue !== "string" && typeof field.defaultValue !== "number" && typeof field.defaultValue !== "boolean") throw new Error(`Invalid ${path} default value`);
+  if (field.storageKey !== undefined) requireNonEmptyString(field.storageKey, `${path} storage key`);
+  if (field.defaultValue !== undefined) {
+    const expected = field.type === "number" ? "number" : field.type === "boolean" ? "boolean" : "string";
+    if (typeof field.defaultValue !== expected || (field.type === "enum" && !(field.options as string[]).includes(field.defaultValue as string))) throw new Error(`Invalid ${path} typed default`);
+  }
   if (field.sensitive === true && field.customerVisible === true) throw new Error(`Sensitive ${field.key} cannot be customer visible by default`);
 }
 
@@ -251,7 +291,7 @@ export function validateIndustryPack(pack: IndustryPack): void {
   exactKeys(pack, [
     "key", "version", "displayName", "customerTypes", "terminology", "locationFields", "assets", "services", "recurrencePresets",
     "formSteps", "jobChecklist", "noncompletionReasons", "workflows", "defaultAutomations", "reports", "pricingTemplates",
-    "recommendationQuestions", "productCapabilityRecommendations", "recommendedConnectorCapabilities", "inventoryDefaults", "website",
+    "recommendationQuestions", "productCapabilityRecommendations", "recommendedConnectorCapabilities", "inventoryDefaults", "website", "intake", "importAliases",
   ], "pack");
   if (typeof pack.key !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(pack.key) || typeof pack.version !== "string" || !/^\d+\.\d+\.\d+$/.test(pack.version)) throw new Error("Invalid pack identity");
   requireNonEmptyString(pack.displayName, "Pack display name");
@@ -272,6 +312,42 @@ export function validateIndustryPack(pack: IndustryPack): void {
     unique(asset.fields.map((field) => field.key), `${asset.key} field`);
   }
   for (const [index, field] of [...pack.locationFields, ...pack.assets.flatMap((asset) => asset.fields)].entries()) validateField(field, `Pack field ${index}`);
+
+  for (const fields of [pack.locationFields, ...pack.assets.map(asset => asset.fields)]) unique(fields.map(field => field.storageKey ?? field.key), "stored field");
+  const formKeys = new Set(["service_address", "name", "email", "phone", "service", "frequency", "preferred_day", "price_result", "terms_accepted", ...pack.assets.map(asset => asset.key), ...pack.locationFields.filter(field => field.signupVisible).map(field => field.key)]);
+  unique(pack.formSteps.map(step => step.key), "form step");
+  for (const step of pack.formSteps) {
+    requireNonEmptyString(step.label, "Form step label");
+    for (const key of step.fields) if (!formKeys.has(key)) throw new Error(`Unknown form field: ${key}`);
+  }
+  unique(pack.jobChecklist.map(item => item.key), "checklist item");
+  unique(pack.noncompletionReasons.map(item => item.key), "skip reason");
+  for (const item of pack.jobChecklist) { requireNonEmptyString(item.label, "Checklist label"); if (typeof item.required !== "boolean") throw new Error("Invalid required checklist flag"); }
+  if (pack.assets.some(asset => asset.fields.some(field => field.key === "name" && field.sensitive))) throw new Error("Item names cannot be sensitive; use a separate private field");
+  if (pack.intake) {
+    exactKeys(pack.intake, ["quantity", "legacy", "serviceAliases", "quantityReview"], "intake");
+    requireRecord(pack.intake.quantity, "Quantity source");
+    exactKeys(pack.intake.quantity, ["assetTypeKey", "locationField", "aliases"], "quantity source");
+    const source = pack.intake.quantity;
+    if (!!source.assetTypeKey === !!source.locationField) throw new Error("Quantity needs exactly one source");
+    if (source.assetTypeKey && !pack.assets.some(asset => asset.key === source.assetTypeKey)) throw new Error("Unknown quantity item type");
+    if (source.locationField && !pack.locationFields.some(field => field.key === source.locationField && field.type === "number" && !field.sensitive)) throw new Error("Quantity must reference a non-sensitive numeric property field");
+    for (const key of source.aliases ?? []) requireNonEmptyString(key, "Quantity alias");
+    for (const key of Object.values(pack.intake.serviceAliases ?? {})) if (!pack.services.some(service => service.key === key)) throw new Error("Unknown service alias target");
+    const legacy = pack.intake.legacy;
+    if (legacy) {
+      exactKeys(legacy, ["assetCollection", "locationObject", "locationFields", "quoteFields", "countField", "locationStorageFields"], "compatibility mapping");
+      for (const key of [legacy.assetCollection, legacy.locationObject, legacy.countField]) requireNonEmptyString(key, "Compatibility field");
+      if (!pack.assets.length) throw new Error("Compatibility items need an item definition");
+      for (const key of [...Object.values(legacy.locationFields), ...Object.values(legacy.quoteFields)]) if (!pack.locationFields.some(field => field.key === key)) throw new Error("Unknown compatibility property field");
+    }
+  }
+  const importKeys = new Set([...pack.locationFields.map(field => `location.${field.key}`), ...pack.assets.flatMap(asset => asset.fields.map(field => `asset.${asset.key}.${field.key}`))]);
+  for (const [key, names] of Object.entries(pack.importAliases ?? {})) {
+    if (!importKeys.has(key)) throw new Error("Unknown import field reference");
+    requireArray(names, "Import aliases");
+    for (const name of names) requireNonEmptyString(name, "Import alias");
+  }
 
   const questions = new Map<string, PackOnboardingQuestion>();
   pack.recommendationQuestions.forEach((question, index) => {

@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-06 — Pack-driven service fields across the customer lifecycle
+
+- **Status:** Accepted
+- **Area:** Industry Packs / Architecture / UX
+- **Decision:** Render and strictly validate service intake, pricing quantity, asset/location details, imports and field checklists from the tenant's Industry Pack. Keep legacy input/storage aliases inside their pack; separate customer visibility from editability and encrypt sensitive instructions using the existing access boundary. Add a disjoint House Cleaning reference tenant to prove the shared lifecycle without modifying existing customer rows.
+- **Rationale:** A second working industry must require configuration, not another CRM fork or niche-specific core fields.
+- **Authoritative docs:** docs/INDUSTRY_PACKS.md, docs/ARCHITECTURE.md
+
 ## 2026-10-06 — Spoof-resistant security budgets and structural error diagnostics
 
 - **Status:** Accepted

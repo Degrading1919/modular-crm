@@ -1,5 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
-import { PET_WASTE_REMOVAL_PACK } from "@modular-crm/industry-packs";
+import { HOUSE_CLEANING_PACK, PET_WASTE_REMOVAL_PACK } from "@modular-crm/industry-packs";
 import type { Database } from "./client.ts";
 import { permissionsForRole, type Permission } from "@modular-crm/domain";
 import {
@@ -23,6 +23,10 @@ import {
 const uuid = (n: number) => `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
 
 export const seedIds = {
+  houseTenant: uuid(1200), houseOrganization: uuid(1201), houseBranch: uuid(1202),
+  houseOwnerRole: uuid(1203), houseTechRole: uuid(1204), houseOwnerMembership: uuid(1205), houseTechMembership: uuid(1206),
+  houseCustomer: uuid(1210), houseLocation: uuid(1211), houseRoom: uuid(1212), houseService: uuid(1220),
+  houseRecurrence: uuid(1221), housePlan: uuid(1222), houseJob: uuid(1230), houseSite: uuid(1240), houseLocalStorage: uuid(1242),
   happyTenant: uuid(1), cleanTenant: uuid(2),
   happyOrganization: uuid(10), cleanOrganization: uuid(20),
   augusta: uuid(11), northAugusta: uuid(12), cleanBranch: uuid(21),
@@ -47,6 +51,7 @@ export const seedIds = {
 } as const;
 
 export const seedUserIds = {
+  houseOwner: "demo-house-owner", houseTech: "demo-house-tech", houseCustomer: "demo-house-customer",
   happyOwner: "demo-happy-owner", happyManager: "demo-happy-manager", happyTech: "demo-happy-tech",
   happySecondTech: "demo-happy-second-tech", happyCustomer: "demo-happy-customer",
   cleanOwner: "demo-clean-owner", cleanTech: "demo-clean-tech", cleanCustomer: "demo-clean-customer",
@@ -461,6 +466,51 @@ export async function seedDevelopment(db: Database, actorIds: Partial<Record<See
     await tx.insert(consentRecords).values([
       { id: uuid(811), tenantId: seedIds.happyTenant, customerId: seedIds.carter, channel: "sms", category: "transactional", state: "opted_in", source: "portal", actorType: "customer", actorId: actors.happyCustomer, capturedAt: at(-20) },
     ]).onConflictDoNothing();
+    // A disjoint second-pack fixture proves the same platform without rewriting existing tenants.
+    const tenantId = seedIds.houseTenant;
+    await tx.insert(user).values([
+      { id: actors.houseOwner, name: "Robin Owner", email: "owner@tidyhome.test", emailVerified: true },
+      { id: actors.houseTech, name: "Dana Cleaner", email: "tech@tidyhome.test", emailVerified: true },
+      { id: actors.houseCustomer, name: "Avery Brooks", email: "customer@tidyhome.test", emailVerified: true },
+    ]).onConflictDoNothing();
+    await tx.insert(tenants).values({ id: tenantId, name: "Tidy Home", slug: "tidy-home", status: "active", industryPackKey: HOUSE_CLEANING_PACK.key, industryPackVersion: HOUSE_CLEANING_PACK.version }).onConflictDoNothing();
+    await grantTenantCapabilityModules(tx, tenantId, INITIAL_CAPABILITY_MODULE_KEYS, { source: "development_seed", sourceReference: "seedDevelopment" });
+    await tx.insert(organizations).values({ id: seedIds.houseOrganization, tenantId, legalName: "Tidy Home LLC", displayName: "Tidy Home", organizationType: "business", email: "hello@tidyhome.test" }).onConflictDoNothing();
+    await tx.insert(organizationLocations).values({ id: seedIds.houseBranch, tenantId, organizationId: seedIds.houseOrganization, code: "MAIN", name: "Main office", timezone: "America/New_York" }).onConflictDoNothing();
+    await tx.insert(roleTemplates).values([
+      { id: seedIds.houseOwnerRole, tenantId, key: "owner", name: "Owner / Admin", system: true },
+      { id: seedIds.houseTechRole, tenantId, key: "technician", name: "Cleaner", system: true },
+    ]).onConflictDoNothing();
+    await tx.insert(rolePermissions).values(allPermissionKeys.flatMap(({ key }) => [
+      { roleTemplateId: seedIds.houseOwnerRole, permissionKey: key, allowed: true },
+      { roleTemplateId: seedIds.houseTechRole, permissionKey: key, allowed: technicianKeys.has(key) },
+    ])).onConflictDoNothing();
+    await tx.insert(memberships).values([
+      { id: seedIds.houseOwnerMembership, tenantId, userId: actors.houseOwner, organizationId: seedIds.houseOrganization, defaultLocationId: seedIds.houseBranch, roleTemplateId: seedIds.houseOwnerRole, status: "active", joinedAt: at(-30) },
+      { id: seedIds.houseTechMembership, tenantId, userId: actors.houseTech, organizationId: seedIds.houseOrganization, defaultLocationId: seedIds.houseBranch, roleTemplateId: seedIds.houseTechRole, status: "active", joinedAt: at(-30) },
+    ]).onConflictDoNothing();
+    await tx.insert(membershipLocationScopes).values([
+      { tenantId, membershipId: seedIds.houseOwnerMembership, locationId: seedIds.houseBranch },
+      { tenantId, membershipId: seedIds.houseTechMembership, locationId: seedIds.houseBranch },
+    ]).onConflictDoNothing();
+    await tx.insert(customers).values({ id: seedIds.houseCustomer, tenantId, organizationId: seedIds.houseOrganization, owningLocationId: seedIds.houseBranch, displayName: "Brooks Household", status: "active", billingEmail: "brooks@example.test" }).onConflictDoNothing();
+    await tx.insert(customerContacts).values({ id: uuid(1213), tenantId, customerId: seedIds.houseCustomer, firstName: "Avery", lastName: "Brooks", email: "brooks@example.test", isPrimary: true }).onConflictDoNothing();
+    await tx.insert(serviceLocations).values({ id: seedIds.houseLocation, tenantId, customerId: seedIds.houseCustomer, organizationLocationId: seedIds.houseBranch, name: "Home", addressLine1: "15 Birch Street", city: "Augusta", region: "GA", postalCode: "30909", customFields: { room_count: 3, home_type: "house", supplies_provided: false } }).onConflictDoNothing();
+    await tx.insert(customerAssets).values({ id: seedIds.houseRoom, tenantId, customerId: seedIds.houseCustomer, serviceLocationId: seedIds.houseLocation, assetTypeKey: "room", name: "Kitchen", customerVisible: true, customFields: { floor_surface: "tile", care_notes: "Use a soft cloth" } }).onConflictDoNothing();
+    await tx.insert(portalAccess).values({ id: uuid(1214), tenantId, customerId: seedIds.houseCustomer, userId: actors.houseCustomer, status: "active", activatedAt: at(-20) }).onConflictDoNothing();
+    await tx.insert(portalLocationAccess).values({ tenantId, portalAccessId: uuid(1214), serviceLocationId: seedIds.houseLocation }).onConflictDoNothing();
+    await tx.insert(services).values(HOUSE_CLEANING_PACK.services.map((service, index) => ({ id: index === 0 ? seedIds.houseService : uuid(1225), tenantId, organizationId: seedIds.houseOrganization, key: service.key, name: service.name, serviceType: service.kind, defaultDurationMinutes: service.estimatedMinutes, active: true }))).onConflictDoNothing();
+    await tx.insert(serviceZones).values({ id: uuid(1223), tenantId, organizationId: seedIds.houseOrganization, name: "Augusta", zoneType: "postal_codes", definition: { postalCodes: ["30909"] }, active: true }).onConflictDoNothing();
+    // Fixture amounts demonstrate tenant-set pricing; they are not industry defaults.
+    await tx.insert(priceRules).values({ id: uuid(1226), tenantId, organizationId: seedIds.houseOrganization, name: "Configured starting price", priority: 50, conditions: { serviceId: seedIds.houseService }, effects: { type: "set_base_amount", amountMinor: 0 }, active: true, source: "tenant" }).onConflictDoNothing();
+    await tx.insert(priceRules).values({ id: uuid(1224), tenantId, organizationId: seedIds.houseOrganization, name: "Per room cleaning", priority: 50, conditions: { serviceId: seedIds.houseService }, effects: { type: "per_unit", quantityField: "room_count", includedUnits: 0, amountMinor: 2500 }, active: true, source: "tenant" }).onConflictDoNothing();
+    await tx.insert(recurrenceRules).values({ id: seedIds.houseRecurrence, tenantId, frequencyType: "weekly", interval: 1, timezone: "America/New_York" }).onConflictDoNothing();
+    await tx.insert(servicePlans).values({ id: seedIds.housePlan, tenantId, customerId: seedIds.houseCustomer, serviceLocationId: seedIds.houseLocation, organizationLocationId: seedIds.houseBranch, serviceId: seedIds.houseService, recurrenceRuleId: seedIds.houseRecurrence, status: "active", effectiveFrom: day(-20), pricingSnapshot: { amountMinor: 7500, currency: "USD" } }).onConflictDoNothing();
+    await tx.insert(jobs).values({ id: seedIds.houseJob, tenantId, organizationId: seedIds.houseOrganization, organizationLocationId: seedIds.houseBranch, customerId: seedIds.houseCustomer, serviceLocationId: seedIds.houseLocation, serviceId: seedIds.houseService, servicePlanId: seedIds.housePlan, status: "dispatched", scheduledDate: day(2), estimatedDurationMinutes: 90, priceSnapshot: { amountMinor: 7500, currency: "USD" } }).onConflictDoNothing();
+    await tx.insert(jobAssignments).values({ id: uuid(1231), tenantId, jobId: seedIds.houseJob, membershipId: seedIds.houseTechMembership, assignmentRole: "primary", assignedAt: at(-1) }).onConflictDoNothing();
+    await tx.insert(sites).values({ id: seedIds.houseSite, tenantId, organizationId: seedIds.houseOrganization, organizationLocationId: seedIds.houseBranch, status: "published", slug: "tidy-home", templateKey: HOUSE_CLEANING_PACK.website.template, templateVersion: "1", branding: { businessName: "Tidy Home", tagline: HOUSE_CLEANING_PACK.website.heroHeadline }, settings: { signupMode: "auto_customer", termsVersion: "v1" }, publishedAt: at(-10) }).onConflictDoNothing();
+    await tx.insert(siteContents).values({ id: uuid(1241), tenantId, siteId: seedIds.houseSite, contentKey: "home", content: { headline: HOUSE_CLEANING_PACK.website.heroHeadline, description: HOUSE_CLEANING_PACK.website.heroDescription }, version: 1 }).onConflictDoNothing();
+    await tx.insert(connectorInstallations).values({ id: uuid(1242), tenantId, connectorKey: "local-storage", status: "connected", displayName: "Local files", providerAccountId: "house-local-files", settings: { mode: "local" } }).onConflictDoNothing();
   });
   return { ids: seedIds, actors };
 }

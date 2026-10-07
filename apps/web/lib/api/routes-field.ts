@@ -1,3 +1,5 @@
+import { DEFAULT_JOB_CHECKLIST, DEFAULT_SKIP_REASONS, packFieldValues } from "@modular-crm/industry-packs";
+import { assetView, tenantIndustryPack } from "./pack-fields";
 import { createHash, randomUUID } from "node:crypto";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -272,9 +274,13 @@ async function fieldJob(actor: SessionActor, id: string) {
     join services s on s.id=j.service_id and s.tenant_id=j.tenant_id
     join service_locations sl on sl.id=j.service_location_id and sl.tenant_id=j.tenant_id
     where j.id=${id} and j.tenant_id=${actor.tenantId} limit 1`);
-  const pets = await rows(sql`select id,name,custom_fields from customer_assets where tenant_id=${actor.tenantId} and customer_id=${job.customerId} and archived_at is null`);
-  const { access_instructions_encrypted: encryptedAccess, ...safeDetails } = details ?? {};
-  return normalized({ ...safeDetails, access_notes: decryptServiceAccessInstructions(encryptedAccess), durationMinutes: job.estimatedDurationMinutes, notes: job.internalSummary, pets: pets.map((pet) => ({ ...pet, ...(pet.custom_fields as object || {}) })), ...(details?.location_fields as object || {}) });
+  const pack = await tenantIndustryPack(actor.tenantId);
+  const assets = await rows(sql`select id,name,asset_type_key,custom_fields from customer_assets where tenant_id=${actor.tenantId} and customer_id=${job.customerId} and archived_at is null and (service_location_id is null or service_location_id=${job.serviceLocationId})`);
+  const { access_instructions_encrypted: encryptedAccess, location_fields: storedFields, ...safeDetails } = details ?? {};
+  const fields = pack.locationFields.filter(field => !field.sensitive);
+  return { ...normalized(safeDetails) as Record<string, unknown>, accessNotes: decryptServiceAccessInstructions(encryptedAccess), durationMinutes: job.estimatedDurationMinutes, notes: job.internalSummary,
+    assets: assets.map(row => ({ ...assetView(pack, { id: row.id, name: String(row.name), assetTypeKey: String(row.asset_type_key), customFields: row.custom_fields as Record<string, unknown> ?? {} }), accessNotes: decryptServiceAccessInstructions((row.custom_fields as Record<string, unknown> | null)?.accessInstructionsEncrypted) })),
+    fields, fieldValues: packFieldValues(fields, storedFields as Record<string, unknown> ?? {}), checklist: pack.jobChecklist.length ? pack.jobChecklist : DEFAULT_JOB_CHECKLIST, skipReasons: pack.noncompletionReasons.length ? pack.noncompletionReasons : DEFAULT_SKIP_REASONS };
 }
 
 async function savePhoto(tx: FieldTransaction, actor: SessionActor, jobId: string, dataUrl: string | undefined, name = "service-photo.jpg", clientOperationId?: string): Promise<string | null> {
@@ -328,21 +334,25 @@ async function fieldMutation(request: Request, actor: SessionActor, id: string, 
   }
   if (action === "skip") {
     const body = await readBody(request, z.object({ reason: z.string().min(1), note: z.string().optional(), clientOperationId: z.uuid().optional(), deviceTimestamp: z.iso.datetime({ offset: true }).optional(), expectedPriorState: z.string().min(1).max(40).optional() }));
+    const pack = await tenantIndustryPack(actor.tenantId);
+    if (!(pack.noncompletionReasons.length ? pack.noncompletionReasons : DEFAULT_SKIP_REASONS).some(item => item.key === body.reason)) throw new DomainError("VALIDATION_ERROR", "Choose an available reason.", 422);
     return transitionJob(actor, id, "skipped", {
       ...body,
       fieldOperation: { action: "job.transition.skipped", target: id, clientOperationId: body.clientOperationId, payload: body, deviceTimestamp: body.deviceTimestamp ? new Date(body.deviceTimestamp) : null },
     });
   }
   if (action === "complete") {
-    const body = await readBody(request, z.object({ checklist: z.object({ propertyConfirmed: z.boolean(), gateSecured: z.boolean() }), note: z.string().optional(), photoDataUrl: z.string().optional(), photoName: z.string().optional(), clientOperationId: z.uuid().optional(), deviceTimestamp: z.iso.datetime({ offset: true }).optional(), expectedPriorState: z.string().min(1).max(40).optional() }));
-    if (!body.checklist.propertyConfirmed || !body.checklist.gateSecured) throw new DomainError("VALIDATION_ERROR", "Confirm the service checklist first.", 422);
+    const pack = await tenantIndustryPack(actor.tenantId);
+    const checklist = pack.jobChecklist.length ? pack.jobChecklist : DEFAULT_JOB_CHECKLIST;
+    const body = await readBody(request, z.object({ checklist: z.object(Object.fromEntries(checklist.map(item => [item.key, z.boolean().optional()]))).strict(), note: z.string().optional(), photoDataUrl: z.string().optional(), photoName: z.string().optional(), clientOperationId: z.uuid().optional(), deviceTimestamp: z.iso.datetime({ offset: true }).optional(), expectedPriorState: z.string().min(1).max(40).optional() }));
+    if (checklist.some(item => item.required && body.checklist[item.key] !== true)) throw new DomainError("VALIDATION_ERROR", "Confirm the service checklist first.", 422);
     return transitionJob(actor, id, "completed", {
       ...body,
-      completedChecklist: body.checklist.propertyConfirmed && body.checklist.gateSecured,
+      completedChecklist: true,
       expectedPriorState: body.expectedPriorState,
       proofProvided: !!body.photoDataUrl,
       fieldOperation: { action: "job.transition.completed", target: id, clientOperationId: body.clientOperationId, payload: body, deviceTimestamp: body.deviceTimestamp ? new Date(body.deviceTimestamp) : null },
-      prepareCompletionProof: async (tx) => ({ fileId: await savePhoto(tx, actor, id, body.photoDataUrl, body.photoName, body.clientOperationId), checklist: body.checklist, membershipId: actor.membershipId! }),
+      prepareCompletionProof: async (tx) => ({ fileId: await savePhoto(tx, actor, id, body.photoDataUrl, body.photoName, body.clientOperationId), checklist: Object.fromEntries(checklist.map(item => [item.key, body.checklist[item.key] === true])), membershipId: actor.membershipId! }),
       responseItem: () => fieldJob(actor, id),
     });
   }

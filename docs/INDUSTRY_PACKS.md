@@ -30,6 +30,18 @@ A pack may define:
 - inventory/part defaults where relevant
 - route/service-duration assumptions
 
+## Runtime service-field contract
+
+Public signup renders the selected pack's ordered `formSteps`, assets and location fields. Text, number, boolean, ISO date and enum values are validated against that same pack on the server; unknown fields and cross-pack asset types are rejected. Pack intake metadata identifies the pricing quantity (asset count or a numeric location field). Shared quoting, records, imports, customer profile and assigned-job screens do not assume a particular asset or property vocabulary.
+
+`customerVisible` permits portal reads; `customerEditable` separately permits portal changes and requires visibility. Sensitive fields cannot be customer-editable, never enter pricing context, public submission history, import history, ordinary record/portal responses or logs, and use the existing encrypted service-access envelope. Only the authorized assigned service team receives decrypted instructions. Existing tenant/customer/location boundaries remain mandatory.
+
+Compatibility aliases and storage keys belong to the pack. Pet Waste Removal 1.3 retains the legacy signup/quote input shapes and stored property keys without rewriting seeded customer rows. Pack-defined checklist and skip reasons drive field completion, with neutral defaults for businesses without a selected pack.
+
+Industry selection is an initial-setup choice, not a migration tool. Switching before customers exist retires the previous pack's service choices and recipes without deleting them; completed setup or existing customers prevents a pack switch. New pack recipes start as drafts.
+
+House Cleaning 1.0 is the second executable reference: room assets, property details of all five field types, room-count pricing and private entry instructions. The separate Tidy Home fixture demonstrates signup, quoting, owner records, portal editing, CSV import and technician completion without replacing existing demo businesses. See [its research profile](./research/industry-packs/house-cleaning.md). No new industry-specific table is introduced.
+
 ## Research before implementation
 
 Prospective Industry Packs should be researched using [the canonical Industry Research Profile template](./research/INDUSTRY_RESEARCH_PROFILE_TEMPLATE.md) before runtime implementation.

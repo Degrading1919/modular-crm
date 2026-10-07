@@ -1,4 +1,6 @@
 "use client";
+import ServiceDetails from "./ServiceDetails";
+import { PackDetails } from "./PackFields";
 
 import { useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
@@ -104,7 +106,7 @@ export default function RecordDetail({ resource, id }: { resource: string; id: s
       {resource === "customers" && <>
         <Section title="Properties"><Collection items={item.locations} empty="No service properties recorded." render={(row) => <div><strong>{row.name || "Service property"}</strong><p>{[row.addressLine1, row.city, row.region, row.postalCode].filter(Boolean).join(", ")}</p></div>}/></Section>
         <Section title="Contacts"><Collection items={item.contacts} empty="No additional contacts recorded." render={(row) => <div><strong>{[row.firstName,row.lastName].filter(Boolean).join(" ") || "Contact"}</strong><p>{[row.email,row.phone].filter(Boolean).join(" · ") || "No contact details recorded"}</p></div>}/></Section>
-        <Section title="Pets & service details"><Collection items={item.pets} empty="No pets or service details recorded." render={(row) => <div><strong>{row.name}</strong><p>{row.customFields?.size || row.customFields?.species || "Pet"}{row.customFields?.safetyFlag ? ` · Safety: ${row.customFields.safetyFlag}` : ""}</p></div>}/></Section>
+        <Section title="Service details"><ServiceDetails items={item.assets}/>{item.locations?.map((location: Record<string, any>) => <PackDetails key={location.id} fields={location.fields ?? []} values={location.fieldValues ?? {}}/>)}</Section>
         {related.jobs && <Section title="Jobs"><Collection items={related.jobs} empty="No jobs in your business locations." render={(row) => <Link href={`/app/jobs/${row.id}`}>{row.serviceName} · {date(row.scheduledDate)} <Badge status={row.status}/></Link>}/></Section>}
         {related.invoices && <Section title="Invoices"><Collection items={related.invoices} empty="No invoices in your business locations." render={(row) => <Link href={`/app/invoices/${row.id}`}>{row.number} · {money(row.totalCents, row.currency)} · Balance {money(row.balanceCents, row.currency)} <Badge status={row.status}/></Link>}/></Section>}
         {related.payments && <Section title="Payments"><Collection items={related.payments} empty="No payments in your business locations." render={(row) => <div>{money(row.amountCents, row.currency)} · {paymentMethodLabel(row.method)} <Badge status={row.status}/><ReceiptLink payment={row}/></div>}/></Section>}

@@ -1,12 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import {
-  customerContacts, customers, importBatches, importRows, organizationLocations,
+  customerAssets, customerContacts, customers, importBatches, importRows, organizationLocations, serviceLocations,
 } from "@modular-crm/db";
 import { DomainError, requirePermission } from "@modular-crm/domain";
 import { getDb } from "../db";
 import type { SessionActor } from "./actor";
 import { json } from "./http";
+import type { IndustryPack } from "@modular-crm/industry-packs";
+import { importedPackDetails, packImportAliases, packImportFields, storePackFields, tenantIndustryPack, type ServiceDetailsInput } from "./pack-fields";
 
 const MAX_REQUEST_BYTES = 3_200_000;
 const MAX_CSV_BYTES = 1_500_000;
@@ -23,7 +25,7 @@ const BUSINESS_EXPORT_EXCLUDED_TABLES = new Set([
 const BUSINESS_EXPORT_SENSITIVE_KEY = /password|secret|token|credential|authorization|api[_-]?key|access[_-]?instructions?|private[_-]?key|storage[_-]?key|signed[_-]?url|encrypted|verifier|signature|(?:^|[_-])hash(?:$|[_-])|(?:^|[_-])digest(?:$|[_-])/i;
 const BUSINESS_EXPORT_NAME_OVERRIDES: Readonly<Record<string, string>> = { organization_locations: "locations" };
 const IMPORT_FIELDS = ["name", "email", "phone", "address", "status", "notes"] as const;
-type ImportField = (typeof IMPORT_FIELDS)[number];
+type ImportField = string;
 type Delimiter = "," | ";" | "\t";
 type StaffPortabilityActor = SessionActor & { kind: "staff"; membershipId: string; organizationId: string };
 
@@ -47,6 +49,7 @@ export interface ColumnMappingInfo {
 }
 
 export interface CustomerImportRow {
+  [key: string]: string | number;
   row: number;
   name: string;
   email: string;
@@ -237,16 +240,17 @@ export function parseCustomerCsv(csv: string): CustomerCsvParseResult {
   return { delimiter: detectCsvDelimiter(csv), headers, records: matrix.slice(1) };
 }
 
-export function inferColumnMappings(headers: string[]): { mapping: Record<string, ImportField | null>; columnMappings: ColumnMappingInfo[] } {
+export function inferColumnMappings(headers: string[], packAliases: Readonly<Record<string, readonly string[]>> = {}): { mapping: Record<string, ImportField | null>; columnMappings: ColumnMappingInfo[] } {
+  const availableAliases = { ...aliases, ...packAliases };
   const infos: ColumnMappingInfo[] = headers.map((source) => {
     const normalized = normalizeHeading(source);
-    const exact = (Object.entries(aliases) as [ImportField, string[]][])
+    const exact = (Object.entries(availableAliases) as [ImportField, readonly string[]][])
       .find(([, names]) => names.some((name) => normalizeHeading(name) === normalized));
     if (exact) return { source, target: exact[0], confidence: "high", reason: "Recognized column name" };
 
     const padded = ` ${normalized} `;
     const candidates = new Set<ImportField>();
-    for (const [target, names] of Object.entries(aliases) as [ImportField, string[]][]) {
+    for (const [target, names] of Object.entries(availableAliases) as [ImportField, readonly string[]][]) {
       if (names.some((name) => padded.includes(` ${normalizeHeading(name)} `))) candidates.add(target);
     }
     if (candidates.size === 1) {
@@ -279,6 +283,7 @@ interface ParsedRow {
   source: Record<string, string>;
   mapped: CustomerImportRow;
   errors: string[];
+  serviceDetails?: ServiceDetailsInput;
 }
 
 function mapCsvRow(headers: string[], values: string[], row: number, mapping: Record<string, ImportField | null>): ParsedRow {
@@ -362,12 +367,13 @@ function normalizeRequestedMapping(
   headers: string[],
   inferred: Record<string, ImportField | null>,
   requested?: Record<string, string | null>,
+  packFields: string[] = [],
 ): Record<string, ImportField | null> {
   const output: Record<string, ImportField | null> = { ...inferred };
   if (requested) {
     for (const [source, target] of Object.entries(requested)) {
       if (!headers.includes(source)) throw new DomainError("VALIDATION_ERROR", `Unknown CSV column: ${source}.`, 422);
-      if (target !== null && target !== "" && !(IMPORT_FIELDS as readonly string[]).includes(target)) {
+      if (target !== null && target !== "" && ![...IMPORT_FIELDS, ...packFields].includes(target)) {
         throw new DomainError("VALIDATION_ERROR", `Unsupported customer field mapping for ${source}.`, 422);
       }
       output[source] = target && target !== "" ? target as ImportField : null;
@@ -385,6 +391,21 @@ function normalizeRequestedMapping(
 
 function recordsToRows(headers: string[], records: string[][], mapping: Record<string, ImportField | null>): ParsedRow[] {
   return records.map((values, index) => mapCsvRow(headers, values, index + 2, mapping));
+}
+
+function attachPackDetails(parsedRows: ParsedRow[], pack: IndustryPack): void {
+  for (const row of parsedRows) {
+    try {
+      row.serviceDetails = importedPackDetails(pack, Object.fromEntries(Object.entries(row.mapped).filter(([, value]) => typeof value === "string")) as Record<string, string>);
+      if ((row.serviceDetails.assets.length || Object.keys(row.serviceDetails.locationFields).length) && !row.mapped.address) row.errors.push("A service address is required with property details.");
+    } catch { row.errors.push("Check the imported property details and required fields."); }
+  }
+}
+
+function redactImportRow(values: Record<string, unknown>, mapping: Record<string, ImportField | null>, pack: IndustryPack): Record<string, unknown> {
+  const privateKeys = new Set(packImportFields(pack).filter(item => item.field.sensitive).map(item => item.key));
+  const privateHeadings = Object.entries(packImportAliases(pack)).filter(([key]) => privateKeys.has(key)).flatMap(([, names]) => names.map(normalizeHeading));
+  return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, privateKeys.has(key) || privateKeys.has(mapping[key] ?? "") || privateHeadings.includes(normalizeHeading(key)) ? "[private]" : value]));
 }
 
 function previewRowObject(headers: string[], values: string[]): Record<string, string> {
@@ -540,13 +561,16 @@ async function previewImport(actor: SessionActor, body: ImportBody): Promise<Res
   requirePermission(actor, "customers.create");
   requireStaffAccess(actor);
   const parsed = parseCustomerCsv(body.csv);
-  const inferred = inferColumnMappings(parsed.headers);
-  const mapping = normalizeRequestedMapping(parsed.headers, inferred.mapping);
+  const pack = await tenantIndustryPack(actor.tenantId);
+  const inferred = inferColumnMappings(parsed.headers, packImportAliases(pack));
+  const mapping = normalizeRequestedMapping(parsed.headers, inferred.mapping, body.mapping, packImportFields(pack).map(item => item.key));
   const parsedRows = recordsToRows(parsed.headers, parsed.records, mapping);
+  attachPackDetails(parsedRows, pack);
   const candidates = await duplicateCandidates(getDb(), actor, parsedRows);
   const duplicates = detectCustomerDuplicates(parsedRows.filter((row) => row.errors.length === 0), candidates);
-  const sampleRows = parsed.records.slice(0, 20).map((row) => previewRowObject(parsed.headers, row));
+  const sampleRows = parsed.records.slice(0, 20).map((row) => redactImportRow(previewRowObject(parsed.headers, row), mapping, pack));
   return json({ item: {
+    fields: [...IMPORT_FIELDS.map(key => ({ key, label: key })), ...packImportFields(pack).map(({ key, label }) => ({ key, label }))],
     columns: parsed.headers,
     mapping,
     columnMappings: inferred.columnMappings,
@@ -595,9 +619,11 @@ async function commitImport(actor: SessionActor, body: ImportBody): Promise<Resp
   const key = body.idempotencyKey?.trim();
   if (!key) throw new DomainError("VALIDATION_ERROR", "Provide an import retry key.", 422);
   const parsed = parseCustomerCsv(body.csv);
-  const inferred = inferColumnMappings(parsed.headers);
-  const mapping = normalizeRequestedMapping(parsed.headers, inferred.mapping, body.mapping);
+  const pack = await tenantIndustryPack(actor.tenantId);
+  const inferred = inferColumnMappings(parsed.headers, packImportAliases(pack));
+  const mapping = normalizeRequestedMapping(parsed.headers, inferred.mapping, body.mapping, packImportFields(pack).map(item => item.key));
   const parsedRows = recordsToRows(parsed.headers, parsed.records, mapping);
+  attachPackDetails(parsedRows, pack);
   const invalidRows = new Map(parsedRows.filter((row) => row.errors.length > 0).map((row) => [row.row, row]));
   const csvHash = digest(body.csv);
   const mappingHash = digest(JSON.stringify(Object.entries(mapping).sort(([left], [right]) => left.localeCompare(right))));
@@ -684,6 +710,25 @@ async function commitImport(actor: SessionActor, body: ImportBody): Promise<Resp
     });
     for (const group of chunked(contacts)) await tx.insert(customerContacts).values(group);
 
+    for (const row of importable) {
+      const details = row.serviceDetails!;
+      if (!row.mapped.address) continue;
+      const storedLocation = storePackFields(pack.locationFields, details.locationFields);
+      const [location] = await tx.insert(serviceLocations).values({
+        tenantId: actor.tenantId, customerId: newCustomerIds.get(row.row)!, organizationLocationId: locationId,
+        name: "Service address", addressLine1: row.mapped.address, city: "", region: "", postalCode: "", customFields: storedLocation.customFields,
+        accessInstructionsEncrypted: storedLocation.accessInstructionsEncrypted,
+      }).returning();
+      for (const asset of details.assets) {
+        const stored = storePackFields(pack.assets.find(item => item.key === asset.assetTypeKey)!.fields, asset.customFields);
+        await tx.insert(customerAssets).values({
+          tenantId: actor.tenantId, customerId: newCustomerIds.get(row.row)!, serviceLocationId: location!.id,
+          assetTypeKey: asset.assetTypeKey, name: asset.name, customerVisible: true,
+          customFields: { ...stored.customFields, ...(stored.accessInstructionsEncrypted ? { accessInstructionsEncrypted: stored.accessInstructionsEncrypted } : {}) },
+        });
+      }
+    }
+
     const importRowValues = parsedRows.map((row) => {
       const duplicate = duplicatesByRow.get(row.row);
       const errors = row.errors.length
@@ -697,8 +742,8 @@ async function commitImport(actor: SessionActor, body: ImportBody): Promise<Resp
         tenantId: actor.tenantId,
         importBatchId: batch.id,
         rowNumber: row.row,
-        sourcePayload: row.source,
-        normalizedPayload: { ...row.mapped, locationId },
+        sourcePayload: redactImportRow(row.source, mapping, pack),
+        normalizedPayload: { ...redactImportRow(row.mapped, mapping, pack), locationId },
         status,
         matchedEntityType: status === "imported" ? "customers" : duplicate?.existingCustomerId ? "customers" : null,
         matchedEntityId: status === "imported" ? newCustomerIds.get(row.row)! : duplicate?.existingCustomerId ?? null,
