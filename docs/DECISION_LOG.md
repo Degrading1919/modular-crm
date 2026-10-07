@@ -4,6 +4,15 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-07 — Scope WAF body-size blocking to public entry points
+
+- **Status:** Accepted
+- **Area:** Architecture / Implementation
+- **Decision:** Count the managed body-size rule and block its size label only on public and sign-in API namespaces, including public forms and legacy sign-in paths. Authenticated document POST/PATCH saves and uploads retain the application's authorization and 2 MB limit; all other managed rules and IP rate limiting stay enabled.
+- **Rationale:** A legitimate detailed estimate or invoice must not fail at the ALB's 8 KB inspection boundary. WAF path classification must not trust a supplied session cookie.
+- **Authoritative doc:** docs/ARCHITECTURE.md; verification in docs/DEPLOYMENT.md
+- **Supersedes:** The upload-only POST body-size exception in the initial AWS infrastructure slice.
+
 ## 2026-10-07 — Locally verified AWS deployment infrastructure
 
 - **Status:** Accepted

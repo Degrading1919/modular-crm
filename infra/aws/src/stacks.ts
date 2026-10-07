@@ -178,13 +178,13 @@ export function createInfrastructure(app: App, config: StageConfig) {
         { name: "Common", priority: 0, overrideAction: { none: {} }, statement: { managedRuleGroupStatement: { vendorName: "AWS", name: "AWSManagedRulesCommonRuleSet",
           ruleActionOverrides: [{ name: "SizeRestrictions_BODY", actionToUse: { count: {} } }] } },
           visibilityConfig: { cloudWatchMetricsEnabled: true, metricName: "Common", sampledRequestsEnabled: false } },
-        { name: "LargeBodyOutsideUploads", priority: 1, action: { block: {} }, statement: { andStatement: { statements: [
+        // WAF cannot authenticate sessions. Match public/sign-in route namespaces, not a
+        // spoofable Cookie header or an upload-only POST exception. Authenticated API
+        // routes still enforce authorization and the application's 2 MB body limit.
+        { name: "LargeBodyPublicRequests", priority: 1, action: { block: {} }, statement: { andStatement: { statements: [
           { labelMatchStatement: { scope: "LABEL", key: "awswaf:managed:aws:core-rule-set:SizeRestrictions_Body" } },
-          { notStatement: { statement: { andStatement: { statements: [
-            { byteMatchStatement: { fieldToMatch: { method: {} }, positionalConstraint: "EXACTLY", searchString: "POST", textTransformations: [{ priority: 0, type: "NONE" }] } },
-            { regexMatchStatement: { fieldToMatch: { uriPath: {} }, regexString: "^/api/v1/(imports|field/jobs/[^/]+/(note|complete))$", textTransformations: [{ priority: 0, type: "NONE" }] } },
-          ] } } } },
-        ] } }, visibilityConfig: { cloudWatchMetricsEnabled: true, metricName: "LargeBodyOutsideUploads", sampledRequestsEnabled: false } },
+          { regexMatchStatement: { fieldToMatch: { uriPath: {} }, regexString: "^/api/(auth|v1/(public|auth))(/|$)", textTransformations: [{ priority: 0, type: "NONE" }] } },
+        ] } }, visibilityConfig: { cloudWatchMetricsEnabled: true, metricName: "LargeBodyPublicRequests", sampledRequestsEnabled: false } },
         { name: "RateLimit", priority: 2, action: { block: {} }, statement: { rateBasedStatement: { limit: 2000, aggregateKeyType: "IP" } },
           visibilityConfig: { cloudWatchMetricsEnabled: true, metricName: "RateLimit", sampledRequestsEnabled: false } }] });
     new wafv2.CfnWebACLAssociation(application, "WebAclAssociation", { resourceArn: alb.loadBalancerArn, webAclArn: acl.attrArn });

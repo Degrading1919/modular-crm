@@ -81,8 +81,29 @@ describe("AWS local-only infrastructure", () => {
     if (stage === "production") {
       const rules = Object.values(appTemplate.findResources("AWS::WAFv2::WebACL"))[0].Properties.Rules;
       expect(rules[0].Statement.ManagedRuleGroupStatement.RuleActionOverrides).toEqual([{ Name: "SizeRestrictions_BODY", ActionToUse: { Count: {} } }]);
+      expect(rules[0].OverrideAction).toEqual({ None: {} });
       expect(rules[1].Action).toEqual({ Block: {} });
-      expect(rules[1].Statement.AndStatement.Statements[1].NotStatement.Statement.AndStatement.Statements[1].RegexMatchStatement.RegexString).toBe("^/api/v1/(imports|field/jobs/[^/]+/(note|complete))$");
+      expect(rules[1].Priority).toBeGreaterThan(rules[0].Priority);
+      const sizeStatements = rules[1].Statement.AndStatement.Statements;
+      expect(sizeStatements).toHaveLength(2);
+      expect(sizeStatements[0]).toEqual({ LabelMatchStatement: { Scope: "LABEL", Key: "awswaf:managed:aws:core-rule-set:SizeRestrictions_Body" } });
+      expect(sizeStatements[1]).toEqual({ RegexMatchStatement: { FieldToMatch: { UriPath: {} },
+        RegexString: "^/api/(auth|v1/(public|auth))(/|$)", TextTransformations: [{ Priority: 0, Type: "NONE" }] } });
+      // Evaluate the synthesized URI matcher, not a separate application-side copy.
+      // No method/cookie/header predicate: PATCH saves and POST saves behave alike,
+      // and a forged session cookie cannot exempt an oversized public submission.
+      const publicPath = new RegExp(sizeStatements[1].RegexMatchStatement.RegexString);
+      for (const path of ["/api/auth", "/api/auth/sign-in/email", "/api/v1/auth/login", "/api/v1/auth/register", "/api/v1/auth/portal-activate",
+        "/api/v1/public", "/api/v1/public/quote", "/api/v1/public/signup", "/api/v1/public/forms", "/api/v1/public/estimate-links/token/approve"]) {
+        expect(publicPath.test(path), `oversized public request: ${path}`).toBe(true);
+      }
+      for (const path of ["/api/v1/estimates", "/api/v1/estimates/id/revisions", "/api/v1/invoices", "/api/v1/invoices/id",
+        "/api/v1/imports", "/api/v1/field/jobs/id/note", "/api/v1/field/jobs/id/complete", "/api/v1/portal/profile",
+        "/api/v1/publicity", "/api/v1/authorizations", "/api/authenticated"]) {
+        expect(publicPath.test(path), `no size-only block on authenticated/other route: ${path}`).toBe(false);
+      }
+      expect(rules[2]).toMatchObject({ Action: { Block: {} }, Statement: { RateBasedStatement: { Limit: 2000, AggregateKeyType: "IP" } } });
+      for (const rule of rules) expect(rule.VisibilityConfig.SampledRequestsEnabled).toBe(false);
     }
   });
   it("reports missing context and invalid values clearly", () => {
