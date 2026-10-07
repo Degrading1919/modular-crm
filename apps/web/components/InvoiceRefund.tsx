@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { paymentMethodLabel } from "@modular-crm/domain";
 import { api, body, money } from "./api";
+import { refundReviewConfirmation } from "../lib/refund-review-copy";
 
 export type RefundPaymentContext = {
   id: string;
@@ -10,7 +11,7 @@ export type RefundPaymentContext = {
   refundedCents: number;
   pendingRefundCents?: number;
   overpaymentCents?: number;
-  refundReviews?: { id: string; amountCents: number; status: "needs_review"; message: string }[];
+  refundReviews?: { id: string; amountCents: number; recordedAmountCents?: number; status: "needs_review"; message: string }[];
   status: string;
   sourceType: string;
   method?: string;
@@ -86,7 +87,9 @@ export default function InvoiceRefund({
 
   const reviews = paymentContext.flatMap((payment) => payment.refundReviews ?? []);
   async function resolve(id: string, outcome: "refunded" | "not_refunded") {
-    if (!window.confirm(outcome === "refunded" ? "Confirm you checked the payment service and this refund went through. This records the refund and updates the invoice balance." : "Confirm you checked the payment service and no refund happened. This removes the refund from the recorded balance if needed.")) return;
+    const review = reviews.find((item) => item.id === id);
+    const payment = paymentContext.find((item) => item.refundReviews?.some((item) => item.id === id));
+    if (!window.confirm(refundReviewConfirmation(outcome, review?.amountCents ?? 0, payment?.refundedCents ?? 0, payment?.amountCents ?? 0, currency, review?.recordedAmountCents ?? 0))) return;
     setSaving(true); setError(null);
     try {
       const result = await api<RefundResponse>(`/invoices/${invoiceId}/refunds/${id}/resolve`, body({ outcome }));

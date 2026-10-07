@@ -15,9 +15,11 @@ import { json, readBody } from "./http";
 import { first, normalized, rows, uuidArray } from "./sql";
 import { calculateServicePlanPrice, servicePlanFrequencyKey, type PlanScheduleVersion } from "./plan-lifecycle";
 import { reviseEstimate } from "./estimate-revisions";
+import { documentPricing, pricingFields, storedLine } from "./document-lines";
 import { fieldTicketScope } from "./ticket-scope";
 import { invoiceOverpayment, openInvoiceBalance, upcomingJob } from "./read-facts";
 import { recordJobReschedule } from "./job-reschedule";
+import { lockJobForPlanning, withdrawJobFromRoutes } from "./job-planning";
 
 type RecordResource = "leads" | "customers" | "jobs" | "estimates" | "invoices" | "service-plans" | "tickets" | "services";
 const resources = new Set<RecordResource>(["leads", "customers", "jobs", "estimates", "invoices", "service-plans", "tickets", "services"]);
@@ -153,12 +155,15 @@ async function readResource(resource: RecordResource, actor: SessionActor, id?: 
       )).limit(1);
       if (revision) {
         const items = await getDb().select({
+          id: estimateItems.id,
           serviceId: estimateItems.serviceId,
           description: estimateItems.description,
           quantity: estimateItems.quantity,
           unitAmountMinor: estimateItems.unitAmountMinor,
           totalMinor: estimateItems.totalMinor,
           sortOrder: estimateItems.sortOrder,
+          metadata: estimateItems.metadata,
+          discountMinor: estimateItems.discountMinor,
         }).from(estimateItems).where(and(
           eq(estimateItems.tenantId, actor.tenantId), eq(estimateItems.estimateRevisionId, revision.id),
         )).orderBy(asc(estimateItems.sortOrder));
@@ -170,6 +175,7 @@ async function readResource(resource: RecordResource, actor: SessionActor, id?: 
           notes: revision.notes ?? "",
           serviceId: items[0]?.serviceId ?? null,
           items,
+          pricing: snapshot.pricingSnapshot,
         });
         const history = await getDb().select({
           revisionNumber: estimateRevisions.revisionNumber,
@@ -190,7 +196,7 @@ async function readResource(resource: RecordResource, actor: SessionActor, id?: 
       const [contacts, locations, pets] = await Promise.all([
         rows(sql`select * from customer_contacts where tenant_id=${actor.tenantId} and customer_id=${id}`),
         rows(sql`select id,name,address_line1,city,region,postal_code from service_locations where tenant_id=${actor.tenantId} and customer_id=${id} and active=true and ${locationSql(actor, sql`organization_location_id`)} order by created_at,id`),
-        rows(sql`select id,name,custom_fields from customer_assets where tenant_id=${actor.tenantId} and customer_id=${id} and archived_at is null`),
+        rows(sql`select ca.id,ca.name,ca.custom_fields from customer_assets ca where ca.tenant_id=${actor.tenantId} and ca.customer_id=${id} and ca.archived_at is null and (ca.service_location_id is null or exists(select 1 from service_locations sl where sl.tenant_id=ca.tenant_id and sl.id=ca.service_location_id and ${locationSql(actor, sql`sl.organization_location_id`)}))`),
       ]);
       item.contacts = normalized(contacts); item.locations = normalized(locations); item.pets = normalized(pets);
     }
@@ -204,11 +210,11 @@ const leadSchema = z.object({ name: z.string().min(2), email: z.email().optional
 const jobSchema = z.object({ customerId: z.uuid(), serviceLocationId: z.uuid().optional(), serviceId: z.uuid().optional(), serviceName: z.string().optional(), address: z.string().optional(), scheduledDate: z.iso.date().optional(), notes: z.string().optional() });
 const estimateSchema = z.object({
   customerId: z.uuid().optional(), leadId: z.uuid().optional(), serviceId: z.uuid().optional(),
-  title: z.string().min(1), totalCents: z.number().int().nonnegative(), notes: z.string().optional(),
+  title: z.string().min(1), totalCents: z.number().int().nonnegative().optional(), notes: z.string().optional(), ...pricingFields,
 }).refine((body) => Boolean(body.customerId) !== Boolean(body.leadId), {
   message: "Choose either a customer or a lead.", path: ["customerId"],
 });
-const invoiceSchema = z.object({ customerId: z.uuid(), description: z.string().min(1), totalCents: z.number().int().nonnegative(), dueDate: z.iso.date().optional() });
+const invoiceSchema = z.object({ customerId: z.uuid(), description: z.string().min(1), totalCents: z.number().int().nonnegative().optional(), dueDate: z.iso.date().optional(), ...pricingFields }).refine(body => !!body.lines || body.totalCents !== undefined, "Add invoice lines.");
 const planSchema = z.object({
   customerId: z.uuid(), serviceLocationId: z.uuid().optional(), serviceId: z.uuid(), frequency: z.string().default("weekly"), startDate: z.iso.date().optional(),
   interval: z.number().int().min(1).max(52).optional(), daysOfWeek: z.array(z.number().int().min(0).max(6)).min(1).max(7).optional(),
@@ -307,16 +313,20 @@ async function createResource(resource: RecordResource, request: Request, actor:
     if (body.leadId && !lead) throw new DomainError("NOT_FOUND", "Lead not found.", 404);
     const owningLocationId = customer?.owningLocationId ?? lead?.owningLocationId ?? locationId;
     assertLocationAccess(actor, owningLocationId);
+    const documentOrganizationId = customer?.organizationId ?? lead?.organizationId ?? organizationId;
     let service: { id: string; organizationId: string | null; name: string } | undefined;
     if (body.serviceId) {
       [service] = await db.select({ id: services.id, organizationId: services.organizationId, name: services.name }).from(services)
-        .where(and(eq(services.id, body.serviceId), eq(services.tenantId, actor.tenantId), eq(services.organizationId, organizationId))).limit(1);
+        .where(and(eq(services.id, body.serviceId), eq(services.tenantId, actor.tenantId), eq(services.organizationId, documentOrganizationId))).limit(1);
       if (!service) throw new DomainError("NOT_FOUND", "Service not found.", 404);
     }
     const leadName = lead?.companyName || [lead?.firstName, lead?.lastName].filter(Boolean).join(" ") || "Prospective customer";
     const contactName = customer?.displayName ?? leadName;
+    if (!body.lines && body.totalCents === undefined) throw new DomainError("VALIDATION_ERROR","Add estimate lines.",422);
+    const pricing = await documentPricing(db,actor.tenantId,documentOrganizationId,body,true);
     const snapshot = {
       title: body.title,
+      organizationId:documentOrganizationId,
       customerName: customer?.displayName ?? null,
       leadName: lead ? leadName : null,
       contactName,
@@ -325,22 +335,22 @@ async function createResource(resource: RecordResource, request: Request, actor:
       serviceAddress: lead?.address ?? null,
       serviceId: service?.id ?? null,
       serviceName: service?.name ?? null,
-      totalCents: body.totalCents,
-      pricingSnapshot: { currency: "USD", subtotalMinor: body.totalCents, discountMinor: 0, taxMinor: 0, totalMinor: body.totalCents },
+      totalCents: pricing.totalMinor,
+      pricingSnapshot: { currency: "USD", ...pricing },
     };
     const created = await db.transaction(async (tx) => {
       const [estimate] = await tx.insert(estimates).values({
         tenantId: actor.tenantId, customerId: customer?.id ?? null, leadId: lead?.id ?? null,
-        organizationLocationId: owningLocationId, status: "draft", totalMinor: BigInt(body.totalCents), createdByMembershipId: actor.membershipId,
+        organizationLocationId: owningLocationId, status: "draft", totalMinor: BigInt(pricing.totalMinor), createdByMembershipId: actor.membershipId,
       }).returning();
       if (!estimate) throw new Error("Could not create estimate");
-      const [revision] = await tx.insert(estimateRevisions).values({ tenantId: actor.tenantId, estimateId: estimate.id, revisionNumber: 1, subtotalMinor: BigInt(body.totalCents), totalMinor: BigInt(body.totalCents), notes: body.notes, snapshot }).returning();
+      const [revision] = await tx.insert(estimateRevisions).values({ tenantId: actor.tenantId, estimateId: estimate.id, revisionNumber: 1, subtotalMinor: BigInt(pricing.subtotalMinor), discountMinor: BigInt(pricing.discountMinor),taxMinor: BigInt(pricing.taxMinor),totalMinor: BigInt(pricing.totalMinor), notes: body.notes, snapshot }).returning();
       if (!revision) throw new Error("Could not create estimate revision");
-      await tx.insert(estimateItems).values({ tenantId: actor.tenantId, estimateRevisionId: revision.id, serviceId: service?.id ?? null, description: body.title, quantity: "1", unitAmountMinor: BigInt(body.totalCents), totalMinor: BigInt(body.totalCents) });
-      await recordEvent(actor, { type: "estimate.created", entityType: "estimate", entityId: estimate.id, auditAction: "estimate.create", after: { status: "draft", currentRevision: 1, totalMinor: body.totalCents }, locationId: owningLocationId }, tx);
+      await tx.insert(estimateItems).values(pricing.items.map(line => ({ tenantId: actor.tenantId, estimateRevisionId: revision.id,...storedLine(line) })));
+      await recordEvent(actor, { type: "estimate.created", entityType: "estimate", entityId: estimate.id, auditAction: "estimate.create", after: { status: "draft", currentRevision: 1, totalMinor: pricing.totalMinor }, locationId: owningLocationId }, tx);
       return estimate;
     });
-    return json({ item: normalized({ ...created, customerName: customer?.displayName ?? null, leadName: lead ? leadName : null, totalCents: body.totalCents }) }, 201);
+    return json({ item: normalized({ ...created, customerName: customer?.displayName ?? null, leadName: lead ? leadName : null, totalCents: pricing.totalMinor }) }, 201);
   }
   if (resource === "invoices") {
     requirePermission(actor, "invoices.create");
@@ -348,15 +358,16 @@ async function createResource(resource: RecordResource, request: Request, actor:
     const [customer] = await db.select().from(customers).where(and(eq(customers.id, body.customerId), eq(customers.tenantId, actor.tenantId))).limit(1);
     if (!customer) throw new DomainError("NOT_FOUND", "Customer not found.", 404);
     assertLocationAccess(actor, customer.owningLocationId);
+    const pricing = await documentPricing(db,actor.tenantId,customer.organizationId,body);
     const invoiceNumber = `INV-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 4).toUpperCase()}`;
     const created = await db.transaction(async (tx) => {
-      const [invoice] = await tx.insert(invoices).values({ tenantId: actor.tenantId, organizationId, organizationLocationId: customer.owningLocationId ?? locationId, customerId: customer.id, status: "draft", invoiceNumber, totalMinor: BigInt(body.totalCents), subtotalMinor: BigInt(body.totalCents), balanceMinor: BigInt(body.totalCents), dueAt: body.dueDate ? new Date(`${body.dueDate}T23:59:59Z`) : null, billingSnapshot: { businessName: actor.tenantName, customerName: customer.displayName, description: body.description, totalCents: body.totalCents } }).returning();
+      const [invoice] = await tx.insert(invoices).values({ tenantId: actor.tenantId, organizationId: customer.organizationId, organizationLocationId: customer.owningLocationId ?? locationId, customerId: customer.id, status: "draft", invoiceNumber, totalMinor: BigInt(pricing.totalMinor), subtotalMinor: BigInt(pricing.subtotalMinor), discountMinor: BigInt(pricing.discountMinor),taxMinor: BigInt(pricing.taxMinor),balanceMinor: BigInt(pricing.totalMinor), dueAt: body.dueDate ? new Date(`${body.dueDate}T23:59:59Z`) : null, billingSnapshot: { businessName: actor.tenantName, customerName: customer.displayName, description: body.description, totalCents: pricing.totalMinor,...pricing } }).returning();
       if (!invoice) throw new Error("Could not create invoice");
-      await tx.insert(invoiceItems).values({ tenantId: actor.tenantId, invoiceId: invoice.id, description: body.description, quantity: "1", unitAmountMinor: BigInt(body.totalCents), totalMinor: BigInt(body.totalCents) });
+      await tx.insert(invoiceItems).values(pricing.items.map(line => ({ tenantId: actor.tenantId, invoiceId: invoice.id,...storedLine(line) })));
       await recordEvent(actor, { type: "invoice.created", entityType: "invoice", entityId: invoice.id, auditAction: "invoice.create" }, tx);
       return invoice;
     });
-    return json({ item: normalized({ ...created, customerName: customer.displayName, number: invoiceNumber, totalCents: body.totalCents, balanceCents: body.totalCents }) }, 201);
+    return json({ item: normalized({ ...created, customerName: customer.displayName, number: invoiceNumber, totalCents: pricing.totalMinor, balanceCents: pricing.totalMinor }) }, 201);
   }
   if (resource === "service-plans") {
     requirePermission(actor, "service_plans.create");
@@ -454,6 +465,24 @@ const patchSchemas: Partial<Record<RecordResource, z.ZodType<Record<string, unkn
 
 async function patchResource(resource: RecordResource, id: string, request: Request, actor: SessionActor): Promise<Response> {
   requireStaff(actor);
+  if (resource === "invoices") {
+    requirePermission(actor, "invoices.adjust");
+    const body = await readBody(request, z.object({ description: z.string().trim().min(1).max(1000), totalCents: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(), dueDate: z.iso.date().nullable(), expectedUpdatedAt: z.iso.datetime({ offset: true }),...pricingFields }).refine(body => !!body.lines || body.totalCents !== undefined,"Add invoice lines."));
+    const item = await getDb().transaction(async (tx) => {
+      const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.tenantId, actor.tenantId), eq(invoices.id, id))).for("update");
+      if (!invoice) throw new DomainError("NOT_FOUND", "Invoice not found.", 404);
+      assertLocationAccess(actor, invoice.organizationLocationId);
+      if (invoice.status !== "draft") throw new DomainError("CONFLICT", "Issued invoices keep their original details. Use a billing correction instead.", 409);
+      if (invoice.updatedAt.toISOString() !== body.expectedUpdatedAt) throw new DomainError("CONFLICT", "This invoice changed. Refresh it before editing.", 409);
+      const pricing = await documentPricing(tx,actor.tenantId,invoice.organizationId,body);
+      await tx.delete(invoiceItems).where(and(eq(invoiceItems.tenantId,actor.tenantId),eq(invoiceItems.invoiceId,id)));
+      await tx.insert(invoiceItems).values(pricing.items.map(line => ({tenantId:actor.tenantId,invoiceId:id,...storedLine(line)})));
+      const [saved] = await tx.update(invoices).set({ subtotalMinor: BigInt(pricing.subtotalMinor),discountMinor: BigInt(pricing.discountMinor),taxMinor: BigInt(pricing.taxMinor),totalMinor: BigInt(pricing.totalMinor), balanceMinor: BigInt(pricing.totalMinor), dueAt: body.dueDate ? new Date(`${body.dueDate}T23:59:59Z`) : null, billingSnapshot: { ...invoice.billingSnapshot,...pricing,description: body.description,totalCents:pricing.totalMinor }, updatedAt: new Date() }).where(and(eq(invoices.tenantId, actor.tenantId), eq(invoices.id, id))).returning();
+      await recordEvent(actor, { type: "invoice.updated", entityType: "invoice", entityId: id, locationId: invoice.organizationLocationId, auditAction: "invoice.edit_draft", before: normalized(invoice) as Record<string, unknown>, after: normalized(saved) as Record<string, unknown> }, tx);
+      return saved;
+    });
+    return json({ item: normalized(item) });
+  }
   const mapping: Partial<Record<RecordResource, { table: string; permission: Permission; locationColumn?: string; fields: Record<string, string> }>> = {
     leads: { table: "leads", permission: "leads.update", locationColumn: "owning_location_id", fields: { email: "email", phone: "phone", source: "source_detail" } },
     customers: { table: "customers", permission: "customers.update", locationColumn: "owning_location_id", fields: { name: "display_name", email: "billing_email", phone: "billing_phone" } },
@@ -470,6 +499,7 @@ async function patchResource(resource: RecordResource, id: string, request: Requ
   requirePermission(actor, config.permission);
   if (resource === "tickets") await assertTicketAccess(actor, id);
   const updated = await getDb().transaction(async (tx) => {
+    const planningJob = resource === "jobs" ? await lockJobForPlanning(tx, actor, id) : null;
     const table = sql.raw(`"${config.table}"`);
     const locationScope = config.locationColumn && !actor.allLocations
       ? actor.locationIds.size
@@ -481,7 +511,12 @@ async function patchResource(resource: RecordResource, id: string, request: Requ
     const changes = Object.fromEntries(entries.map(([key, value]) => [config.fields[key]!, value]));
     const rescheduled = resource === "jobs" && body.scheduledDate !== undefined && body.scheduledDate !== before.scheduled_date;
     // A date-only edit cannot truthfully retain a window on the previous date.
-    if (rescheduled) { changes.service_window_start = null; changes.service_window_end = null; }
+    if (rescheduled) {
+      const withdrawn = await withdrawJobFromRoutes(tx, actor, planningJob!);
+      changes.service_window_start = null; changes.service_window_end = null;
+      changes.assigned_route_id = withdrawn.assignedRouteId; changes.status = withdrawn.status;
+      if (body.scheduledDate === null && changes.status === "scheduled") throw new DomainError("VALIDATION_ERROR", "Choose a service date for scheduled work.", 422);
+    }
     const assignments = sql.join(Object.entries(changes).map(([column, value]) => {
       const encoded = value !== null && typeof value === "object" && !(value instanceof Date)
         ? sql`${JSON.stringify(value)}::jsonb`

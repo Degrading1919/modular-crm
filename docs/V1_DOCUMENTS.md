@@ -51,7 +51,7 @@ Show:
 - terms
 - approval status
 
-Approved estimates render the approved revision, not the latest draft if a later internal draft exists.
+Approved estimates render the approval's accepted-line pricing snapshot from the approved revision, not declined add-ons or a later draft. Unapproved offers label optional lines. HTML/print/PDF use those same stored amounts and do not recalculate tax or discounts.
 
 ## Invoice
 

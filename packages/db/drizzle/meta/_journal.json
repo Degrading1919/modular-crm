@@ -120,6 +120,13 @@
       "when": 1791233556083,
       "tag": "0016_natural_sprite",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1791248880661,
+      "tag": "0017_rich_rachel_grey",
+      "breakpoints": true
     }
   ]
 }

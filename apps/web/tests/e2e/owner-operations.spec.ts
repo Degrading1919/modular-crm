@@ -48,8 +48,8 @@ test("owner records inventory movements and refunds a collected invoice payment"
   await page.getByRole("button", { name: "New invoice" }).click();
   await chooseStaffRecord(page, "Customer", "Carter Household");
   const description = `E2E refundable invoice ${suffix}`;
-  await page.getByLabel("Description").fill(description);
-  await page.getByLabel("Amount").fill("32.50");
+  await page.getByLabel("Description", { exact:true }).fill(description); await page.getByLabel("Line description").fill(description);
+  await page.getByLabel("Unit price").fill("32.50");
   const createdResponse = page.waitForResponse((response) =>
     response.url().includes("/api/v1/invoices") && response.request().method() === "POST",
   );
@@ -61,12 +61,15 @@ test("owner records inventory movements and refunds a collected invoice payment"
   await page.goto(`/app/invoices/${invoice.id}`);
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Issue invoice" }).click();
-  await expect(page.getByText("Issue invoice completed.")).toBeVisible();
+  await expect(page.getByText("Invoice issued.", { exact: true })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Record summary" })).toContainText("Issued");
   await page.getByRole("button", { name: "Record payment" }).click();
   await page.getByLabel("How the customer paid").selectOption("cash");
   await page.getByRole("button", { name: "Record payment", exact: true }).last().click();
   await expect(page.getByRole("heading", { name: "Refund a payment" })).toBeVisible();
-  await expect(page.getByText("Cash · Succeeded", { exact: false })).toBeVisible();
+  const paymentHistory = page.getByRole("region", { name: "Payment history", exact: true });
+  await expect(paymentHistory).toContainText("Cash");
+  await expect(paymentHistory).toContainText("Succeeded");
 
   await page.getByLabel("Refund amount (USD)").fill("5.00");
   await page.getByLabel("Reason (optional)").fill(`E2E refund ${suffix}`);

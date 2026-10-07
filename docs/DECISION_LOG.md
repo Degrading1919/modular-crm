@@ -4,6 +4,32 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-06 — Itemized approval snapshots and per-document tax rounding
+
+- **Status:** Accepted
+- **Area:** Product / Implementation
+- **Decision:** Share an ordered line editor and integer document calculator between estimates and draft invoices. Round extended prices and percentages half-up; allocate document discounts cumulatively in stored order and round aggregate taxable-basis tax once per document half-up. Freeze chosen add-ons in a separate approval pricing snapshot and copy it to invoice/job billing; issued documents, payments, reports and refunds consume stored amounts without repricing.
+- **Rationale:** Per-line tax rounding and independently interpreted totals disagree; declining an add-on must not rewrite the customer's offered revision or bill excluded work. Legacy untaxed documents keep their totals, and existing recorded tax is preserved.
+- **Authoritative doc:** `docs/PRODUCT_SCOPE.md`, `docs/V1_PRICING_ENGINE.md`, `docs/V1_DOCUMENTS.md`
+- **Supersedes:** The one-line untaxed draft-invoice editing limit in “Actionable record pages and safe job planning changes” (2026-10-05).
+
+## 2026-10-05 — Withdrawn route stops remain history-only
+
+- **Status:** Accepted
+- **Area:** Product / UX
+- **Decision:** Removed stops cannot select a technician route, appear as current field work, enter optimization, or receive optimization sequence writes. Reject reassignment to the current primary technician without changing the job, route or assignment history.
+- **Rationale:** Returning a withdrawn visit to its former calendar day must not restore dispatch implicitly; historical sequence positions must not collide with reordered active stops.
+- **Authoritative doc:** `docs/PRODUCT_SCOPE.md`
+
+## 2026-10-05 — Actionable record pages and safe job planning changes
+
+- **Status:** Accepted
+- **Area:** Product / UX / Connectors
+- **Decision:** Share explicit scoped customer/job/invoice/lead detail pages with business-language facts, money, related work, validated editing and event history. Audited idempotent planning changes retain removed route history and legally return unstarted dispatched work to Scheduled; old reminders are suppressed and new dispatch sends their replacements, while cancellation preserves reasons and configured notifications. Warn explicitly before recording a checked refund outcome above collected funds.
+- **Rationale:** Raw record dumps and date-only mutations made record actions confusing and left jobs on obsolete routes; premature reminder replay contradicted the scheduling contract.
+- **Authoritative doc:** `docs/PRODUCT_SCOPE.md`, `docs/CONNECTOR_SYSTEM.md`, `docs/V1_STATE_MACHINES.md`
+- **Supersedes:** Immediate replacement reminder replay in “Close checked-outcome and field recovery dead ends” (2026-10-05).
+
 ## 2026-10-05 — Close checked-outcome and field recovery dead ends
 
 - **Status:** Accepted

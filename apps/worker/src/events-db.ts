@@ -184,6 +184,7 @@ export async function processDomainEvent(db: Database, boss: PgBoss, input: { te
         // Rescheduling repeats only enabled visit-reminder actions, never the
         // unrelated effects of a dispatch rule or a disabled pack recipe.
         if (rule.trigger.event === "job.dispatched") {
+          if (Number(event.payload.suppressedReminderCount ?? 0) <= 0 || event.payload.awaitingDispatch === true) continue;
           const actions = rule.actions.filter((action) => action.purpose === "service" && ["send_email", "send_sms"].includes(action.actionType) && REMINDER_KEYS.includes(String(action.configuration.templateKey ?? "")));
           if (!actions.length) continue;
           rule = { ...rule, trigger: { ...rule.trigger, event: "job.rescheduled" }, actions };

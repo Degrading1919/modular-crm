@@ -23,6 +23,8 @@ Every meaningful domain event should expose a normalized envelope similar to:
 
 Events are immutable facts. Consumers must tolerate repeated delivery by using event_id/idempotency.
 
+Itemized estimate approval stores its accepted-line pricing on the immutable approval record tied to the revision. Approval event/audit facts identify that revision and accepted total. Estimate conversion emits `invoice.created` once with its source estimate and total; completion billing retains existing `invoice.created`/`invoice.issued` facts. New line editing does not change payment/refund event meanings or permit issued-price mutations.
+
 ## Required event families
 
 ### Leads
@@ -61,6 +63,8 @@ Events are immutable facts. Consumers must tolerate repeated delivery by using e
 - job.created
 - job.scheduled
 - job.assigned
+- job.rescheduled
+- job.schedule_changed
 - job.dispatched
 - job.en_route
 - job.started
@@ -80,6 +84,7 @@ Events are immutable facts. Consumers must tolerate repeated delivery by using e
 
 ### Billing
 - invoice.created
+- invoice.updated
 - invoice.issued
 - invoice.overdue
 - invoice.paid
@@ -195,6 +200,9 @@ Idempotency is required for:
 - automation runs
 - outbound messages where duplicate delivery would be harmful
 - external sync imports
+- explicit job reschedule, reassign, and cancel commands
+
+Job planning commands require a client UUID key and the detail query's ISO `updatedAt` revision token. Serialize the actor/key and lock route, stops, then job in publication order; the immutable command event retains its request hash and original result as the durable replay receipt. Reusing a key for a different command conflicts, and retries emit no duplicate audit or automation event. `job.rescheduled` carries the previous/new dates, actual suppressed-reminder count, and whether dispatch must wait for route publication; cancellation carries the customer and required reason for configured notification rules.
 
 ## Background work
 

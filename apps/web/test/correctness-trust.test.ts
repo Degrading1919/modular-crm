@@ -189,6 +189,7 @@ describe("financial meaning, currency and scope", () => {
 
   it("attributes receipts to their invoices, excludes out-of-scope allocations, and never guesses refund attribution", async () => {
     await db.execute(sql`update payments set received_at='2000-01-01',created_at='2000-01-01' where tenant_id=${seedIds.happyTenant}`);
+    await db.execute(sql`update refunds set completed_at='2000-01-01',created_at='2000-01-01' where tenant_id=${seedIds.happyTenant}`);
     const visible = await addInvoice(seedIds.augusta, 0n);
     const hidden = await addInvoice(seedIds.northAugusta, 0n);
     async function payment(invoices: string[], amount: bigint) {

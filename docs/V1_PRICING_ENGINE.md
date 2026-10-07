@@ -69,6 +69,14 @@ Default:
 
 Rules have explicit priority where order matters.
 
+## Itemized document calculation
+
+The shared domain `priceDocument` contract uses integer minor units and BigInt intermediate arithmetic. Quantities have at most four decimal places; rates use integer basis points. Extended quantity × unit price rounds half-up to a minor unit. Deduct each line's amount discount, then calculate the document amount/percent discount on the remaining subtotal (percent discounts round half-up).
+
+Allocate the document discount proportionally across net lines: the cumulative allocation is the floor of discount × cumulative net / total net, and each line gets the difference from the previous cumulative allocation. This sums exactly to the discount, including any final remainder, in stored line order. Taxable basis is each taxable line after both discounts. Compute cumulative tax at the configured rate half-up and assign cumulative differences to taxable lines: this rounds tax once per document, not independently on each line. Non-taxable lines receive zero tax. Line totals and displayed subtotal − discount + tax always reconcile exactly.
+
+Quote previews include all optional lines. Customer-choice previews and approval run this same calculator on only required and selected optional lines using the revision's frozen rate and discount. Save approved pricing separately from the immutable offered revision; conversion copies amounts without another calculation. Legacy records without this versioned contract retain their recorded amounts. Reject invalid quantities, unsafe amounts and discounts exceeding the selected subtotal; never fabricate prices for missing catalog data.
+
 ## Explainability
 
 Pricing result returns:

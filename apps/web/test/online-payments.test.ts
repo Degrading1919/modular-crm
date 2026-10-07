@@ -24,11 +24,13 @@ const { handleOnlinePaymentWebhook, processOnlinePaymentEvent } = await import("
 const { handleOnlinePaymentRefund } = await import("../lib/api/online-payment-refunds.ts");
 const { handleMockHostedPayment } = await import("../lib/api/mock-hosted-payments.ts");
 const { handleWorkflow } = await import("../lib/api/workflows.ts");
+const { handleRecords } = await import("../lib/api/records.ts");
+const { getDocument } = await import("../lib/api/documents.ts");
 const { expireExcessHostedPages } = await import("../lib/api/hosted-page-expiry.ts");
 const { handleReporting } = await import("../lib/api/reporting.ts");
 const { updateInvoiceFinancialPosition } = await import("../lib/api/invoice-payment-ledger.ts");
 const { openConnectorCredentials } = await import("../lib/api/connector-secrets.ts");
-const { refundId } = await import("../lib/api/refunds.ts");
+const { refundId, handleInvoiceRefund } = await import("../lib/api/refunds.ts");
 const { handleRefundReview } = await import("../lib/api/refund-review.ts");
 let pglite: PGlite;
 let db: Database;
@@ -67,6 +69,34 @@ beforeAll(async () => {
 afterAll(async () => { await pglite?.close(); vi.unstubAllEnvs(); });
 
 describe("account-bound online invoice payments", () => {
+  it("pays a discounted multi-line taxed invoice online, rejects excess and refunds against its exact total",async()=>{
+    const created=await handleRecords(request("invoices",{customerId:seedIds.carter,description:"Taxed itemized work",lines:[{description:"Taxable work",quantity:"2",unitAmountMinor:1000,taxable:true,discountMinor:100},{description:"Untaxed supplies",quantity:"1",unitAmountMinor:500}],taxRateBasisPoints:750,discount:{type:"percent",value:1000}}),["invoices"],owner);
+    expect(created!.status).toBe(201);const id=(await created!.json()).item.id;
+    await handleWorkflow(request(`invoices/${id}/issue`),["invoices",id,"issue"],owner);
+    const invoice=await current(id);expect(invoice).toMatchObject({subtotalMinor:2500n,discountMinor:340n,taxMinor:128n,totalMinor:2288n,balanceMinor:2288n});
+    await expect(checkout(invoice,{amountCents:2289})).rejects.toMatchObject({status:422});
+    const accountPath=["connections","mock-payments","online-payments"];
+    await handleOnlinePaymentAccounts(request(accountPath.join("/"),{allowPartial:true},"PATCH"),accountPath,owner);
+    try {
+      const accountStatus=await (await onlineForAccount(account)).accountStatus();
+      for(const amount of [1000,1288]) {
+        expect((await (await checkout(await current(id),{amountCents:amount}))!.json()).item.amountCents).toBe(amount);
+        const [session]=await db.select().from(onlinePaymentSessions).where(and(eq(onlinePaymentSessions.invoiceId,id),eq(onlinePaymentSessions.amountMinor,BigInt(amount))));
+        const event:OnlinePaymentEvent={id:`taxed_${session!.id}`,accountReference:accountStatus.accountReference,type:"payment.succeeded",paymentReference:`mock_payment_${session!.id}`,sessionReference:session!.providerReference!,amountMinor:amount,currency:"USD"};
+        await apply(event);await apply(event);
+        expect(await current(id)).toMatchObject({totalMinor:2288n,paidMinor:amount===1000?1000n:2288n,balanceMinor:amount===1000?1288n:0n,status:amount===1000?"partially_paid":"paid"});
+      }
+    }finally{await handleOnlinePaymentAccounts(request(accountPath.join("/"),{allowPartial:false},"PATCH"),accountPath,owner);}
+    expect(await db.select().from(paymentAllocations).where(eq(paymentAllocations.invoiceId,id))).toHaveLength(2);
+    expect(await current(id)).toMatchObject({totalMinor:2288n,paidMinor:2288n,balanceMinor:0n,status:"paid"});
+    const [allocation]=await db.select().from(paymentAllocations).where(eq(paymentAllocations.invoiceId,id));
+    const path=["invoices",id,"refunds"],data={paymentId:allocation!.paymentId,amountCents:111,idempotencyKey:crypto.randomUUID()};
+    expect((await handleOnlinePaymentRefund(request(path.join("/"),data),path,owner))!.status).toBe(202);
+    await handleOnlinePaymentRefund(request(path.join("/"),data),path,owner);
+    expect(await current(id)).toMatchObject({totalMinor:2288n,paidMinor:2288n,balanceMinor:111n,status:"partially_paid"});
+    expect(await db.select().from(refunds).where(eq(refunds.paymentId,allocation!.paymentId))).toHaveLength(1);
+    const document=await getDocument(customer,"invoice",id);expect(Number(document.totals.find(total=>total.label==="Total")!.amountMinor)).toBe(2288);
+  });
   it.each(["refunded", "not_refunded"] as const)("owner resolves a refund as %s once, audits it and unblocks eligible refunds", async (outcome) => {
     const invoice = await fixture(); const event = await eventFor(invoice); await apply(event);
     const [allocation] = await db.select().from(paymentAllocations).where(eq(paymentAllocations.invoiceId, invoice.id));
@@ -102,6 +132,8 @@ describe("account-bound online invoice payments", () => {
     await apply({ ...event, id: crypto.randomUUID(), type: "payment.refunded", amountMinor: 900, refundReference: crypto.randomUUID() });
     const ref = crypto.randomUUID(); await apply({ ...event, id: crypto.randomUUID(), type: "payment.refunded", amountMinor: 400, refundReference: ref });
     const [review] = await db.select().from(refunds).where(eq(refunds.providerReference, ref));
+    const context = await (await handleInvoiceRefund(request(`invoices/${invoice.id}/payments`, {}, "GET"), ["invoices", invoice.id, "payments"], owner))!.json();
+    expect(context.items[0]).toMatchObject({ amountCents: 1200, refundedCents: 900, refundReviews: [{ id: review!.id, amountCents: 400, recordedAmountCents: 0 }] });
     const path = ["invoices", invoice.id, "refunds", review!.id, "resolve"];
     expect((await handleRefundReview(request(path.join("/"), { outcome: "refunded" }), path, owner))!.status).toBe(200);
     expect(await current(invoice.id)).toMatchObject({ paidMinor: 1200n, balanceMinor: 1300n });

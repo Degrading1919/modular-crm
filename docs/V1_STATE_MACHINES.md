@@ -50,6 +50,7 @@ Alternatives:
 Rules:
 
 - Draft estimates are editable.
+- Itemized approval requires an explicit optional-add-on selection. Preserve the sent revision and freeze accepted lines, discounts, tax and total on the approval; the approved estimate's total reflects only that selection.
 - Sending freezes a version snapshot.
 - Material edits after send create a new revision while retaining prior versions.
 - Approved estimates cannot be silently changed.
@@ -96,6 +97,7 @@ Rules:
 
 - A job may be created directly as scheduled when date/assignment is known.
 - Dispatched means the job has been committed to a field route/assignee.
+- An explicit authorized reschedule/reassign may withdraw unstarted dispatched work back to scheduled. Preserve removed stop/status history and clear its active route; the generic status endpoint and field UI cannot use this transition to bypass planning protections. Started work cannot be reset through planning edits.
 - en_route may be triggered manually or by technician workflow.
 - in_progress records actual start time.
 - completed requires required forms/checklists and required proof for the Industry Pack.
@@ -156,6 +158,7 @@ Alternatives:
 Rules:
 
 - Issuing freezes an invoice version.
+- Draft invoices edit ordered lines through the shared editor with an expected update version. Estimate conversion copies the accepted approval snapshot once; completion billing copies accepted itemized job/plan pricing when configured. Issued pricing cannot be edited or recalculated from current tax defaults.
 - Paid/partially-paid invoices are not silently edited; corrections use credits/adjustments or replacement invoice workflows.
 - Due-state is computed from due date and remaining balance; overdue is a business state/flag.
 - Void is allowed only when accounting rules permit and must retain audit history.

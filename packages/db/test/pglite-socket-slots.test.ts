@@ -41,6 +41,7 @@ async function queryOnce(url: string) {
 const settle = () => new Promise((resolve) => setTimeout(resolve, 200));
 
 describe("local PGlite connection slots", () => {
+  // Include WASM startup and five full client sessions in the budget under parallel CI load.
   it("accepts new clients after earlier clients disconnected abruptly", async () => {
     const { server, url } = await startServer();
     for (let i = 0; i < 5; i++) await connectThenReset(url);
@@ -48,5 +49,5 @@ describe("local PGlite connection slots", () => {
     await expect(queryOnce(url)).resolves.toBe(1);
     await settle();
     expect(server.getStats().activeConnections).toBe(0);
-  });
+  }, 20_000);
 });

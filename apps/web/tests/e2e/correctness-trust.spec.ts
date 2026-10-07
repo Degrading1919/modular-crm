@@ -118,14 +118,17 @@ test("record details, portal estimates and payment confirmation use the record c
   const invoices = (await (await page.request.get("/api/v1/invoices")).json()).items;
   const invoice = invoices.find((item: { status: string }) => item.status === "issued");
   expect(invoice).toBeTruthy();
-  await page.route(`**/api/v1/invoices/${invoice.id}`, async (route) => {
+  await page.route(`**/api/v1/invoices/${invoice.id}/detail`, async (route) => {
     const response = await route.fetch();
     const payload = await response.json();
     await route.fulfill({ response, json: { ...payload, item: { ...payload.item, currency: "EUR" } } });
   });
   await page.goto(`/app/invoices/${invoice.id}`);
-  await expect(page.locator(".detail-list").filter({ has: page.getByText("Total Cents", { exact: true }) }).locator("dd"))
+  await expect(page.getByRole("region", { name: "Record summary", exact:true }).locator(".detail-list").filter({ has: page.getByText("Total", { exact: true }) }).locator("dd"))
     .toHaveText(money(invoice.totalCents, "EUR"));
+  await expect(page.getByRole("region", { name:"Price breakdown", exact:true }).locator(".detail-list").filter({ has: page.getByText("Total", { exact: true }) }).locator("dd"))
+    .toHaveText(money(invoice.totalCents, "EUR"));
+  await expect(page.getByText("Total Cents", { exact: true })).toHaveCount(0);
 
   await page.request.post("/api/v1/auth/logout");
   await signIn(page, "customer@happyyards.test");
