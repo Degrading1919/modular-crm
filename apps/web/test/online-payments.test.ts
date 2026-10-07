@@ -28,7 +28,7 @@ const { expireExcessHostedPages } = await import("../lib/api/hosted-page-expiry.
 const { handleReporting } = await import("../lib/api/reporting.ts");
 const { updateInvoiceFinancialPosition } = await import("../lib/api/invoice-payment-ledger.ts");
 const { openConnectorCredentials } = await import("../lib/api/connector-secrets.ts");
-const { refundId } = await import("../lib/api/refunds.ts");
+const { refundId, handleInvoiceRefund } = await import("../lib/api/refunds.ts");
 const { handleRefundReview } = await import("../lib/api/refund-review.ts");
 let pglite: PGlite;
 let db: Database;
@@ -102,6 +102,8 @@ describe("account-bound online invoice payments", () => {
     await apply({ ...event, id: crypto.randomUUID(), type: "payment.refunded", amountMinor: 900, refundReference: crypto.randomUUID() });
     const ref = crypto.randomUUID(); await apply({ ...event, id: crypto.randomUUID(), type: "payment.refunded", amountMinor: 400, refundReference: ref });
     const [review] = await db.select().from(refunds).where(eq(refunds.providerReference, ref));
+    const context = await (await handleInvoiceRefund(request(`invoices/${invoice.id}/payments`, {}, "GET"), ["invoices", invoice.id, "payments"], owner))!.json();
+    expect(context.items[0]).toMatchObject({ amountCents: 1200, refundedCents: 900, refundReviews: [{ id: review!.id, amountCents: 400, recordedAmountCents: 0 }] });
     const path = ["invoices", invoice.id, "refunds", review!.id, "resolve"];
     expect((await handleRefundReview(request(path.join("/"), { outcome: "refunded" }), path, owner))!.status).toBe(200);
     expect(await current(invoice.id)).toMatchObject({ paidMinor: 1200n, balanceMinor: 1300n });

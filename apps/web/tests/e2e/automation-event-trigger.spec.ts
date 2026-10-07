@@ -50,7 +50,7 @@ test("an issued invoice triggers an active automation and records its action", a
   await page.goto(`/app/invoices/${created.item!.id}`);
   page.once("dialog", (dialog) => void dialog.accept());
   await page.getByRole("button", { name: "Issue invoice" }).click();
-  await expect(page.getByText("Issue invoice completed.")).toBeVisible();
+  await expect(page.getByText("Invoice issued.", { exact: true })).toBeVisible();
   await expect(page.getByText("Issued", { exact: true })).toBeVisible();
 
   await page.goto("/app/automations");

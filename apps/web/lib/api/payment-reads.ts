@@ -5,12 +5,15 @@ import { getDb } from "../db";
 import { requireStaff, type SessionActor } from "./actor";
 import { json } from "./http";
 import { normalized, uuidArray } from "./sql";
+import { z } from "zod";
 
 /** Read-only collection for the existing Payments workspace. */
 export async function handlePaymentReads(request: Request, path: string[], actor: SessionActor): Promise<Response | null> {
   if (path.length !== 1 || path[0] !== "payments" || request.method !== "GET") return null;
   requireStaff(actor);
   requirePermission(actor, "payments.read");
+  const customerId = new URL(request.url).searchParams.get("customerId");
+  if (customerId) z.uuid().parse(customerId);
 
   // Use the invoice-list location model: every allocated invoice's business
   // location must be in scope. An unallocated payment uses customer scope.
@@ -37,7 +40,7 @@ export async function handlePaymentReads(request: Request, path: string[], actor
     status: payments.status, createdAt: payments.createdAt,
   }).from(payments)
     .innerJoin(customers, and(eq(customers.id, payments.customerId), eq(customers.tenantId, payments.tenantId)))
-    .where(and(eq(payments.tenantId, actor.tenantId), invalidAllocation, locationScope))
+    .where(and(eq(payments.tenantId, actor.tenantId), customerId ? eq(payments.customerId, customerId) : undefined, invalidAllocation, locationScope))
     .orderBy(desc(payments.createdAt), desc(payments.id)).limit(200);
   return json({ items: normalized(items) });
 }

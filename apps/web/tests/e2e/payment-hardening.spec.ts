@@ -80,5 +80,21 @@ test("signed account health immediately hides collection, and a later failed ref
     await expect(page.getByText("Recorded money has not been changed.", { exact: false })).toBeVisible();
     expect(Number((await (await page.request.get(`/api/v1/invoices/${invoice.id}`)).json()).item.balanceCents)).toBe(400);
     expect((await page.request.post(`/api/v1/invoices/${invoice.id}/refunds`, { data: { paymentId: session!.id, amountCents: 100, idempotencyKey: crypto.randomUUID() } })).status()).toBe(409);
+    const context = (await (await page.request.get(`/api/v1/invoices/${invoice.id}/payments`)).json()).items[0];
+    expect(context.refundReviews[0].recordedAmountCents).toBe(400);
+    async function dismissConfirmation(amount?: string) {
+      const button = amount ? page.locator(".card > div").filter({ has: page.locator("p").filter({ hasText: amount }) }).getByRole("button", { name: "The refund went through", exact: true }) : page.getByRole("button", { name: "The refund went through", exact: true });
+      const opened = page.waitForEvent("dialog"); const clicked = button.click();
+      const dialog = await opened; const copy = dialog.message(); await dialog.dismiss(); await clicked; return copy;
+    }
+    expect(await dismissConfirmation()).not.toContain("Warning:");
+    // A signed, additional external refund exceeding collection needs explicit review.
+    // Dismissing the warning must not turn that unconfirmed fact into recorded money.
+    const excessRef = crypto.randomUUID();
+    await notify({ id: `refund_excess_${invoice.id}`, accountReference: `mock_acct_${account!.id}`, type: "payment.refunded", paymentReference: `mock_payment_${session!.id}`, refundReference: excessRef, amountMinor: 1300, currency: "USD" });
+    await page.reload(); await expect(page.getByRole("heading", { name: "Refund needs review" })).toBeVisible();
+    const copy = await dismissConfirmation("$13.00"); expect(copy).toContain("exceed this payment by $5.00"); expect(copy).toContain("not a duplicate record");
+    expect((await db.select().from(refunds).where(eq(refunds.providerReference, excessRef)))[0]!.reviewResolution).toBeNull();
+    expect(Number((await (await page.request.get(`/api/v1/invoices/${invoice.id}`)).json()).item.balanceCents)).toBe(400);
   } finally { await page.request.delete("/api/v1/connections/mock-payments/online-payments"); await customer.close(); await closeDatabase(db); }
 });

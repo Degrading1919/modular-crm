@@ -70,7 +70,7 @@ export async function handleInvoiceRefund(request: Request, path: string[], acto
       refundedCents: refundedByPayment.get(payment.id) ?? 0n,
       pendingRefundCents: pendingByPayment.get(payment.id) ?? 0n,
       overpaymentCents: invoice.overpayment,
-      refundReviews: actor.role === "owner" ? refundRows.filter((row) => row.paymentId === payment.id && row.reviewReason).map((row) => ({ id: row.id, amountCents: Number(row.amountMinor), status: "needs_review", message: row.reviewReason })) : undefined,
+      refundReviews: actor.role === "owner" ? refundRows.filter((row) => row.paymentId === payment.id && row.reviewReason).map((row) => ({ id: row.id, amountCents: Number(row.amountMinor), recordedAmountCents: row.status === "succeeded" ? Number(row.amountMinor) : 0, status: "needs_review", message: row.reviewReason })) : undefined,
       status: payment.status,
       sourceType: payment.sourceType,
       method: payment.recordedMethod ?? payment.sourceType,
