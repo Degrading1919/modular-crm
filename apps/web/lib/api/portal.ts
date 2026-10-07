@@ -1,6 +1,8 @@
+import { packFieldValues } from "@modular-crm/industry-packs";
+import { assetView, fieldsSchema, tenantIndustryPack } from "./pack-fields";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
-import { consentRecords, customerAssets, customerChangeRequests, customerContacts, customerPreferences, customers, notificationPreferences, serviceFeedback, ticketStatusDefinitions, ticketTypeDefinitions, tickets } from "@modular-crm/db";
+import { consentRecords, customerAssets, customerChangeRequests, customerContacts, customerPreferences, customers, notificationPreferences, serviceLocations, serviceFeedback, ticketStatusDefinitions, ticketTypeDefinitions, tickets } from "@modular-crm/db";
 import { DomainError, settledPaymentStatuses } from "@modular-crm/domain";
 import { getDb } from "../db";
 import { type SessionActor } from "./actor";
@@ -92,23 +94,28 @@ async function profile(actor: SessionActor) {
   const db = getDb();
   const [customer] = await db.select().from(customers).where(and(eq(customers.id, id), eq(customers.tenantId, actor.tenantId))).limit(1);
   if (!customer) throw new DomainError("NOT_FOUND", "Customer not found.", 404);
-  const [contacts, locations, pets, preferences] = await Promise.all([
+  const pack = await tenantIndustryPack(actor.tenantId);
+  const [contacts, locations, assets, preferences] = await Promise.all([
     rows(sql`select id,first_name,last_name,email,phone from customer_contacts where tenant_id=${actor.tenantId} and customer_id=${id} and is_primary=true limit 1`),
-    rows(sql`select id,address_line1 as address,city,region,postal_code from service_locations where tenant_id=${actor.tenantId} and customer_id=${id} and id=any(${uuidArray(permittedLocationIds)}) order by created_at`),
-    rows(sql`select id,name,custom_fields from customer_assets where tenant_id=${actor.tenantId} and customer_id=${id} and archived_at is null and customer_visible=true and (service_location_id is null or service_location_id=any(${uuidArray(permittedLocationIds)})) order by created_at`),
+    rows(sql`select id,address_line1 as address,city,region,postal_code,custom_fields from service_locations where tenant_id=${actor.tenantId} and customer_id=${id} and id=any(${uuidArray(permittedLocationIds)}) order by created_at`),
+    rows(sql`select id,name,asset_type_key,custom_fields from customer_assets where tenant_id=${actor.tenantId} and customer_id=${id} and archived_at is null and customer_visible=true and (service_location_id is null or service_location_id=any(${uuidArray(permittedLocationIds)})) order by created_at`),
     notificationPreferenceState(actor, id),
   ]);
   const contact = contacts[0];
-  return normalized({ id, name: contact ? [contact.first_name, contact.last_name].filter(Boolean).join(" ") : customer.displayName,
+  return { id, name: contact ? [contact.first_name, contact.last_name].filter(Boolean).join(" ") : customer.displayName,
     email: contact?.email ?? customer.billingEmail, phone: contact?.phone ?? customer.billingPhone,
     notificationPreferences: preferences,
-    locations, pets: pets.map((pet) => ({ id: pet.id, name: pet.name, ...(pet.custom_fields as object ?? {}) })) });
+    pack, locations: locations.map(row => ({ id: row.id, address: row.address, fields: pack.locationFields.filter(field => field.customerVisible && !field.sensitive), customFields: packFieldValues(pack.locationFields.filter(field => field.customerVisible), row.custom_fields as Record<string, unknown> ?? {}) })),
+    assets: assets.map(row => assetView(pack, { id: row.id, name: String(row.name), assetTypeKey: String(row.asset_type_key), customFields: row.custom_fields as Record<string, unknown> ?? {} }, true)) };
 }
 
 async function updateProfile(request: Request, actor: SessionActor): Promise<Response> {
   customerActor(actor);
   const id = firstCustomerId(actor);
-  const body = await readBody(request, z.object({ name: z.string().min(2).optional(), email: z.email().optional(), phone: z.string().optional(), notificationPreferences: z.object({ email: z.boolean(), sms: z.boolean() }).optional(), pets: z.array(z.object({ id: z.uuid(), name: z.string().min(1), safetyNotes: z.string().optional() })).optional() }));
+  const pack = await tenantIndustryPack(actor.tenantId);
+  const assetSchemas = pack.assets.map(def => z.object({ id: z.uuid(), assetTypeKey: z.literal(def.key), name: def.fields.some(field => field.key === "name" && field.customerEditable) ? z.string().min(1).max(100).optional() : z.never().optional(), customFields: fieldsSchema(def.fields.filter(field => field.customerEditable && !field.sensitive && field.key !== "name"), true, true).optional() }).strict());
+  const editableAsset = assetSchemas.length === 1 ? assetSchemas[0]! : assetSchemas.length ? z.union(assetSchemas as unknown as [z.ZodType, z.ZodType, ...z.ZodType[]]) : z.never();
+  const body = await readBody(request, z.object({ name: z.string().min(2).optional(), email: z.email().optional(), phone: z.string().optional(), notificationPreferences: z.object({ email: z.boolean(), sms: z.boolean() }).strict().optional(), assets: z.array(editableAsset).max(100).optional(), locations: z.array(z.object({ id: z.uuid(), customFields: fieldsSchema(pack.locationFields.filter(field => field.customerEditable && !field.sensitive), true, true) }).strict()).optional() }).strict());
   const db = getDb();
   await db.transaction(async (tx) => {
     if (body.name || body.email || body.phone) {
@@ -133,10 +140,21 @@ async function updateProfile(request: Request, actor: SessionActor): Promise<Res
       await tx.insert(customerPreferences).values({ tenantId: actor.tenantId, customerId: id, preferenceKey: "notifications", value: body.notificationPreferences })
         .onConflictDoUpdate({ target: [customerPreferences.tenantId, customerPreferences.customerId, customerPreferences.preferenceKey], set: { value: body.notificationPreferences, updatedAt: capturedAt } });
     }
-    if (body.pets) for (const pet of body.pets) {
-      const [existing] = await tx.select().from(customerAssets).where(and(eq(customerAssets.id, pet.id), eq(customerAssets.tenantId, actor.tenantId), eq(customerAssets.customerId, id), eq(customerAssets.customerVisible, true))).limit(1);
-      if (!existing || (existing.serviceLocationId && !actor.customerLocationIds.get(id)?.has(existing.serviceLocationId))) throw new DomainError("NOT_FOUND", "Pet not found.", 404);
-      await tx.update(customerAssets).set({ name: pet.name, customFields: { ...existing.customFields, safetyNotes: pet.safetyNotes }, updatedAt: new Date() }).where(and(eq(customerAssets.id, pet.id), eq(customerAssets.tenantId, actor.tenantId)));
+    if (body.assets) for (const input of body.assets as { id: string; assetTypeKey: string; name?: string; customFields?: Record<string, unknown> }[]) {
+      const [existing] = await tx.select().from(customerAssets).where(and(eq(customerAssets.id, input.id), eq(customerAssets.tenantId, actor.tenantId), eq(customerAssets.customerId, id), eq(customerAssets.customerVisible, true)));
+      if (!existing || existing.archivedAt || existing.assetTypeKey !== input.assetTypeKey || (existing.serviceLocationId && !actor.customerLocationIds.get(id)?.has(existing.serviceLocationId))) throw new DomainError("NOT_FOUND", "Service details not found.", 404);
+      const def = pack.assets.find(item => item.key === existing.assetTypeKey)!;
+      const updated = { ...existing.customFields };
+      for (const field of def.fields.filter(field => field.customerEditable && !field.sensitive)) if (input.customFields?.[field.key] !== undefined) updated[field.storageKey ?? field.key] = input.customFields[field.key];
+      await tx.update(customerAssets).set({ name: input.name ?? existing.name, customFields: updated, updatedAt: new Date() }).where(and(eq(customerAssets.id, existing.id), eq(customerAssets.tenantId, actor.tenantId)));
+    }
+    if (body.locations) for (const input of body.locations) {
+      if (!actor.customerLocationIds.get(id)?.has(input.id)) throw new DomainError("NOT_FOUND", "Service address not found.", 404);
+      const [location] = await tx.select().from(serviceLocations).where(and(eq(serviceLocations.id, input.id), eq(serviceLocations.tenantId, actor.tenantId), eq(serviceLocations.customerId, id))).limit(1);
+      if (!location) throw new DomainError("NOT_FOUND", "Service address not found.", 404);
+      const updated = { ...location.customFields };
+      for (const field of pack.locationFields.filter(field => field.customerEditable && !field.sensitive)) if (input.customFields[field.key] !== undefined) updated[field.storageKey ?? field.key] = input.customFields[field.key];
+      await tx.update(serviceLocations).set({ customFields: updated, updatedAt: new Date() }).where(and(eq(serviceLocations.id, input.id), eq(serviceLocations.tenantId, actor.tenantId)));
     }
   });
   await recordEvent(actor, { type: "customer.profile_updated", entityType: "customer", entityId: id, auditAction: "customer.profile_update" });

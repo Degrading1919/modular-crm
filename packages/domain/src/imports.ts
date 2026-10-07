@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { DomainError } from "./errors.ts";
 
-export type ImportField = "name" | "email" | "phone" | "address" | "city" | "state" | "zip" | "customerType" | "petName" | "gateCode" | "frequency";
+export type ImportField = string;
 export interface ColumnMapping { source: string; target: ImportField | null; confidence: "high" | "medium" | "low"; reason: string }
 export interface ImportPreview { headers: string[]; rows: Record<string, string>[]; mappings: ColumnMapping[]; duplicates: Array<{ row: number; existingCustomerId: string; reason: string }>; errors: Array<{ row: number; message: string }> }
 
@@ -14,8 +14,6 @@ const aliases: Record<ImportField, string[]> = {
   state: ["state", "province"],
   zip: ["zip", "zipcode", "zip code", "postal code", "postcode"],
   customerType: ["customer type", "account type", "residential or commercial"],
-  petName: ["dog name", "pet name", "pet 1", "dog 1"],
-  gateCode: ["gate code", "access code"],
   frequency: ["frequency", "service frequency", "schedule"],
 };
 
@@ -56,12 +54,13 @@ export function parseCsv(text: string, delimiter = detectDelimiter(text)): strin
   return rows;
 }
 
-export function inferMappings(headers: string[]): ColumnMapping[] {
+export function inferMappings(headers: string[], packAliases: Readonly<Record<string, readonly string[]>> = {}): ColumnMapping[] {
+  const availableAliases = { ...aliases, ...packAliases };
   return headers.map((source) => {
     const normalized = normalizeHeading(source);
-    const exact = (Object.entries(aliases) as [ImportField, string[]][]).find(([, names]) => names.includes(normalized));
+    const exact = Object.entries(availableAliases).find(([, names]) => names.some(name => normalizeHeading(name) === normalized));
     if (exact) return { source, target: exact[0], confidence: "high", reason: "Recognized heading" };
-    const partial = (Object.entries(aliases) as [ImportField, string[]][]).filter(([, names]) => names.some((name) => normalized.includes(name) || name.includes(normalized)));
+    const partial = Object.entries(availableAliases).filter(([, names]) => names.some((name) => normalized.includes(name) || name.includes(normalized)));
     if (partial.length === 1) return { source, target: partial[0]![0], confidence: "medium", reason: "Similar heading; confirm before import" };
     return { source, target: null, confidence: "low", reason: "Choose a field or ignore this column" };
   });
@@ -70,12 +69,12 @@ export function inferMappings(headers: string[]): ColumnMapping[] {
 function normalizeEmail(value: string): string { return value.trim().toLowerCase(); }
 function normalizePhone(value: string): string { return value.replace(/\D/g, ""); }
 
-export function previewCustomerImport(csv: string, existing: Array<{ id: string; email?: string | null; phone?: string | null; name?: string | null }> = []): ImportPreview {
+export function previewCustomerImport(csv: string, existing: Array<{ id: string; email?: string | null; phone?: string | null; name?: string | null }> = [], packAliases: Readonly<Record<string, readonly string[]>> = {}): ImportPreview {
   const matrix = parseCsv(csv);
   if (matrix.length === 0) throw new DomainError("VALIDATION_ERROR", "CSV is empty.", 422);
   const headers = matrix[0]!.map((header) => header.trim());
   if (headers.length === 0 || headers.some((header) => !header)) throw new DomainError("VALIDATION_ERROR", "CSV needs named columns.", 422);
-  const mappings = inferMappings(headers);
+  const mappings = inferMappings(headers, packAliases);
   const rows = matrix.slice(1).map((values) => Object.fromEntries(headers.map((header, index) => [header, values[index]?.trim() ?? ""])));
   const duplicates: ImportPreview["duplicates"] = [];
   const errors: ImportPreview["errors"] = [];

@@ -1,3 +1,5 @@
+import { packFieldValues, packQuantity } from "@modular-crm/industry-packs";
+import { assetView, tenantIndustryPack } from "./pack-fields";
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, isNull, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
@@ -194,12 +196,17 @@ async function readResource(resource: RecordResource, actor: SessionActor, id?: 
       }
     }
     if (resource === "customers") {
-      const [contacts, locations, pets] = await Promise.all([
+      const [contacts, locations, assets] = await Promise.all([
         rows(sql`select * from customer_contacts where tenant_id=${actor.tenantId} and customer_id=${id}`),
-        rows(sql`select id,name,address_line1,city,region,postal_code from service_locations where tenant_id=${actor.tenantId} and customer_id=${id} and active=true and ${locationSql(actor, sql`organization_location_id`)} order by created_at,id`),
-        rows(sql`select ca.id,ca.name,ca.custom_fields from customer_assets ca where ca.tenant_id=${actor.tenantId} and ca.customer_id=${id} and ca.archived_at is null and (ca.service_location_id is null or exists(select 1 from service_locations sl where sl.tenant_id=ca.tenant_id and sl.id=ca.service_location_id and ${locationSql(actor, sql`sl.organization_location_id`)}))`),
+        rows(sql`select id,name,address_line1,city,region,postal_code,custom_fields from service_locations where tenant_id=${actor.tenantId} and customer_id=${id} and active=true and ${locationSql(actor, sql`organization_location_id`)} order by created_at,id`),
+        rows(sql`select ca.id,ca.name,ca.asset_type_key,ca.custom_fields from customer_assets ca where ca.tenant_id=${actor.tenantId} and ca.customer_id=${id} and ca.archived_at is null and (ca.service_location_id is null or exists(select 1 from service_locations sl where sl.tenant_id=ca.tenant_id and sl.id=ca.service_location_id and ${locationSql(actor, sql`sl.organization_location_id`)}))`),
       ]);
-      item.contacts = normalized(contacts); item.locations = normalized(locations); item.pets = normalized(pets);
+      const pack = await tenantIndustryPack(actor.tenantId);
+      item.contacts = normalized(contacts);
+      item.pack = pack;
+      item.locations = locations.map(({ custom_fields, ...row }) => ({ ...normalized(row) as Record<string, unknown>, fields: pack.locationFields.filter(field => !field.sensitive), fieldValues: packFieldValues(pack.locationFields, custom_fields as Record<string, unknown> ?? {}) }));
+      item.assets = assets.map(row => assetView(pack, { id: row.id, name: String(row.name), assetTypeKey: String(row.asset_type_key), customFields: row.custom_fields as Record<string, unknown> ?? {} }));
+      if (pack.intake?.legacy) item[pack.intake.legacy.assetCollection] = normalized(assets.map(row => ({ id: row.id, name: row.name, custom_fields: row.custom_fields })));
     }
     return json({ item });
   }
@@ -394,14 +401,15 @@ async function createResource(resource: RecordResource, request: Request, actor:
       eq(customerAssets.tenantId, actor.tenantId), eq(customerAssets.customerId, customer.id), eq(customerAssets.serviceLocationId, location.id),
       eq(customerAssets.status, "active"), isNull(customerAssets.archivedAt),
     ));
-    const petCount = assets.filter((asset) => asset.assetTypeKey === "pet").length;
+    const pack = await tenantIndustryPack(actor.tenantId);
     const customerFields = customer.customFields && typeof customer.customFields === "object" ? customer.customFields as Record<string, unknown> : {};
     const locationFields = location.customFields && typeof location.customFields === "object" ? location.customFields as Record<string, unknown> : {};
+    const pricingInput = packQuantity(pack, assets, packFieldValues(pack.locationFields, locationFields));
     const created = await db.transaction(async (tx) => {
       const priceSnapshot = await calculateServicePlanPrice(tx, {
         tenantId: actor.tenantId, organizationId, organizationLocationId: location.organizationLocationId,
         serviceId: service.id, customerType: customer.customerType, serviceZoneId: location.serviceZoneId,
-        frequency, quantity: Math.max(1, petCount), fields: { ...customerFields, ...locationFields, petCount: Math.max(1, petCount), pets: Math.max(1, petCount) },
+        frequency, quantity: pricingInput.quantity, fields: { ...customerFields, ...locationFields, ...pricingInput.fields },
         at: `${effectiveFrom}T12:00:00.000Z`,
       });
       const planPriceSnapshot = { ...priceSnapshot, priceVersions: [{ effectiveFrom, snapshot: priceSnapshot }] };

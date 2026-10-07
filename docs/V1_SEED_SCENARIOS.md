@@ -76,6 +76,12 @@ Seed overlapping names/addresses where useful to prove tenant isolation.
 - invoices/payments
 - distinct site branding
 
+## Tenant C — Tidy Home
+
+Separate House Cleaning reference tenant with Robin Owner, Dana Cleaner and Avery Brooks customer access. The Brooks Household has a home with three rooms to clean, a Kitchen room asset with typed floor/care details, a weekly plan and an assigned dispatched cleaning visit. Tenant-configured pricing is a zero base plus $25 per room; it is a demonstration amount, not an industry-pack market rate.
+
+The published `/site/tidy-home` website supports typed property intake, a quote, customer creation and encrypted private entry instructions. Owner records, visible/editable portal room details, pack-specific field completion and CSV aliases use the same shared screens as the original tenants. Existing tenant A/B records and identities are retained.
+
 ## Connector fixtures
 
 Mock/test connector registry includes:
@@ -103,6 +109,7 @@ Provide accounts for:
 - Tenant A customer
 - Tenant B owner
 - Tenant B customer
+- Tenant C owner, technician and customer
 
 ## Purpose
 

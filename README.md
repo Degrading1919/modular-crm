@@ -55,8 +55,13 @@ The development seed creates these login accounts; each uses the development-onl
 | CleanPaws | Owner/Admin | `owner@cleanpaws.test` |
 | CleanPaws | Field technician | `tech@cleanpaws.test` |
 | CleanPaws | Customer | `customer@cleanpaws.test` |
+| Tidy Home | Owner/Admin | `owner@tidyhome.test` |
+| Tidy Home | Field technician | `tech@tidyhome.test` |
+| Tidy Home | Customer | `customer@tidyhome.test` |
 
 These credentials are for local development only; never use them in a deployed environment.
+
+Try [Tidy Home signup](http://localhost:3000/site/tidy-home/signup) for the House Cleaning reference pack. It uses the same customer, portal and technician screens as the original businesses, with room and property details from its pack.
 
 To stop the application, press **Ctrl+C** in the development terminal, then stop the Compose services from the repository root:
 

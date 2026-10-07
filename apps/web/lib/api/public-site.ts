@@ -15,7 +15,8 @@ import { z } from "zod";
 import { getDb } from "../db";
 import { json } from "./http";
 import { requireTenantFeature } from "./capability-enforcement";
-import { encryptServiceAccessInstructions } from "./service-access";
+import { getIndustryPack, packFieldValues, packQuantity, type IndustryPack } from "@modular-crm/industry-packs";
+import { normalizePackInput, packInputSchema, privatePackFingerprints, safePackDetails, storePackFields, type ServiceDetailsInput } from "./pack-fields";
 import { businessDate } from "../dates";
 import { clientAddress } from "./client-address";
 import { clientIpKey } from "./rate-limits";
@@ -28,29 +29,43 @@ const DEFAULT_SERVICE_TERMS_CONTENT = "I agree to be contacted about this reques
 const slugSchema = z.string().min(1).max(80).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i);
 const addressSchema = z.string().trim().min(3).max(250);
 const zipSchema = z.string().trim().min(3).max(16);
-const petSchema = z.object({ name: z.string().trim().min(1).max(100), size: z.enum(["small", "medium", "large", "extra_large"]).default("medium") });
-const eligibilitySchema = z.object({ slug: slugSchema, address: addressSchema, zip: zipSchema });
-const quoteSchema = eligibilitySchema.extend({
-  serviceId: z.string().min(1).max(100), serviceKey: z.string().min(1).max(100).optional(),
-  frequency: z.enum(["twice_weekly", "weekly", "every_two_weeks", "every_four_weeks", "one_time"]),
-  petCount: z.number().int().min(0).max(20).optional(), pets: z.array(petSchema).max(20).optional(),
-  yardSize: z.enum(["small", "medium", "large", "extra_large"]).optional(), preferredDay: z.string().max(40).optional(),
-});
+const eligibilitySchema = z.object({ slug: slugSchema, address: addressSchema, zip: zipSchema }).strict();
+const frequencySchema = z.enum(["twice_weekly", "weekly", "every_two_weeks", "every_four_weeks", "one_time"]);
 const contactSchema = z.object({
   slug: slugSchema, name: z.string().trim().min(2).max(160), email: z.email().max(254),
   phone: z.string().trim().max(40).optional().default(""), message: z.string().trim().min(1).max(4000),
-});
-const signupSchema = eligibilitySchema.extend({
-  contact: z.object({ name: z.string().trim().min(2).max(160), email: z.email().max(254), phone: z.string().trim().min(5).max(40) }),
-  service: z.object({ id: z.string().min(1).max(100), key: z.string().min(1).max(100).optional(), frequency: z.enum(["twice_weekly", "weekly", "every_two_weeks", "every_four_weeks", "one_time"]) }),
-  pets: z.array(petSchema).min(1).max(20),
-  yard: z.object({ size: z.enum(["small", "medium", "large", "extra_large"]).default("medium"), gateCode: z.string().max(250).optional().default(""), accessNotes: z.string().max(2000).optional().default("") }),
+}).strict();
+const signupBase = eligibilitySchema.extend({
+  contact: z.object({ name: z.string().trim().min(2).max(160), email: z.email().max(254), phone: z.string().trim().min(5).max(40) }).strict(),
+  service: z.object({ id: z.string().min(1).max(100), key: z.string().min(1).max(100).optional(), frequency: frequencySchema }).strict(),
   preferredDay: z.string().max(40).optional().default(""), quoteId: z.string().max(100).optional(),
   paymentMethod: z.enum(["demo"]).optional(),
-  notificationPreferences: z.object({ email: z.boolean().default(true), sms: z.boolean().default(true) }).default({ email: true, sms: true }),
+  notificationPreferences: z.object({ email: z.boolean().default(true), sms: z.boolean().default(true) }).strict().default({ email: true, sms: true }),
   termsAccepted: z.literal(true), termsVersion: z.string().trim().min(1).max(40).default("v1"),
   idempotencyKey: z.string().trim().min(8).max(200),
 });
+type SignupInput = z.infer<typeof signupBase> & ServiceDetailsInput;
+type QuoteInput = z.infer<typeof eligibilitySchema> & ServiceDetailsInput & { serviceId: string; serviceKey?: string; frequency: z.infer<typeof frequencySchema>; preferredDay?: string };
+export function publicPackSchema(pack: IndustryPack, kind: "signup" | "quote") {
+  const canonical = kind === "signup"
+    ? signupBase.extend(packInputSchema(pack))
+    : eligibilitySchema.extend({ serviceId: z.string().min(1).max(100), serviceKey: z.string().min(1).max(100).optional(), frequency: frequencySchema, preferredDay: z.string().max(40).optional(), ...packInputSchema(pack, true) });
+  return z.preprocess((raw, ctx) => {
+    try { return normalizePackInput(pack, raw); }
+    catch (error) {
+      if (error instanceof z.ZodError || error instanceof DomainError) {
+        ctx.addIssue({ code: "custom", message: "Check the service details and send only the fields shown on this form." });
+        return z.NEVER;
+      }
+      throw error;
+    }
+  }, canonical.strict());
+}
+function selectedPack(key: string | null) {
+  const pack = key ? getIndustryPack(key) : undefined;
+  if (!pack) throw new DomainError("VALIDATION_ERROR", "Business service details are unavailable. Contact the office.", 422);
+  return pack;
+}
 
 type PublicSiteRow = {
   site: typeof sites.$inferSelect;
@@ -194,10 +209,10 @@ async function liveSiteContent(site: typeof sites.$inferSelect, organization: ty
 
 function stringValue(value: unknown): string { return typeof value === "string" ? value : ""; }
 
-async function publicSiteView(row: PublicSiteRow): Promise<SiteSnapshot & { slug: string; template: string }> {
+async function publicSiteView(row: PublicSiteRow): Promise<SiteSnapshot & { slug: string; template: string; pack: IndustryPack }> {
   const published = siteSnapshot(row.site);
   const data = published ?? await liveSiteContent(row.site, row.organization);
-  return { ...data, slug: row.site.slug, template: row.site.templateKey };
+  return { ...data, slug: row.site.slug, template: row.site.templateKey, pack: selectedPack(row.tenant.industryPackKey) };
 }
 
 async function serviceAreaSummary(site: typeof sites.$inferSelect): Promise<string> {
@@ -250,7 +265,7 @@ async function loadTaxRate(site: typeof sites.$inferSelect, service: typeof serv
   return Math.max(0, Math.min(100_000, matching[0]?.rateBasisPoints ?? 0));
 }
 
-async function calculatePublicQuote(site: typeof sites.$inferSelect, input: z.infer<typeof quoteSchema>) {
+async function calculatePublicQuote(site: typeof sites.$inferSelect, input: QuoteInput, pack: IndustryPack) {
   const db = getDb();
   const [service] = await db.select().from(services).where(and(
     eq(services.tenantId, site.tenantId), eq(services.active, true),
@@ -262,10 +277,13 @@ async function calculatePublicQuote(site: typeof sites.$inferSelect, input: z.in
   const tenantRow = await db.select({ defaultCurrency: tenants.defaultCurrency }).from(tenants).where(eq(tenants.id, site.tenantId)).limit(1);
   const currency = tenantRow[0]?.defaultCurrency || "USD";
   const zoneId = eligibility.zoneId;
+  const safeDetails = safePackDetails(pack, input);
+  const pricing = packQuantity(pack, input.assets, packFieldValues(pack.locationFields, safeDetails.locationFields));
+  if (!input.assets.length && pack.intake?.quantity.assetTypeKey && input.quantity !== undefined) { pricing.quantity = Math.max(1, input.quantity); for (const alias of pack.intake.quantity.aliases ?? []) pricing.fields[alias] = pricing.quantity; }
   const context = {
     tenantId: site.tenantId, currency, at: new Date().toISOString(), serviceId: service.id, serviceKey: service.key,
-    frequency: input.frequency, quantity: input.pets?.length ?? input.petCount ?? 1, zoneId,
-    fields: { petCount: input.pets?.length ?? input.petCount ?? 1, pets: input.pets?.length ?? input.petCount ?? 1, yardSize: input.yardSize ?? "medium" },
+    frequency: input.frequency, quantity: pricing.quantity, zoneId,
+    fields: { ...safeDetails.locationFields, ...pricing.fields },
     postalCode: input.zip,
   };
   const dbRules = await db.select().from(priceRules).where(and(eq(priceRules.tenantId, site.tenantId), eq(priceRules.organizationId, site.organizationId), eq(priceRules.active, true)));
@@ -282,7 +300,7 @@ async function calculatePublicQuote(site: typeof sites.$inferSelect, input: z.in
   const warnings = [...result.warnings, ...(eligibility.eligible ? [] : [eligibility.reason ?? "service_area_needs_review"] )];
   const quoteId = createHash("sha256").update(JSON.stringify({
     siteId: site.id, serviceId: service.id, frequency: input.frequency, zip: input.zip.trim().toUpperCase(),
-    petCount: input.pets?.length ?? input.petCount ?? 1, yardSize: input.yardSize ?? "medium", total: result.totalMinor,
+    quantity: pricing.quantity, fields: safeDetails.locationFields, total: result.totalMinor,
     quoteRequired, rules: result.appliedRules.map((rule) => rule.ruleId),
   })).digest("hex").slice(0, 40);
   return {
@@ -312,7 +330,7 @@ async function ensureForm(tx: Parameters<Parameters<ReturnType<typeof getDb>["tr
   if (existing) return existing;
   const [created] = await tx.insert(siteForms).values({
     tenantId: site.tenantId, siteId: site.id, formType, name: formType === "signup" ? "Service signup" : "Contact us",
-    schema: formType === "signup" ? { fields: ["address", "contact", "service", "pets", "yard", "termsAccepted"] } : { fields: ["name", "email", "phone", "message"] },
+    schema: formType === "signup" ? { fields: ["address", "contact", "service", "assets", "locationFields", "termsAccepted"] } : { fields: ["name", "email", "phone", "message"] },
     behavior: { create: formType === "signup" ? "lead_or_customer" : "lead" }, active: true,
   }).returning();
   if (!created) throw new Error("Could not prepare the website form.");
@@ -341,7 +359,7 @@ async function ensureServiceTerms(tx: Parameters<Parameters<ReturnType<typeof ge
 function normalizeAddressLine(value: string): string { return value.trim().toLowerCase().replace(/\s+/g, " "); }
 function normalizePostalCode(value: string): string { return value.trim().toUpperCase().replace(/\s+/g, ""); }
 
-async function hasExistingCustomerMatch(tx: Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0], tenantId: string, input: z.infer<typeof signupSchema>): Promise<boolean> {
+async function hasExistingCustomerMatch(tx: Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0], tenantId: string, input: SignupInput): Promise<boolean> {
   const normalizedEmail = input.contact.email.trim().toLowerCase();
   const normalizedAddress = normalizeAddressLine(input.address);
   const normalizedZip = normalizePostalCode(input.zip);
@@ -365,14 +383,15 @@ async function hasExistingCustomerMatch(tx: Parameters<Parameters<ReturnType<typ
   return !!match;
 }
 
-function sanitizedSubmission(input: z.infer<typeof signupSchema>) {
+function sanitizedSubmission(input: SignupInput, pack: IndustryPack, tenantId: string) {
   // Return the JSON form that is stored, so a retry compares equal to it: optional fields left
   // undefined here are absent from the saved payload.
+  const privateFields = privatePackFingerprints(pack, input, tenantId);
   return JSON.parse(JSON.stringify({
-    address: input.address, zip: input.zip, contact: input.contact, service: input.service, pets: input.pets,
-    yard: { size: input.yard.size, accessProvided: Boolean(input.yard.gateCode || input.yard.accessNotes) },
+    address: input.address, zip: input.zip, contact: input.contact, service: input.service, ...safePackDetails(pack, input),
     preferredDay: input.preferredDay, quoteId: input.quoteId, paymentMethod: input.paymentMethod,
     notificationPreferences: input.notificationPreferences, termsAccepted: true, termsVersion: input.termsVersion,
+    ...(Object.keys(privateFields).length ? { privateFieldFingerprints: privateFields } : {}),
   })) as Record<string, unknown>;
 }
 
@@ -415,36 +434,38 @@ async function saveContact(request: Request, site: typeof sites.$inferSelect, in
   return json({ item: response.duplicate ? { id: response.duplicate.leadId ?? response.duplicate.id, kind: "lead", status: "received" } : response.item }, response.duplicate ? 200 : 201);
 }
 
-async function createSignup(request: Request, row: PublicSiteRow, input: z.infer<typeof signupSchema>): Promise<Response> {
+async function createSignup(request: Request, row: PublicSiteRow, input: SignupInput): Promise<Response> {
   const db = getDb();
   const termsVersion = publicTermsVersion(row.site);
-  const quoteInput = {
+  const pack = selectedPack(row.tenant.industryPackKey);
+  const quoteInput: QuoteInput = {
     slug: input.slug, address: input.address, zip: input.zip,
     serviceId: input.service.id, serviceKey: input.service.key, frequency: input.service.frequency,
-    pets: input.pets, petCount: input.pets.length, yardSize: input.yard.size, preferredDay: input.preferredDay,
+    assets: input.assets, locationFields: input.locationFields, preferredDay: input.preferredDay,
   };
   let quote: Awaited<ReturnType<typeof calculatePublicQuote>> | null = null;
-  try { quote = await calculatePublicQuote(row.site, quoteSchema.parse(quoteInput)); } catch { quote = null; }
+  try { quote = await calculatePublicQuote(row.site, quoteInput, pack); } catch { quote = null; }
   const confident = !!quote && quote.eligibility.eligible && !quote.quoteRequired && !!input.quoteId && input.quoteId === quote.quoteId;
   const recurring = input.service.frequency !== "one_time" && quote?.service.serviceType !== "one_time";
   const recurringEnabled = recurring && hasUsableFeature(await loadTenantCapabilities(db, row.site.tenantId), "recurring_service_management");
   const paymentMode = stringValue(settingsObject(row.tenant.settings).paymentMode) || stringValue(settingsObject(settingsObject(row.tenant.settings).onboarding).paymentMode) || "demo";
   // A request-provided demo method cannot stand in for a provider the business has not connected.
   const canAutoActivate = confident && recurringEnabled && paymentMode !== "connect";
-  const detailsToEncrypt = [input.yard.gateCode ? `Gate code: ${input.yard.gateCode}` : "", input.yard.accessNotes ? `Access notes: ${input.yard.accessNotes}` : ""].filter(Boolean).join("\n");
-  const encryptedAccess = encryptServiceAccessInstructions(detailsToEncrypt);
+  const storedLocation = storePackFields(pack.locationFields, input.locationFields);
+  const encryptedAccess = storedLocation.accessInstructionsEncrypted;
+  const safeDetails = safePackDetails(pack, input);
+  const pricing = packQuantity(pack, input.assets, packFieldValues(pack.locationFields, safeDetails.locationFields));
   const idempotencyKey = `signup:${input.idempotencyKey}`;
-  const organization = row.organization;
   const response = await db.transaction(async (tx) => {
     const form = await ensureForm(tx, row.site, "signup");
     const [createdSubmission] = await tx.insert(siteSubmissions).values({
       tenantId: row.site.tenantId, siteId: row.site.id, siteFormId: form.id, idempotencyKey,
-      payload: sanitizedSubmission(input), status: "processing",
+      payload: sanitizedSubmission(input, pack, row.site.tenantId), status: "processing",
     }).onConflictDoNothing({ target: [siteSubmissions.siteId, siteSubmissions.idempotencyKey] }).returning();
     if (!createdSubmission) {
       const [prior] = await tx.select().from(siteSubmissions).where(and(eq(siteSubmissions.siteId, row.site.id), eq(siteSubmissions.idempotencyKey, idempotencyKey))).limit(1);
       if (!prior) throw new Error("Could not load the prior signup request.");
-      if (!isDeepStrictEqual(prior.payload, sanitizedSubmission(input))) throw new DomainError("IDEMPOTENCY_CONFLICT", "This signup request key was already used for different information.", 409);
+      if (!isDeepStrictEqual(prior.payload, sanitizedSubmission(input, pack, row.site.tenantId))) throw new DomainError("IDEMPOTENCY_CONFLICT", "This signup request key was already used for different information.", 409);
       return { duplicate: prior };
     }
 
@@ -464,11 +485,15 @@ async function createSignup(request: Request, row: PublicSiteRow, input: z.infer
         tenantId: row.site.tenantId, customerId: customer.id, organizationLocationId: row.site.organizationLocationId,
         name: "Service address", addressLine1: input.address.trim(), addressLine2: null, city: "", region: "", postalCode: input.zip.trim(), countryCode: "US",
         serviceZoneId: quote.eligibility.zoneId ?? null, accessInstructionsEncrypted: encryptedAccess,
-        customFields: { yardSize: input.yard.size, preferredDay: input.preferredDay || "" },
+        customFields: { ...storedLocation.customFields, preferredDay: input.preferredDay || "" },
       }).returning();
       if (!location) throw new Error("Could not save the service address.");
-      if (quote.service.serviceType !== "one_time") {
-        await tx.insert(customerAssets).values(input.pets.map((pet) => ({ tenantId: row.site.tenantId, customerId: customer.id, serviceLocationId: location.id, assetTypeKey: "pet", name: pet.name, status: "active", customerVisible: true, customFields: { species: "dog", size: pet.size, activeAtLocation: true } })));
+      if (input.assets.length) {
+        await tx.insert(customerAssets).values(input.assets.map(asset => {
+          const definition = pack.assets.find(item => item.key === asset.assetTypeKey)!;
+          const stored = storePackFields(definition.fields, asset.customFields);
+          return { tenantId: row.site.tenantId, customerId: customer.id, serviceLocationId: location.id, assetTypeKey: definition.key, name: asset.name, status: "active", customerVisible: true, customFields: { ...stored.customFields, ...(stored.accessInstructionsEncrypted ? { accessInstructionsEncrypted: stored.accessInstructionsEncrypted } : {}) } };
+        }));
       }
       await tx.insert(notificationPreferences).values({ tenantId: row.site.tenantId, customerId: customer.id, eventKey: "general", emailEnabled: input.notificationPreferences.email, smsEnabled: input.notificationPreferences.sms }).onConflictDoNothing();
       for (const channel of ["email", "sms"] as const) await tx.insert(consentRecords).values({
@@ -503,7 +528,7 @@ async function createSignup(request: Request, row: PublicSiteRow, input: z.infer
         serviceId: quote.service.id, recurrenceRuleId: recurrenceRule.id, status: "active", effectiveFrom: businessDate(new Date(), row.organization.timezone || row.tenant.defaultTimezone || "UTC"),
         pricingSnapshot: snapshot as unknown as Record<string, unknown>, billingConfiguration: { type: paymentMode === "manual" ? "manual_invoice" : "per_job", demoPaymentMethod: input.paymentMethod === "demo" },
         preferredAssignment: input.preferredDay ? { preferredDay: input.preferredDay } : {},
-        customFields: { source: "website_signup", petCount: input.pets.length, yardSize: input.yard.size },
+        customFields: { source: "website_signup", quantity: pricing.quantity, ...safeDetails.locationFields },
       }).returning();
       if (!plan) throw new Error("Could not create the service plan.");
       await tx.update(siteSubmissions).set({ customerId: customer.id, status: "processed", processedAt: new Date() }).where(eq(siteSubmissions.id, createdSubmission.id));
@@ -522,7 +547,7 @@ async function createSignup(request: Request, row: PublicSiteRow, input: z.infer
       estimatedValueMinor: quote?.result.totalMinor ? BigInt(quote.result.totalMinor) : null,
       currency: quote?.result.currency ?? row.tenant.defaultCurrency,
       sourceDetail: "Website signup", customFields: {
-        websiteSignup: { serviceKey: input.service.key ?? input.service.id, frequency: input.service.frequency, pets: input.pets, yardSize: input.yard.size, preferredDay: input.preferredDay, quoteId: input.quoteId ?? null, quoteRequired: quote?.quoteRequired ?? true, reviewReason },
+        websiteSignup: { serviceKey: input.service.key ?? input.service.id, frequency: input.service.frequency, ...safeDetails, preferredDay: input.preferredDay, quoteId: input.quoteId ?? null, quoteRequired: quote?.quoteRequired ?? true, reviewReason },
         ...(encryptedAccess ? { accessInstructionsEncrypted: encryptedAccess } : {}),
       },
     }).returning();
@@ -562,12 +587,15 @@ export async function handlePublicSite(request: Request, path: string[]): Promis
   }
   if (action === "quote") {
     if (request.method !== "POST") throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
-    const input = await readPublicBody(request, quoteSchema);
-    const limited = await rateLimit(request, input.slug, "quote", 40);
+    const raw = await readPublicBody(request, z.unknown());
+    const slug = slugSchema.parse(settingsObject(raw).slug);
+    const limited = await rateLimit(request, slug, "quote", 40);
     if (limited) return limited;
-    const row = await findSite(input.slug, true);
+    const row = await findSite(slug, true);
+    const pack = selectedPack(row.tenant.industryPackKey);
+    const input = publicPackSchema(pack, "quote").parse(raw) as QuoteInput;
     await requireTenantFeature(row.site.tenantId, "online_booking");
-    const quote = await calculatePublicQuote(row.site, input);
+    const quote = await calculatePublicQuote(row.site, input, pack);
     return json({ item: quote.item });
   }
   if (action === "contact") {
@@ -581,10 +609,13 @@ export async function handlePublicSite(request: Request, path: string[]): Promis
   }
   if (action === "signup") {
     if (request.method !== "POST") throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
-    const input = await readPublicBody(request, signupSchema);
-    const limited = await rateLimit(request, input.slug, "signup", 10);
+    const raw = await readPublicBody(request, z.unknown());
+    const slug = slugSchema.parse(settingsObject(raw).slug);
+    const limited = await rateLimit(request, slug, "signup", 10);
     if (limited) return limited;
-    const row = await findSite(input.slug, true);
+    const row = await findSite(slug, true);
+    const pack = selectedPack(row.tenant.industryPackKey);
+    const input = publicPackSchema(pack, "signup").parse(raw) as SignupInput;
     await requireTenantFeature(row.site.tenantId, "online_booking");
     if (input.termsVersion !== publicTermsVersion(row.site)) throw new DomainError("CONFLICT", "Service terms have changed. Refresh the website before sending your request.", 409);
     return createSignup(request, row, input);

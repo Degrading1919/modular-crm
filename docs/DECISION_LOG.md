@@ -4,6 +4,30 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-07 — Preserve reviewed signup facts, private retries and pack retirement
+
+- **Status:** Accepted
+- **Area:** Industry Packs / Architecture / UX
+- **Decision:** Archive old pack recipes through the same timestamp/version contract used by ordinary archive paths. Keep tenant- and field-separated keyed private replay evidence without plaintext, and preserve recorded signup details and encrypted access envelopes in both lead conversion paths through pack-owned legacy mappings. Media stays read-only in customer profiles until validated uploads exist.
+- **Rationale:** Review requests must not lose service details, silently discard a changed private value, leave old recipes visible or overwrite photo references with arbitrary text.
+- **Authoritative doc:** docs/INDUSTRY_PACKS.md
+
+## 2026-10-06 — Preserve recorded service facts and queued pack compatibility
+
+- **Status:** Accepted
+- **Area:** Industry Packs / UX
+- **Decision:** Read views must show stored values only, with defaults restricted to input forms and schemas. Pack metadata preserves legacy warning storage keys and prominent staff-only warning presentation; pack-owned skip aliases normalize older queued requests without changing their replay fingerprint or tenant/assignment checks.
+- **Rationale:** Industry-neutral rendering must not hide safety information, invent historical facts or strand previously queued offline work.
+- **Authoritative doc:** docs/INDUSTRY_PACKS.md
+
+## 2026-10-06 — Pack-driven service fields across the customer lifecycle
+
+- **Status:** Accepted
+- **Area:** Industry Packs / Architecture / UX
+- **Decision:** Render and strictly validate service intake, pricing quantity, asset/location details, imports and field checklists from the tenant's Industry Pack. Keep legacy input/storage aliases inside their pack; separate customer visibility from editability and encrypt sensitive instructions using the existing access boundary. Add a disjoint House Cleaning reference tenant to prove the shared lifecycle without modifying existing customer rows.
+- **Rationale:** A second working industry must require configuration, not another CRM fork or niche-specific core fields.
+- **Authoritative docs:** docs/INDUSTRY_PACKS.md, docs/ARCHITECTURE.md
+
 ## 2026-10-06 — Spoof-resistant security budgets and structural error diagnostics
 
 - **Status:** Accepted

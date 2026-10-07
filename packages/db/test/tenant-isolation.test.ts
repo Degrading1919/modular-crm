@@ -47,20 +47,22 @@ describe("tenant-scoped persistence", () => {
     expect(technician.find((row) => row.permissionKey === "communications.send")?.allowed).toBe(false);
   });
 
-  it("seeds two independent tenants and is repeatable", async () => {
+  it("seeds three independent tenants and is repeatable", async () => {
     const before = {
       connectors: (await db.select().from(connectorInstallations)).length,
       events: (await db.select().from(domainEvents)).length,
     };
     await seedDevelopment(db);
     const allTenants = await db.select().from(tenants);
-    expect(allTenants).toHaveLength(2);
+    expect(allTenants).toHaveLength(3);
     const happy = createTenantRepository(db, seedIds.happyTenant);
     const clean = createTenantRepository(db, seedIds.cleanTenant);
     expect((await happy.listCustomers()).map((row) => row.displayName)).toEqual(["Carter Household", "Nguyen Household", "Riverfront Apartments"]);
     expect((await clean.listCustomers()).map((row) => row.displayName)).toEqual(["Carter Household", "Rivera Household"]);
+    const house = createTenantRepository(db, seedIds.houseTenant);
+    expect((await house.listCustomers()).map((row) => row.displayName)).toEqual(["Brooks Household"]);
     const localStorage = await db.select().from(connectorInstallations).where(eq(connectorInstallations.connectorKey, "local-storage"));
-    expect(localStorage.map((row) => row.id).sort()).toEqual([seedIds.cleanLocalStorage, seedIds.happyLocalStorage].sort());
+    expect(localStorage.map((row) => row.id).sort()).toEqual([seedIds.cleanLocalStorage, seedIds.happyLocalStorage, seedIds.houseLocalStorage].sort());
     expect((await db.select().from(connectorInstallations)).length).toBe(before.connectors);
     expect((await db.select().from(domainEvents)).length).toBe(before.events);
     const [completionEvent] = await db.select().from(domainEvents).where(eq(domainEvents.id, "00000000-0000-4000-8000-000000000321"));
@@ -68,7 +70,7 @@ describe("tenant-scoped persistence", () => {
 
     const catalogModules = await db.select().from(capabilityModules);
     const grants = await db.select().from(tenantCapabilityGrants);
-    for (const tenantId of [seedIds.happyTenant, seedIds.cleanTenant]) {
+    for (const tenantId of [seedIds.happyTenant, seedIds.cleanTenant, seedIds.houseTenant]) {
       const tenantGrants = grants.filter((grant) => grant.tenantId === tenantId && grant.revokedAt === null && grant.effectiveUntil === null);
       expect(new Set(tenantGrants.map(({ moduleId }) => moduleId)).size).toBe(INITIAL_CAPABILITY_MODULE_KEYS.length);
       expect(tenantGrants.map(({ moduleId }) => moduleId).sort()).toEqual(catalogModules.map(({ id }) => id).sort());

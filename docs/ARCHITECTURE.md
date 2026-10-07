@@ -48,6 +48,12 @@ The shared application should own common concepts such as:
 
 This common data model supports every capability without separate tenant deployments or Industry Pack forks. The exact required platform foundation and commercial module boundaries are configurable rather than embedded in database table names.
 
+## Configurable service details and privacy
+
+Industry Pack field definitions are the shared runtime schema for public intake, typed CSV mapping, customer assets and service-location details. Ordinary custom fields remain generic JSON; private values use the existing encrypted service-access instructions, not new plaintext columns. Public submission and import receipts redact private field values before persistence. Portal projections include only pack-declared visible fields, and mutation schemas permit only separately declared editable fields while preserving internal stored values. Assigned-job reads retain tenant, customer and service-location restrictions before decrypting private instructions. Pack changes do not migrate or delete historical customer data.
+
+Shared screens consume pack metadata and generic asset/location view models. The pet-specific compatibility vocabulary stays in its pack, while an industry-neutral source guard prevents new hard-coded niche assumptions in web and domain source. The additional house-cleaning seed uses disjoint identities and keeps existing fixtures intact.
+
 ## Capability and subscription boundary
 
 Keep a canonical registry of stable functional capabilities and data-defined commercial modules. Module definitions carry display metadata, availability, dependencies, compatibility, and the functional capabilities they provide. Dependencies are evaluated centrally. Connector capabilities describe provider functions and remain a separate namespace from commercial product capabilities.
