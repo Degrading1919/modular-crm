@@ -4,6 +4,22 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-07 — Verified website hosts and automated customer certificates
+
+- **Status:** Accepted
+- **Area:** Architecture / UX / Implementation
+- **Decision:** Require independent DNS ownership, routing and HTTPS/deployment evidence before serving a custom website Host, with periodic checks and fail-closed stale handling. Use provider-neutral boundaries and CloudFront SaaS Manager in AWS: CDK owns shared resources, runtime distribution tenants own customer domains and managed certificates, with no per-customer manual deployment. Keep owner DNS writes external, the included address available and all staff access on the workspace host.
+- **Rationale:** Vercel and Cloudflare demonstrate guided records and independent verification; CloudFront fits the existing AWS stack without another platform account. Portable Caddy ACME remains an alternative but adds persistent certificate/HA operations. Local mocks and synth verification do not claim live certificate issuance or production readiness.
+- **Authoritative doc:** docs/ARCHITECTURE.md; docs/V1_WEBSITE_SYSTEM.md
+
+## 2026-10-07 — Exact billing guard coverage and nonblocking reconciliation
+
+- **Status:** Accepted
+- **Area:** Architecture / Implementation
+- **Decision:** Derive billing guard coverage from every migrated public tenant table and a single reviewed exemption list; verify all mutation operations. Serialize canonical billing retrieval with a separate transaction-scoped advisory lock, then take the subscription-row mutation lock and revalidate current bindings/staleness after retrieval.
+- **Rationale:** New migrations cannot silently escape read-only enforcement, and slow provider responses must not stall ordinary business writes. A real PostgreSQL concurrency regression covers the pending-provider window.
+- **Authoritative doc:** docs/ARCHITECTURE.md
+
 ## 2026-10-07 — Keep web liveness independent of billing backfill
 
 - **Status:** Accepted

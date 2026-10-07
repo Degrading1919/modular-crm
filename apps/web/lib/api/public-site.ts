@@ -20,6 +20,7 @@ import { normalizePackInput, packInputSchema, privatePackFingerprints, safePackD
 import { businessDate } from "../dates";
 import { clientAddress } from "./client-address";
 import { clientIpKey } from "./rate-limits";
+import { assertWebsiteHostSlug } from "../website-host";
 
 const PUBLIC_BODY_LIMIT = 64 * 1024;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
@@ -111,7 +112,8 @@ async function readPublicBody<T>(request: Request, schema: z.ZodType<T>): Promis
   return schema.parse(JSON.parse(new TextDecoder().decode(bytes)));
 }
 
-async function findSite(slug: string, publicOnly = true): Promise<PublicSiteRow> {
+async function findSite(slug: string, publicOnly = true, request?: Request): Promise<PublicSiteRow> {
+  if (request) await assertWebsiteHostSlug(request, slug);
   const db = getDb();
   const [row] = await db.select({ site: sites, tenant: tenants, organization: organizations })
     .from(sites).innerJoin(tenants, eq(sites.tenantId, tenants.id)).innerJoin(organizations, and(eq(sites.organizationId, organizations.id), eq(sites.tenantId, organizations.tenantId)))
@@ -572,7 +574,7 @@ export async function handlePublicSite(request: Request, path: string[]): Promis
     const slug = slugSchema.parse(new URL(request.url).searchParams.get("slug"));
     const limited = await rateLimit(request, slug, "site", 120);
     if (limited) return limited;
-    const row = await findSite(slug, true);
+    const row = await findSite(slug, true, request);
     await requireTenantFeature(row.site.tenantId, "website_publishing");
     return json({ item: await publicSiteView(row) });
   }
@@ -581,7 +583,7 @@ export async function handlePublicSite(request: Request, path: string[]): Promis
     const input = await readPublicBody(request, eligibilitySchema);
     const limited = await rateLimit(request, input.slug, "eligibility", 40);
     if (limited) return limited;
-    const row = await findSite(input.slug, true);
+    const row = await findSite(input.slug, true, request);
     await requireTenantFeature(row.site.tenantId, "online_booking");
     return json({ item: await checkEligibility(row.site, input.zip) });
   }
@@ -591,7 +593,7 @@ export async function handlePublicSite(request: Request, path: string[]): Promis
     const slug = slugSchema.parse(settingsObject(raw).slug);
     const limited = await rateLimit(request, slug, "quote", 40);
     if (limited) return limited;
-    const row = await findSite(slug, true);
+    const row = await findSite(slug, true, request);
     const pack = selectedPack(row.tenant.industryPackKey);
     const input = publicPackSchema(pack, "quote").parse(raw) as QuoteInput;
     await requireTenantFeature(row.site.tenantId, "online_booking");
@@ -603,7 +605,7 @@ export async function handlePublicSite(request: Request, path: string[]): Promis
     const input = await readPublicBody(request, contactSchema);
     const limited = await rateLimit(request, input.slug, "contact", 10);
     if (limited) return limited;
-    const row = await findSite(input.slug, true);
+    const row = await findSite(input.slug, true, request);
     await requireTenantFeature(row.site.tenantId, "website_publishing");
     return saveContact(request, row.site, input);
   }
@@ -613,7 +615,7 @@ export async function handlePublicSite(request: Request, path: string[]): Promis
     const slug = slugSchema.parse(settingsObject(raw).slug);
     const limited = await rateLimit(request, slug, "signup", 10);
     if (limited) return limited;
-    const row = await findSite(slug, true);
+    const row = await findSite(slug, true, request);
     const pack = selectedPack(row.tenant.industryPackKey);
     const input = publicPackSchema(pack, "signup").parse(raw) as SignupInput;
     await requireTenantFeature(row.site.tenantId, "online_booking");

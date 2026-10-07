@@ -279,6 +279,8 @@ A conversational assistant may collect the same structured information, but the 
 
 Website forms, bookings, payments, and chat should feed directly into the CRM.
 
+Owners can choose **Use my own domain**, copy their ownership/address/secure-connection records, and choose **Check now**. Distinguish Waiting for DNS, Verified, Secure connection being set up, Live and Needs attention; explain incorrect records specifically. Keep the included address available, verify before selecting a custom primary address, and restore the included primary when a custom primary is removed. Periodic checks warn and stop serving unsafe/stale domains, including on read-only workspaces. Root-domain providers need ALIAS/ANAME/flattening support; www is the simpler option. See V1_WEBSITE_SYSTEM.md for the owner help note.
+
 ## Development philosophy
 
 After the scope for a major product slice is defined, build it end to end, run it locally, use it as a real customer would, and iterate from observed friction.

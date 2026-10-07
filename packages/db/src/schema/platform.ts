@@ -26,6 +26,19 @@ export const domains = pgTable("domains", {
 }, (t) => [
   foreignKey({ columns: [t.tenantId, t.siteId], foreignColumns: [sites.tenantId, sites.id], name: "domains_site_tenant_fk" }),
   uniqueIndex("domains_hostname_ux").on(sql`lower(${t.hostname})`),
+  uniqueIndex("domains_tenant_id_id_ux").on(t.tenantId, t.id),
+]);
+
+/** Internal DNS/edge projection: periodic checks must work even for read-only businesses. */
+export const websiteDomainChecks = pgTable("website_domain_checks", {
+  ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), domainId: uuid("domain_id").notNull(),
+  state: text("state").notNull().default("waiting_dns"), problem: text("problem"),
+  ownershipVerified: boolean("ownership_verified").notNull().default(false), routingVerified: boolean("routing_verified").notNull().default(false),
+  checkedAt: timestamp("checked_at", { withTimezone: true }), nextCheckAt: timestamp("next_check_at", { withTimezone: true }).notNull().defaultNow(),
+  edgeReference: text("edge_reference"), mockRecords: jsonObject("mock_records"),
+}, (t) => [uniqueIndex("website_domain_checks_domain_ux").on(t.domainId),
+  foreignKey({ columns: [t.tenantId, t.domainId], foreignColumns: [domains.tenantId, domains.id], name: "website_domain_checks_domain_tenant_fk" }).onDelete("cascade"),
+  index("website_domain_checks_due_idx").on(t.nextCheckAt),
 ]);
 
 export const siteContents = pgTable("site_contents", {

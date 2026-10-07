@@ -35,27 +35,40 @@ export async function billingNotice(db: BillingExecutor, tenantId: string, kind:
     templateKey: `platform-billing-${kind}`, idempotencyKey: `platform-billing:${kind}:${reference}:${owner.userId}`, status: "queued", queuedAt: now })
     .onConflictDoNothing({ target: [outboundMessages.tenantId, outboundMessages.idempotencyKey] });
 }
-/** Serialize reconciliation per business; canonical provider retrieval happens UNDER this lock. */
+function staleBillingEvent(current: typeof platformSubscriptions.$inferSelect, config: PlatformBillingConfig, event: BillingNotification, occurredAt: Date) {
+  const differentSubscription = current.subscriptionId && !event.subscriptionId.startsWith("setup:") && event.subscriptionId !== current.subscriptionId;
+  return (config.provider === "mock" && current.lastEventAt !== null && occurredAt < current.lastEventAt)
+    || !!(differentSubscription && (current.status !== "canceled"
+      || (current.lastEventAt && occurredAt < current.lastEventAt)
+      || !["customer.subscription.created", "checkout.session.completed"].includes(event.type)));
+}
+/** Serialize provider reconciliation independently of the row lock required by business writes. */
 export async function applyPlatformBillingEvent(db: Database, config: PlatformBillingConfig, event: BillingNotification, payloadHash: string,
   resolve: (expectedSubscriptionId?: string) => Promise<BillingSnapshot>, mail: { secret: string; baseUrl: string }, now = new Date()) {
   return db.transaction(async tx => {
     const [sub] = await tx.select().from(platformSubscriptions).where(and(eq(platformSubscriptions.provider, config.provider), eq(platformSubscriptions.customerId, event.customerId))).limit(1);
     if (!sub) return { ignored: true, duplicate: false };
-    await tx.execute(sql`select tenant_id from platform_subscriptions where tenant_id=${sub.tenantId} for update`);
-    const current = (await platformSubscription(tx, sub.tenantId))!;
+    // Only other billing notifications take this transaction-scoped lock. Business
+    // write guards take FOR SHARE on the subscription row, never this advisory lock.
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`platform-billing:${sub.tenantId}`}, 0))`);
+    let current = (await platformSubscription(tx, sub.tenantId))!;
     const [prior] = await tx.select().from(platformBillingEvents).where(and(eq(platformBillingEvents.provider, config.provider), eq(platformBillingEvents.eventId, event.id))).limit(1);
     if (prior) {
       if (prior.payloadHash !== payloadHash) throw new DomainError("IDEMPOTENCY_CONFLICT", "This billing notification changed after processing.", 409);
       return { duplicate: true, ignored: false };
     }
     const occurredAt = new Date(event.created * 1000);
-    const differentSubscription = current.subscriptionId && !event.subscriptionId.startsWith("setup:") && event.subscriptionId !== current.subscriptionId;
-    const stale = (config.provider === "mock" && current.lastEventAt !== null && occurredAt < current.lastEventAt)
-      || !!(differentSubscription && (current.status !== "canceled"
-        || (current.lastEventAt && occurredAt < current.lastEventAt)
-        || !["customer.subscription.created", "checkout.session.completed"].includes(event.type)));
+    let stale = staleBillingEvent(current, config, event, occurredAt);
+    const snapshot = stale ? undefined : await resolve(current.subscriptionId ?? undefined);
+    // A sweep or hosted operation can change the binding while retrieval is pending.
+    // Re-read and validate after taking the short mutation lock; never resurrect a
+    // retired subscription or extend a grace period from a stale pre-network read.
+    await tx.execute(sql`select tenant_id from platform_subscriptions where tenant_id=${sub.tenantId} for update`);
+    current = (await platformSubscription(tx, sub.tenantId))!;
+    stale = stale || staleBillingEvent(current, config, event, occurredAt)
+      || current.provider !== config.provider || current.customerId !== event.customerId;
     if (!stale) {
-      const snapshot = await resolve(current.subscriptionId ?? undefined);
+      if (!snapshot) throw new DomainError("CONFLICT", "The billing notification could not be resolved.", 409);
       if (snapshot.customerId !== event.customerId || (current.subscriptionId && snapshot.subscriptionId !== current.subscriptionId && current.status !== "canceled")) throw new DomainError("CONFLICT", "This billing notification does not match the subscription.", 409);
       const plan = config.plans.find(plan => config.provider === "mock" ? plan.key === snapshot.planKey : Object.values(plan.prices).some(price => price.monthlyPriceId === snapshot.priceId || price.yearlyPriceId === snapshot.priceId));
       const price = plan?.prices[snapshot.currency];

@@ -1,10 +1,14 @@
 import { isIP } from "node:net";
 import { trustedProxyHops } from "@modular-crm/config";
+import { trustedWebsiteOrigin } from "../website-origin";
 
 /** Ingress must admit only the configured proxy path; never trust client-supplied left entries. */
 export function clientAddress(request: Request, env: Record<string, string | undefined> = process.env): string {
-  const hops = trustedProxyHops(env);
-  if (!hops) return "local";
+  const configured = trustedProxyHops(env);
+  if (!configured) return "local";
+  // Workspace traffic is ALB -> app; authenticated website-origin traffic adds
+  // CloudFront before that same chain. A viewer cannot opt into the extra hop.
+  const hops = configured + (trustedWebsiteOrigin(request, env) ? 1 : 0);
   const header = request.headers.get("x-forwarded-for");
   if (!header || header.length > 8192) return "local";
   const entries = header.split(",");

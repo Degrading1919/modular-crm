@@ -16,3 +16,11 @@ it("normalizes IPv6 and proxy-preserved client ports; malformed or short chains 
   for (const value of [undefined, "garbage", "203.0.113.10:99999", "203.0.113.10:0"]) expect(clientAddress(request(value), env)).toBe("local");
   expect(clientAddress(request("203.0.113.10"), { TRUSTED_PROXY_HOPS: "2" })).toBe("local");
 });
+it("adds the website edge hop only for a secret-authenticated origin, never a viewer's header", () => {
+  const env = { NODE_ENV: "production", WEBSITE_ORIGIN_SECRET: "x".repeat(48) };
+  const routed = (key: string) => new Request("http://localhost", { headers: { "x-forwarded-for": "forged, 203.0.113.10, 192.0.2.20", "x-website-host": "www.example.test", "x-website-origin-key": key } });
+  expect(clientAddress(routed("x".repeat(48)), env)).toBe("203.0.113.10");
+  expect(clientAddress(routed("forged"), env)).toBe("192.0.2.20");
+  expect(clientAddress(routed("x".repeat(48)), { ...env, NODE_ENV: "test", TRUSTED_PROXY_HOPS: "0" })).toBe("local");
+  expect(() => clientAddress(routed("x".repeat(48)), { ...env, TRUSTED_PROXY_HOPS: "0" })).toThrow("TRUSTED_PROXY_HOPS");
+});

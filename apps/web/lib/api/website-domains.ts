@@ -1,7 +1,9 @@
 import { randomBytes } from "node:crypto";
 import { isIP } from "node:net";
-import { and, asc, eq } from "drizzle-orm";
-import { auditEvents, domains, domainEvents, sites, tenants } from "@modular-crm/db";
+import { getDomain } from "tldts";
+import { and, asc, eq, sql } from "drizzle-orm";
+import { auditEvents, checkWebsiteDomain, domains, domainEvents, sites, tenants, websiteDomainChecks } from "@modular-crm/db";
+import { createWebsiteHosting } from "@modular-crm/connectors";
 import { DomainError, requirePermission } from "@modular-crm/domain";
 import { z } from "zod";
 import { getDb } from "../db";
@@ -14,7 +16,7 @@ type Db = ReturnType<typeof getDb>;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 /** Accept a bare, public DNS hostname and canonicalize IDNs/case before persistence. */
-export function normalizeCustomHostname(input: string): string {
+export function normalizeCustomHostname(input: string, mock = false): string {
   const candidate = input.trim();
   if (!candidate || /[\s/@?#:]/.test(candidate) || candidate.includes("\\") || candidate.includes("://")) {
     throw new DomainError("VALIDATION_ERROR", "Enter a domain name such as www.yourbusiness.com.", 422);
@@ -28,11 +30,12 @@ export function normalizeCustomHostname(input: string): string {
   const labels = hostname.split(".");
   // The prefixed TXT challenge name must also fit within DNS's 253-character name limit.
   if (hostname.length > 227 || labels.length < 2 || isIP(hostname) ||
-      /^(localhost|.*\.(?:localhost|local|test|invalid|example|modular\.local))$/.test(hostname) ||
+      /^(localhost|.*\.(?:localhost|local|invalid|example|modular\.local))$/.test(hostname) || (!mock && hostname.endsWith(".test")) ||
       labels.some((label) => label.length < 1 || label.length > 63 || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)) ||
       !/^(?:[a-z]{2,}|xn--[a-z0-9-]{2,})$/.test(labels.at(-1) ?? "")) {
     throw new DomainError("VALIDATION_ERROR", "Use a public domain name, not a local or platform address.", 422);
   }
+  if (!getDomain(hostname, { allowPrivateDomains: true })) throw new DomainError("VALIDATION_ERROR", "Use a domain you own, not a public suffix.", 422);
   return hostname;
 }
 
@@ -63,12 +66,18 @@ function verificationFor(hostname: string, data: Record<string, unknown> | null)
   return token ? { recordType: "TXT", recordName: `_modular-crm-verification.${hostname}`, recordValue: `modular-crm-verification=${token}` } : null;
 }
 
-function domainItem(domain: typeof domains.$inferSelect) {
+function domainItem(domain: typeof domains.$inferSelect, check?: typeof websiteDomainChecks.$inferSelect, target?: string) {
+  const stale = check?.state === "live" && (!check.checkedAt || check.checkedAt.getTime() < Date.now() - 30 * 60_000);
   return {
     id: domain.id, hostname: domain.hostname, domainType: domain.domainType,
-    verificationStatus: domain.verificationStatus, isPrimary: domain.isPrimary,
+    verificationStatus: check ? (check.ownershipVerified ? "verified" : "pending") : domain.verificationStatus, isPrimary: domain.isPrimary,
     verifiedAt: domain.verifiedAt?.toISOString() ?? null,
     dnsChallenge: domain.domainType === "custom" ? verificationFor(domain.hostname, domain.verificationData ?? null) : null,
+    state: stale ? "needs_attention" : check?.state ?? (domain.domainType === "platform" ? "live" : "waiting_dns"), problem: stale ? "Your domain check is overdue. Choose Check now or contact support." : check?.problem ?? null,
+    checkedAt: check?.checkedAt?.toISOString() ?? null,
+    routingRecord: target ? { recordType: getDomain(domain.hostname, { allowPrivateDomains: true }) === domain.hostname ? "ALIAS / ANAME" : "CNAME",
+      recordName: domain.hostname, recordValue: target } : null,
+    certificateChallenge: target ? { recordType: "TXT", recordName: `_cf-challenge.${domain.hostname}`, recordValue: target } : null,
   };
 }
 
@@ -95,16 +104,23 @@ async function listDomains(actor: SessionActor) {
     .where(and(eq(domains.tenantId, actor.tenantId), eq(domains.siteId, site.id)))
     .orderBy(asc(domains.domainType), asc(domains.hostname));
   const platform = entries.find((domain) => domain.domainType === "platform") ?? null;
+  const checks = await getDb().select().from(websiteDomainChecks).where(eq(websiteDomainChecks.tenantId, actor.tenantId));
+  let target: string | undefined;
+  try { target = createWebsiteHosting(process.env, mockDomainVerificationAllowed(tenant?.settings)).target; } catch { /* Included address remains usable before operator configuration. */ }
   return {
-    items: entries.filter((domain) => domain.domainType === "custom").map(domainItem),
+    items: entries.filter((domain) => domain.domainType === "custom").map(domain => domainItem(domain, checks.find(check => check.domainId === domain.id), target)),
     platformDomain: platform ? domainItem(platform) : null,
     simulatedVerificationAvailable: mockDomainVerificationAllowed(tenant?.settings),
   };
 }
 
 async function addDomain(actor: SessionActor, hostnameInput: string) {
-  const hostname = normalizeCustomHostname(hostnameInput);
   const db = getDb();
+  const [tenant] = await db.select().from(tenants).where(eq(tenants.id, actor.tenantId)).limit(1);
+  const hosting = createWebsiteHosting(process.env, mockDomainVerificationAllowed(tenant?.settings));
+  const hostname = normalizeCustomHostname(hostnameInput, hosting.mock);
+  const platformHost = new URL(process.env.APP_BASE_URL ?? "http://localhost:3000").hostname;
+  if (hostname === platformHost) throw new DomainError("CONFLICT", "Use a domain you own, not the workspace address.", 409);
   return db.transaction(async (tx) => {
     const site = await getSite(actor, tx);
     const verificationToken = randomBytes(24).toString("base64url");
@@ -114,41 +130,34 @@ async function addDomain(actor: SessionActor, hostnameInput: string) {
       verificationData: { verificationToken },
     }).onConflictDoNothing().returning();
     if (!created) throw new DomainError("CONFLICT", "That domain is already connected to a business website.", 409);
+    const [check] = await tx.insert(websiteDomainChecks).values({ tenantId: actor.tenantId, domainId: created.id }).returning();
     await auditDomainChange(tx, actor, { type: "website.domain_added", action: "website.domain_add", id: created.id, after: { hostname, verificationStatus: "pending" } });
-    return domainItem(created);
+    return domainItem(created, check, hosting.target);
   });
 }
 
 async function verifyDomain(actor: SessionActor, id: string) {
-  return getDb().transaction(async (tx) => {
-    const site = await getSite(actor, tx);
-    const [tenant] = await tx.select({ settings: tenants.settings }).from(tenants).where(eq(tenants.id, actor.tenantId)).limit(1);
-    if (!tenant || !mockDomainVerificationAllowed(tenant.settings)) {
-      throw new DomainError("CONFLICT", "Domain ownership must be verified by the configured hosting provider. Simulated verification is unavailable here.", 409);
-    }
-    const [domain] = await tx.select().from(domains).where(and(
+    const site = await getSite(actor);
+    const [tenant] = await getDb().select({ settings: tenants.settings }).from(tenants).where(eq(tenants.id, actor.tenantId)).limit(1);
+    const hosting = createWebsiteHosting(process.env, mockDomainVerificationAllowed(tenant?.settings));
+    const [domain] = await getDb().select().from(domains).where(and(
       eq(domains.id, id), eq(domains.tenantId, actor.tenantId), eq(domains.siteId, site.id), eq(domains.domainType, "custom"),
     )).limit(1);
     if (!domain) throw new DomainError("NOT_FOUND", "Custom domain not found.", 404);
-    if (domain.verificationStatus === "verified") return domainItem(domain);
-    const verifiedAt = new Date();
-    const [updated] = await tx.update(domains).set({ verificationStatus: "verified", verifiedAt })
-      .where(and(eq(domains.id, domain.id), eq(domains.tenantId, actor.tenantId), eq(domains.siteId, site.id)))
-      .returning();
-    await auditDomainChange(tx, actor, { type: "website.domain_verified_mock", action: "website.domain_verify_mock", id: domain.id,
-      before: { verificationStatus: domain.verificationStatus }, after: { hostname: domain.hostname, verificationStatus: "verified", mode: "mock" } });
-    return domainItem(updated!);
-  });
+    const check = await checkWebsiteDomain(getDb(), actor.tenantId, id, hosting, hosting.mock);
+    return domainItem(domain, check, hosting.target);
 }
 
 async function setPrimaryDomain(actor: SessionActor, id: string) {
   return getDb().transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`website-domain:${id}`}, 0))`);
     const site = await getSite(actor, tx);
     const [domain] = await tx.select().from(domains).where(and(
       eq(domains.id, id), eq(domains.tenantId, actor.tenantId), eq(domains.siteId, site.id),
     )).limit(1);
     if (!domain || !["custom", "platform"].includes(domain.domainType)) throw new DomainError("NOT_FOUND", "Website domain not found.", 404);
-    if (domain.domainType === "custom" && domain.verificationStatus !== "verified") {
+    const [check] = await tx.select().from(websiteDomainChecks).where(and(eq(websiteDomainChecks.domainId, domain.id), eq(websiteDomainChecks.tenantId, actor.tenantId)));
+    if (domain.domainType === "custom" && (check?.state !== "live" || !check.ownershipVerified || !check.routingVerified || !check.checkedAt || check.checkedAt.getTime() < Date.now() - 30 * 60_000)) {
       throw new DomainError("VALIDATION_ERROR", "Verify this domain before making it your primary website address.", 422);
     }
     const [platform] = await tx.select().from(domains).where(and(
@@ -162,12 +171,13 @@ async function setPrimaryDomain(actor: SessionActor, id: string) {
     )).returning();
     await auditDomainChange(tx, actor, { type: "website.domain_primary_changed", action: "website.domain_primary_set", id: domain.id,
       before: { hostnames: oldPrimary.map((entry) => entry.hostname) }, after: { hostname: domain.hostname } });
-    return domainItem(updated!);
+    return domainItem(updated!, check);
   });
 }
 
 async function removeDomain(actor: SessionActor, id: string) {
   return getDb().transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`website-domain:${id}`}, 0))`);
     const site = await getSite(actor, tx);
     const [domain] = await tx.select().from(domains).where(and(
       eq(domains.id, id), eq(domains.tenantId, actor.tenantId), eq(domains.siteId, site.id), eq(domains.domainType, "custom"),
@@ -181,7 +191,11 @@ async function removeDomain(actor: SessionActor, id: string) {
       await tx.update(domains).set({ isPrimary: false }).where(and(eq(domains.tenantId, actor.tenantId), eq(domains.siteId, site.id), eq(domains.isPrimary, true)));
       await tx.update(domains).set({ isPrimary: true }).where(and(eq(domains.id, platform.id), eq(domains.tenantId, actor.tenantId), eq(domains.siteId, site.id)));
     }
-    await tx.delete(domains).where(and(eq(domains.id, domain.id), eq(domains.tenantId, actor.tenantId), eq(domains.siteId, site.id)));
+    const [tenant] = await tx.select().from(tenants).where(eq(tenants.id, actor.tenantId));
+    // Real provisioning can succeed before its response/reference is saved. Keep
+    // the hostname claimed until the worker has checked the deterministic name.
+    if (mockDomainVerificationAllowed(tenant?.settings)) await tx.delete(domains).where(and(eq(domains.id, domain.id), eq(domains.tenantId, actor.tenantId), eq(domains.siteId, site.id)));
+    else await tx.update(websiteDomainChecks).set({ state: "removing", nextCheckAt: new Date(), ownershipVerified: false, routingVerified: false }).where(eq(websiteDomainChecks.domainId, id));
     await auditDomainChange(tx, actor, { type: "website.domain_removed", action: "website.domain_remove", id: domain.id,
       before: { hostname: domain.hostname, verificationStatus: domain.verificationStatus, isPrimary: domain.isPrimary },
       after: { removed: true, revertedToPlatformDomain: domain.isPrimary ? platform?.hostname ?? null : null } });
@@ -200,6 +214,16 @@ export async function handleWebsiteDomains(request: Request, path: string[], act
     return json({ item: await addDomain(actor, input.hostname) }, 201);
   }
   if (path.length === 4 && id && path[3] === "verify" && request.method === "POST") return json({ item: await verifyDomain(actor, id) });
+  if (path.length === 4 && id && path[3] === "mock-dns" && request.method === "POST") {
+    const site = await getSite(actor);
+    const [tenant] = await getDb().select().from(tenants).where(eq(tenants.id, actor.tenantId));
+    if (!mockDomainVerificationAllowed(tenant?.settings)) throw new DomainError("FORBIDDEN", "Local DNS simulation is unavailable here.", 403);
+    const [domain] = await getDb().select().from(domains).where(and(eq(domains.id, id), eq(domains.tenantId, actor.tenantId), eq(domains.siteId, site.id), eq(domains.domainType, "custom")));
+    if (!domain) throw new DomainError("NOT_FOUND", "Custom domain not found.", 404);
+    const records = await readBody(request, z.object({ ownership: z.enum(["valid", "wrong", "missing"]), routing: z.enum(["valid", "wrong", "missing"]), certificate: z.enum(["ready", "pending", "failed"]).default("ready") }));
+    await getDb().update(websiteDomainChecks).set({ mockRecords: records, nextCheckAt: new Date() }).where(and(eq(websiteDomainChecks.domainId, id), eq(websiteDomainChecks.tenantId, actor.tenantId)));
+    return json({ item: { simulated: true } });
+  }
   if (path.length === 4 && id && path[3] === "primary" && request.method === "POST") return json({ item: await setPrimaryDomain(actor, id) });
   if (path.length === 3 && id && request.method === "DELETE") return json({ item: await removeDomain(actor, id) });
   throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);

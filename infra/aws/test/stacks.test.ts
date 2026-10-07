@@ -51,6 +51,36 @@ describe("AWS local-only infrastructure", () => {
     expect(dbIngress).toHaveLength(3);
     for (const rule of dbIngress) { expect(rule.FromPort).toBe(5432); expect(rule.CidrIp).toBeUndefined(); expect(rule.SourceSecurityGroupId).toBeDefined(); }
     const appTemplate = Template.fromJSON(assembly.getStackArtifact(stacks.application.artifactId).template);
+    appTemplate.resourceCountIs("AWS::CloudFront::DistributionTenant", 0);
+    appTemplate.hasResourceProperties("AWS::CloudFront::ConnectionGroup", { Enabled: true, Ipv6Enabled: true });
+    appTemplate.hasResourceProperties("AWS::CloudFront::Distribution", { DistributionConfig: {
+      ConnectionMode: "tenant-only", Aliases: Match.absent(), Logging: Match.absent(),
+      ViewerCertificate: { CloudFrontDefaultCertificate: false, MinimumProtocolVersion: "TLSv1.2_2021", SslSupportMethod: "sni-only" },
+      Origins: [{ Id: "workspace-origin", DomainName: fixture.domain,
+        CustomOriginConfig: { OriginProtocolPolicy: "https-only", OriginSSLProtocols: ["TLSv1.2"], HTTPSPort: 443 },
+        OriginCustomHeaders: [{ HeaderName: "x-website-origin-key", HeaderValue: Match.anyValue() }] }],
+      DefaultCacheBehavior: { ViewerProtocolPolicy: "redirect-to-https", CachePolicyId: "4135ea2d-6df8-44a3-9df3-4b5a84be39ad",
+        OriginRequestPolicyId: "b689b0a8-53d0-40ab-baf2-68738e2966ac", FunctionAssociations: Match.anyValue(), ForwardedValues: Match.absent(), MinTTL: Match.absent() } } });
+    const distribution = Object.values(appTemplate.findResources("AWS::CloudFront::Distribution"))[0].Properties.DistributionConfig;
+    expect(JSON.stringify(distribution.Origins[0].OriginCustomHeaders[0].HeaderValue)).toContain("resolve:secretsmanager:");
+    const functionCode = Object.values(appTemplate.findResources("AWS::CloudFront::Function"))[0].Properties.FunctionCode;
+    expect(functionCode).toContain("r.headers['x-website-host'] = { value: r.headers.host.value }");
+    expect(functionCode).toContain("delete r.headers['x-website-origin-key']");
+    for (const resource of Object.values(appTemplate.findResources("AWS::ECS::TaskDefinition"))) {
+      const container = resource.Properties.ContainerDefinitions[0];
+      expect(container.Secrets.some((secret: { Name: string }) => secret.Name === "WEBSITE_ORIGIN_SECRET")).toBe(container.Name === "web");
+      expect((container.Environment ?? []).some((value: { Name: string }) => value.Name === "WEBSITE_ROUTING_TARGET")).toBe(container.Name !== "migrate");
+    }
+    const policies = Object.values(appTemplate.findResources("AWS::IAM::Policy")).flatMap(resource => resource.Properties.PolicyDocument.Statement);
+    const websitePolicies = policies.filter(statement => JSON.stringify(statement.Action).includes("cloudfront:"));
+    expect(websitePolicies).toHaveLength(6);
+    for (const statement of websitePolicies) {
+      expect(statement.Condition.StringEquals).toEqual(expect.objectContaining({ [JSON.stringify(statement.Action).includes("DeleteDistributionTenant") ? "aws:ResourceTag/ModularCRMWebsite" : "aws:RequestTag/ModularCRMWebsite"]: `crm-${stage}` }));
+      if (JSON.stringify(statement.Action).includes("CreateDistributionTenant")) expect(statement.Resource).toBe("*");
+      else expect(JSON.stringify(statement.Resource)).toContain("distribution-tenant/");
+      expect(JSON.stringify(statement)).not.toContain("acm:");
+      expect(JSON.stringify(statement)).not.toContain("route53:");
+    }
     appTemplate.hasResourceProperties("AWS::ElasticLoadBalancingV2::Listener", { Port: 443, Protocol: "HTTPS", Certificates: Match.anyValue() });
     appTemplate.hasResourceProperties("AWS::ElasticLoadBalancingV2::Listener", { Port: 80, DefaultActions: [{ Type: "redirect", RedirectConfig: { Protocol: "HTTPS", Port: "443", StatusCode: "HTTP_301" } }] });
     appTemplate.hasResourceProperties("AWS::ElasticLoadBalancingV2::TargetGroup", { TargetType: "ip", HealthCheckPath: "/api/health/ready" });
