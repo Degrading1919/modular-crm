@@ -1,8 +1,9 @@
+import { identifyTenant } from "@modular-crm/config/observability";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
 import {
-  auditEvents, consentRecords, connectorInstallations, customerAssets, customerContacts, customers, hasUsableFeature, loadTenantCapabilities,
+  consumeRateLimit, auditEvents, consentRecords, connectorInstallations, customerAssets, customerContacts, customers, hasUsableFeature, loadTenantCapabilities,
   domainEvents, leads, notificationPreferences, organizations, paymentMethodReferences, priceRules, recurrenceRules, serviceLocations,
   servicePlans, services, serviceZones, siteContents, siteForms, siteSubmissions, sites, taxRules,
   termsAcceptances, termsVersions, tenants,
@@ -16,12 +17,13 @@ import { json } from "./http";
 import { requireTenantFeature } from "./capability-enforcement";
 import { encryptServiceAccessInstructions } from "./service-access";
 import { businessDate } from "../dates";
+import { clientAddress } from "./client-address";
+import { clientIpKey } from "./rate-limits";
 
 const PUBLIC_BODY_LIMIT = 64 * 1024;
 const RATE_WINDOW_MS = 10 * 60 * 1000;
 const DEFAULT_SERVICE_TERMS_CONTENT = "I agree to be contacted about this request and accept the service terms.";
-// Local V1 fixed-window limits are per web process. A multi-instance deployment should move this key/window policy to shared storage.
-const rateWindows = new Map<string, { startedAt: number; count: number }>();
+
 
 const slugSchema = z.string().min(1).max(80).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/i);
 const addressSchema = z.string().trim().min(3).max(250);
@@ -66,27 +68,9 @@ function publicError(status: number, code: string, message: string, retryAfterSe
   return json({ error: { code, message } }, status, retryAfterSeconds ? { "retry-after": String(retryAfterSeconds) } : undefined);
 }
 
-function remoteIp(request: Request): string {
-  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  const raw = forwarded || request.headers.get("x-real-ip")?.trim() || "unknown";
-  return createHash("sha256").update(raw.slice(0, 160)).digest("hex").slice(0, 24);
-}
-
-function rateLimit(request: Request, slug: string, action: string, limit: number): Response | null {
-  const now = Date.now();
-  const key = `${action}:${slug}:${remoteIp(request)}`;
-  let window = rateWindows.get(key);
-  if (!window || now - window.startedAt >= RATE_WINDOW_MS) {
-    window = { startedAt: now, count: 0 };
-    rateWindows.set(key, window);
-  }
-  if (window.count >= limit) return publicError(429, "RATE_LIMITED", "Too many requests. Please try again in a few minutes.", Math.ceil((window.startedAt + RATE_WINDOW_MS - now) / 1000));
-  window.count += 1;
-  if (rateWindows.size > 5000) {
-    for (const [entry, value] of rateWindows) if (now - value.startedAt >= RATE_WINDOW_MS) rateWindows.delete(entry);
-    while (rateWindows.size > 7500) rateWindows.delete(rateWindows.keys().next().value!);
-  }
-  return null;
+async function rateLimit(request: Request, slug: string, action: string, limit: number): Promise<Response | null> {
+  const result = await consumeRateLimit(getDb(), `public:${action}:${slug}:${clientIpKey(request).slice(0, 24)}`, limit, RATE_WINDOW_MS);
+  return result.allowed ? null : publicError(429, "RATE_LIMITED", "Too many requests. Please try again in a few minutes.", result.retryAfter);
 }
 
 async function readPublicBody<T>(request: Request, schema: z.ZodType<T>): Promise<T> {
@@ -118,6 +102,7 @@ async function findSite(slug: string, publicOnly = true): Promise<PublicSiteRow>
     .from(sites).innerJoin(tenants, eq(sites.tenantId, tenants.id)).innerJoin(organizations, and(eq(sites.organizationId, organizations.id), eq(sites.tenantId, organizations.tenantId)))
     .where(and(eq(sites.slug, slug), eq(tenants.status, "active"))).limit(1);
   if (!row) throw new DomainError("NOT_FOUND", "Website not found.", 404);
+  identifyTenant(row.tenant.id);
   if (publicOnly && !isPubliclyAvailable(row.site)) throw new DomainError("NOT_FOUND", "Website not found.", 404);
   return row;
 }
@@ -318,8 +303,8 @@ function splitName(name: string): { firstName: string; lastName: string } {
 }
 
 function requestIp(request: Request): string | null {
-  const raw = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip")?.trim();
-  return raw ? raw.slice(0, 80) : null;
+  const address = clientAddress(request);
+  return address === "local" ? null : address;
 }
 
 async function ensureForm(tx: Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0], site: typeof sites.$inferSelect, formType: "contact" | "signup") {
@@ -398,7 +383,7 @@ function duplicateSignupResult(submission: typeof siteSubmissions.$inferSelect) 
 
 async function saveContact(request: Request, site: typeof sites.$inferSelect, input: z.infer<typeof contactSchema>): Promise<Response> {
   const hash = createHash("sha256").update(JSON.stringify({
-    ip: remoteIp(request), email: input.email.trim().toLowerCase(), name: input.name.trim(), phone: input.phone.trim(), message: input.message.trim(),
+    ip: clientIpKey(request).slice(0, 24), email: input.email.trim().toLowerCase(), name: input.name.trim(), phone: input.phone.trim(), message: input.message.trim(),
   })).digest("hex");
   const idempotencyKey = request.headers.get("idempotency-key")?.trim().slice(0, 200) || `contact:${hash}`;
   const db = getDb();
@@ -560,7 +545,7 @@ export async function handlePublicSite(request: Request, path: string[]): Promis
   if (action === "site") {
     if (request.method !== "GET") throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
     const slug = slugSchema.parse(new URL(request.url).searchParams.get("slug"));
-    const limited = rateLimit(request, slug, "site", 120);
+    const limited = await rateLimit(request, slug, "site", 120);
     if (limited) return limited;
     const row = await findSite(slug, true);
     await requireTenantFeature(row.site.tenantId, "website_publishing");
@@ -569,7 +554,7 @@ export async function handlePublicSite(request: Request, path: string[]): Promis
   if (action === "eligibility") {
     if (request.method !== "POST") throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
     const input = await readPublicBody(request, eligibilitySchema);
-    const limited = rateLimit(request, input.slug, "eligibility", 40);
+    const limited = await rateLimit(request, input.slug, "eligibility", 40);
     if (limited) return limited;
     const row = await findSite(input.slug, true);
     await requireTenantFeature(row.site.tenantId, "online_booking");
@@ -578,7 +563,7 @@ export async function handlePublicSite(request: Request, path: string[]): Promis
   if (action === "quote") {
     if (request.method !== "POST") throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
     const input = await readPublicBody(request, quoteSchema);
-    const limited = rateLimit(request, input.slug, "quote", 40);
+    const limited = await rateLimit(request, input.slug, "quote", 40);
     if (limited) return limited;
     const row = await findSite(input.slug, true);
     await requireTenantFeature(row.site.tenantId, "online_booking");
@@ -588,7 +573,7 @@ export async function handlePublicSite(request: Request, path: string[]): Promis
   if (action === "contact") {
     if (request.method !== "POST") throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
     const input = await readPublicBody(request, contactSchema);
-    const limited = rateLimit(request, input.slug, "contact", 10);
+    const limited = await rateLimit(request, input.slug, "contact", 10);
     if (limited) return limited;
     const row = await findSite(input.slug, true);
     await requireTenantFeature(row.site.tenantId, "website_publishing");
@@ -597,7 +582,7 @@ export async function handlePublicSite(request: Request, path: string[]): Promis
   if (action === "signup") {
     if (request.method !== "POST") throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
     const input = await readPublicBody(request, signupSchema);
-    const limited = rateLimit(request, input.slug, "signup", 10);
+    const limited = await rateLimit(request, input.slug, "signup", 10);
     if (limited) return limited;
     const row = await findSite(input.slug, true);
     await requireTenantFeature(row.site.tenantId, "online_booking");

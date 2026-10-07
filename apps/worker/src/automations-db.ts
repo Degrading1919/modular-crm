@@ -1,7 +1,8 @@
+import { requestContext, reportFailure } from "@modular-crm/config/observability";
 import { createHash } from "node:crypto";
 import { and, eq, inArray, isNull, lt, or } from "drizzle-orm";
 import {
-  type Database, automationRuns, customerContacts, customers, hasUsableFeature, internalNotifications, invoices,
+  type Database, automationRuns, estimates, estimateRevisions, customerContacts, customers, hasUsableFeature, internalNotifications, invoices,
   jobs, loadTenantCapabilities, memberships, messageTemplates, notes, outboundMessages, roleTemplates, sealAccountEmail,
   ticketStatusDefinitions, ticketTypeDefinitions, tickets, REMINDER_KEYS, reminderDeadline,
 } from "@modular-crm/db";
@@ -47,8 +48,8 @@ async function executeAction(db: Database, boss: PgBoss, snapshot: RunSnapshot, 
   }
   if (action.actionType === "send_email" || action.actionType === "send_sms") {
     const channel = action.actionType === "send_email" ? "email" : "sms";
-    const customerId = typeof configuration.customerId === "string" ? configuration.customerId : typeof event.payload.customerId === "string" ? event.payload.customerId : event.entityType === "invoice"
-      ? (await db.select({ customerId: invoices.customerId }).from(invoices).where(and(eq(invoices.tenantId, tenantId), eq(invoices.id, event.entityId))).limit(1))[0]?.customerId : undefined;
+    const customerId = typeof configuration.customerId === "string" ? configuration.customerId : typeof event.payload.customerId === "string" ? event.payload.customerId : (event.entityType === "estimate" ? (await db.select({ customerId: estimates.customerId }).from(estimates).where(and(eq(estimates.tenantId, tenantId), eq(estimates.id, event.entityId))).limit(1))[0]?.customerId : undefined) ?? (event.entityType === "invoice"
+      ? (await db.select({ customerId: invoices.customerId }).from(invoices).where(and(eq(invoices.tenantId, tenantId), eq(invoices.id, event.entityId))).limit(1))[0]?.customerId : undefined);
     if (customerId) {
       const [customer] = await db.select({ id: customers.id }).from(customers).where(and(eq(customers.id, customerId), eq(customers.tenantId, tenantId))).limit(1);
       if (!customer) throw new ActionError("invalid_event_scope", "Customer is outside the event tenant");
@@ -63,7 +64,7 @@ async function executeAction(db: Database, boss: PgBoss, snapshot: RunSnapshot, 
     const subject = String(rendered.subject ?? fallback.subject);
     let body = String(rendered.body ?? fallback.body);
     // Missing action purpose stays promotional. A promotional template cannot be downgraded by an action.
-    const category = template && messagePurpose(template.purpose) === "marketing" ? "marketing" : messagePurpose(action.purpose);
+    const category = ["quote-follow-up", "visit-review-request"].includes(templateKey ?? "") ? "marketing" : template && messagePurpose(template.purpose) === "marketing" ? "marketing" : messagePurpose(action.purpose);
     if (channel === "email" && category === "service" && event.entityType === "invoice") {
       const link = await invoicePaymentEmailLink(db, tenantId, event.entityId, customerId, recipient);
       if (link) body += `\n\nPay now: ${link}`;
@@ -71,7 +72,7 @@ async function executeAction(db: Database, boss: PgBoss, snapshot: RunSnapshot, 
     const deadline = category === "service" && REMINDER_KEYS.includes(templateKey ?? "") && event.entityType === "job" ? await reminderDeadline(db, tenantId, event.entityId) : undefined;
     const [currentJob] = deadline ? await db.select({ scheduledDate: jobs.scheduledDate }).from(jobs).where(and(eq(jobs.tenantId, tenantId), eq(jobs.id, event.entityId))).limit(1) : [];
     const staleReminder = Boolean(deadline && (!deadline.active || !deadline.expiresAt || (event.payload.scheduledDate !== undefined && event.payload.scheduledDate !== currentJob?.scheduledDate)));
-    const [inserted] = await db.insert(outboundMessages).values({ tenantId, customerId, jobId: event.entityType === "job" ? event.entityId : undefined, invoiceId: event.entityType === "invoice" ? event.entityId : undefined, channel, category, templateKey, templateVersion: template?.version, recipient, renderedSubject: channel === "email" ? subject : null, renderedBody: category === "account" ? sealAccountEmail(body, process.env.BETTER_AUTH_SECRET ?? DEVELOPMENT_AUTH_SECRET) : body, expiresAt: deadline?.expiresAt, status: staleReminder ? "suppressed" : "queued", ...(staleReminder ? { failureCode: "visit_rescheduled", failureMessage: "The visit changed. This reminder was not sent." } : {}), idempotencyKey: executionKey, queuedAt: now }).onConflictDoNothing({ target: [outboundMessages.tenantId, outboundMessages.idempotencyKey] }).returning({ id: outboundMessages.id });
+    const [inserted] = await db.insert(outboundMessages).values({ tenantId, customerId, requestId: requestContext()?.requestId, sendGuard: templateKey === "quote-follow-up" && event.entityType === "estimate" ? { estimateId: event.entityId, revisionId: event.payload.revisionId } : {}, jobId: event.entityType === "job" ? event.entityId : undefined, invoiceId: event.entityType === "invoice" ? event.entityId : undefined, channel, category, templateKey, templateVersion: template?.version, recipient, renderedSubject: channel === "email" ? subject : null, renderedBody: category === "account" ? sealAccountEmail(body, process.env.BETTER_AUTH_SECRET ?? DEVELOPMENT_AUTH_SECRET) : body, expiresAt: deadline?.expiresAt, status: staleReminder ? "suppressed" : "queued", ...(staleReminder ? { failureCode: "visit_rescheduled", failureMessage: "The visit changed. This reminder was not sent." } : {}), idempotencyKey: executionKey, queuedAt: now }).onConflictDoNothing({ target: [outboundMessages.tenantId, outboundMessages.idempotencyKey] }).returning({ id: outboundMessages.id });
     const messageId = inserted?.id ?? (await db.select({ id: outboundMessages.id }).from(outboundMessages).where(and(eq(outboundMessages.tenantId, tenantId), eq(outboundMessages.idempotencyKey, executionKey))).limit(1))[0]?.id;
     if (messageId && !staleReminder) await enqueueOutboundMessage(boss, { tenantId, messageId }, category);
     return;
@@ -133,7 +134,15 @@ export async function processAutomationRun(db: Database, boss: PgBoss, input: { 
       }
       if (snapshot.rule.recheckConditions !== false && snapshot.event.entityType === "job") {
         const [currentJob] = await db.select({ status: jobs.status }).from(jobs).where(and(eq(jobs.id, snapshot.event.entityId), eq(jobs.tenantId, input.tenantId))).limit(1);
-        if (currentJob && !evaluateAutomationRule(snapshot.rule, { ...snapshot.event, payload: { ...snapshot.event.payload, job: { ...(snapshot.event.payload.job as Record<string, unknown> | undefined), status: currentJob.status } } }).matched) {
+        if (!currentJob || !evaluateAutomationRule(snapshot.rule, { ...snapshot.event, payload: { ...snapshot.event.payload, job: { ...(snapshot.event.payload.job as Record<string, unknown> | undefined), status: currentJob.status } } }).matched) {
+          completed.add(planned.executionKey);
+          continue;
+        }
+      }
+      if (snapshot.event.entityType === "estimate" && planned.action.configuration.templateKey === "quote-follow-up") {
+        const [estimate] = await db.select().from(estimates).where(and(eq(estimates.tenantId, input.tenantId), eq(estimates.id, snapshot.event.entityId))).limit(1);
+        const [revision] = estimate ? await db.select({ id: estimateRevisions.id }).from(estimateRevisions).where(and(eq(estimateRevisions.tenantId, input.tenantId), eq(estimateRevisions.estimateId, estimate.id), eq(estimateRevisions.revisionNumber, estimate.currentRevision))).limit(1) : [];
+        if (!estimate || !["sent", "viewed"].includes(estimate.status) || (estimate.expiresAt && estimate.expiresAt <= now) || (snapshot.event.payload.revisionId && snapshot.event.payload.revisionId !== revision?.id)) {
           completed.add(planned.executionKey);
           continue;
         }
@@ -149,6 +158,7 @@ export async function processAutomationRun(db: Database, boss: PgBoss, input: { 
     const code = error instanceof ActionError ? error.code : "action_error";
     const retryable = error instanceof ActionError ? error.retryable : true;
     const retry = retryable && attempts < 5;
+    if (retry) await reportFailure(error, { errorCode: "worker_job_failed", status: 500, durationMs: 0 });
     const nextRetryAt = retry ? new Date(now.getTime() + Math.min(3600000, 60000 * 2 ** (attempts - 1))) : null;
     await db.update(automationRuns).set({ status: retry ? "retry" : "failed", attempts, errorCode: code, errorMessage: error instanceof Error ? error.message.slice(0, 250) : "Action failed", nextRetryAt, contextSnapshot: { ...(snapshot ?? {}), completedActionKeys: [...completed] }, updatedAt: now }).where(eq(automationRuns.id, run.id));
     if (retry && nextRetryAt) await enqueueAutomationRun(boss, input, nextRetryAt.toISOString());
@@ -158,7 +168,7 @@ export async function processAutomationRun(db: Database, boss: PgBoss, input: { 
 
 export async function enqueuePendingAutomationRuns(db: Database, boss: PgBoss, now = new Date()): Promise<number> {
   await db.update(automationRuns).set({ status: "retry", nextRetryAt: now, updatedAt: now }).where(and(eq(automationRuns.status, "running"), lt(automationRuns.startedAt, new Date(now.getTime() - 15 * 60000))));
-  const pending = await db.select({ id: automationRuns.id, tenantId: automationRuns.tenantId }).from(automationRuns).where(and(inArray(automationRuns.status, ["queued", "retry"]), or(isNull(automationRuns.nextRetryAt), lt(automationRuns.nextRetryAt, now)))).limit(100);
-  for (const item of pending) await enqueueAutomationRun(boss, { tenantId: item.tenantId, runId: item.id });
+  const pending = await db.select({ id: automationRuns.id, tenantId: automationRuns.tenantId, requestId: automationRuns.requestId }).from(automationRuns).where(and(inArray(automationRuns.status, ["queued", "retry"]), or(isNull(automationRuns.nextRetryAt), lt(automationRuns.nextRetryAt, now)))).limit(100);
+  for (const item of pending) await enqueueAutomationRun(boss, { tenantId: item.tenantId, runId: item.id, ...(item.requestId ? { requestId: item.requestId } : {}) });
   return pending.length;
 }

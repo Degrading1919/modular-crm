@@ -108,6 +108,7 @@ export type ServerConfig = Readonly<{
   authBaseUrl: string;
   appBaseUrl: string;
   localSmokeTest: boolean;
+  trustedProxyHops: number;
   workerHealthPort: number;
   workerPollStaleMs: number;
   workerJobMaxMs: number;
@@ -131,9 +132,37 @@ function isLoopback(host: string): boolean {
 }
 
 /** Server-only startup settings; never serialize the returned object to a browser payload. */
+export const SERVER_CONFIGURATION_KEYS: ReadonlySet<string> = new Set([
+  "DATABASE_URL", "BETTER_AUTH_SECRET", "WEBHOOK_SECRET_ENCRYPTION_KEY", "CONNECTOR_CREDENTIAL_ENCRYPTION_KEY",
+  "MOCK_CONNECTORS", "DOMAIN_VERIFICATION_MODE", "LOCAL_SMOKE_TEST", "PUBLIC_BASE_URL", "BETTER_AUTH_URL", "APP_BASE_URL",
+  "SMTP_HOST", "SMTP_PORT", "SMTP_FROM", "SMTP_USER", "SMTP_PASSWORD", "SMTP_SECURE",
+  "WORKER_HEALTH_PORT", "WORKER_POLL_STALE_MS", "WORKER_JOB_MAX_MS", "PLATFORM_NAME",
+  "PLATFORM_EMAIL_HOURLY_LIMIT", "PLATFORM_EMAIL_DAILY_LIMIT", "PLATFORM_EMAIL_FIRST_WEEK_HOURLY_LIMIT", "PLATFORM_EMAIL_FIRST_WEEK_DAILY_LIMIT",
+  "PAYMENTS_STRIPE_SECRET_KEY", "PAYMENTS_STRIPE_WEBHOOK_SECRET", "PAYMENTS_STRIPE_MODE", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "TRUSTED_PROXY_HOPS",
+]);
+export class ServerConfigurationError extends Error {
+  readonly configurationKeys: string[];
+  constructor(problems: readonly string[]) {
+    super(`Invalid server configuration: ${problems.join("; ")}.`);
+    this.configurationKeys = [...SERVER_CONFIGURATION_KEYS].filter(key => problems.some(problem => problem.includes(key)));
+  }
+}
+
+/** Zero means no proxy/header trust. Production requires a fixed, secured proxy path. */
+export function trustedProxyHops(env: Record<string, string | undefined>): number {
+  const production = env.NODE_ENV === "production";
+  const raw = env.TRUSTED_PROXY_HOPS ?? (production ? "1" : "0");
+  const hops = Number(raw);
+  if (!/^(0|[1-9][0-9]*)$/.test(raw) || hops < (production ? 1 : 0) || hops > 16) {
+    throw new ServerConfigurationError(["TRUSTED_PROXY_HOPS must be an integer from 1 to 16 in production, or 0 to 16 locally"]);
+  }
+  return hops;
+}
+
 export function readServerConfig(env: Record<string, string | undefined>): ServerConfig {
   const environment = env.NODE_ENV === "production" ? "production" : env.NODE_ENV === "test" ? "test" : "development";
   const problems: string[] = [];
+  const proxyHops = trustedProxyHops(env);
   const databaseUrl = env.DATABASE_URL?.trim() || undefined;
   const production = environment === "production";
   const localSmokeTest = env.LOCAL_SMOKE_TEST === "true";
@@ -195,8 +224,16 @@ export function readServerConfig(env: Record<string, string | undefined>): Serve
     || !["test", "live"].includes(env.PAYMENTS_STRIPE_MODE ?? "")
     || !env.PAYMENTS_STRIPE_SECRET_KEY?.startsWith(`sk_${env.PAYMENTS_STRIPE_MODE}_`))) problems.push("PAYMENTS_STRIPE_SECRET_KEY, PAYMENTS_STRIPE_WEBHOOK_SECRET and PAYMENTS_STRIPE_MODE must be complete and use the same test/live mode");
   if (stripeConfigured && environment === "test" && env.PAYMENTS_STRIPE_MODE === "live") problems.push("Live payment credentials must not be used in tests");
-  if (problems.length) throw new Error(`Invalid server configuration: ${problems.join("; ")}.`);
-  return Object.freeze({ environment, databaseUrl, mockConnectors, publicBaseUrl, authBaseUrl, appBaseUrl, localSmokeTest, workerHealthPort, workerPollStaleMs, workerJobMaxMs,
+  if (problems.length) throw new ServerConfigurationError(problems);
+  if (env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT) {
+    let endpoint: URL;
+    try { endpoint = new URL(env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT); }
+    catch { throw new ServerConfigurationError(["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT must be a trusted collector URL"]); }
+    if (!["https:", "http:"].includes(endpoint.protocol) || endpoint.username || endpoint.password || (production && endpoint.protocol !== "https:" && !(localSmokeTest && isLoopback(endpoint.hostname)))) throw new ServerConfigurationError(["OTEL_EXPORTER_OTLP_LOGS_ENDPOINT must be a trusted HTTPS collector URL"]);
+  } else if (production) {
+    console.warn(JSON.stringify({ level: "warn", time: new Date().toISOString(), requestId: null, tenantId: null, route: "startup", status: null, durationMs: 0, event: "error.reporter_not_configured" }));
+  }
+  return Object.freeze({ environment, databaseUrl, mockConnectors, publicBaseUrl, authBaseUrl, appBaseUrl, localSmokeTest, trustedProxyHops: proxyHops, workerHealthPort, workerPollStaleMs, workerJobMaxMs,
     smtp: Object.freeze({ host, port, secure, user: env.SMTP_USER, password: env.SMTP_PASSWORD, from }), platformName, platformEmailLimits,
     storageEndpoint: env.STORAGE_ENDPOINT?.trim() || undefined, storageBucket: env.STORAGE_BUCKET?.trim() || "modular-crm",
     ...(stripeConfigured ? { stripePayments: Object.freeze({ secretKey: env.PAYMENTS_STRIPE_SECRET_KEY!, webhookSecret: env.PAYMENTS_STRIPE_WEBHOOK_SECRET!, mode: env.PAYMENTS_STRIPE_MODE as "test" | "live" }) } : {}) });

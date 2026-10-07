@@ -25,6 +25,9 @@ beforeAll(async () => {
   pglite = new PGlite(); const database = drizzle(pglite, { schema });
   await migrate(database, { migrationsFolder: fileURLToPath(new URL("../../../packages/db/drizzle", import.meta.url)) });
   db = database as unknown as Database; await seedDevelopment(db);
+  // Cap/retry scenarios use historical clocks; their grants must already be effective then.
+  await db.update(schema.tenantCapabilityGrants).set({ effectiveFrom: new Date("2020-01-01T00:00:00Z") })
+    .where(eq(schema.tenantCapabilityGrants.tenantId, seedIds.happyTenant));
   vi.stubEnv("BETTER_AUTH_SECRET", secret);
   vi.stubEnv("CONNECTOR_CREDENTIAL_ENCRYPTION_KEY", Buffer.alloc(32, 7).toString("base64url"));
   vi.stubEnv("GOOGLE_CLIENT_ID", "local-test-client");

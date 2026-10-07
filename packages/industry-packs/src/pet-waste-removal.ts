@@ -2,7 +2,7 @@ import type { IndustryPack } from "./index.ts";
 
 export const PET_WASTE_REMOVAL_PACK: IndustryPack = {
   key: "pet-waste-removal",
-  version: "1.1.0",
+  version: "1.2.0",
   displayName: "Pet Waste Removal",
   customerTypes: ["residential", "commercial"],
   terminology: { customer: "Client", serviceLocation: "Service Address", customerAsset: "Pet", workArea: "Yard / Service Area", job: "Cleanup", servicePlan: "Service Plan", fieldTechnician: "Technician" },
@@ -84,6 +84,10 @@ export const PET_WASTE_REMOVAL_PACK: IndustryPack = {
     changeRequest: ["submitted", "review", "approved", "rejected"],
   },
   defaultAutomations: [
+    { sourceKey: "quote-follow-up", name: "Follow up on unanswered quotes", description: "After 7 days, remind customers whose quote is still unanswered. Change the waiting period before turning this on.", event: "estimate.sent", enabledByDefault: false,
+      actions: [{ actionType: "send_email", purpose: "marketing", delay: { afterEventMinutes: 10080 }, configuration: { templateKey: "quote-follow-up", subject: "Would you like to go ahead with your quote?", body: "Your quote is ready to review. Open the quote link we sent you to accept it or ask us a question." } }] },
+    { sourceKey: "visit-review-request", name: "Ask for a review after a completed visit", description: "The day after a visit, invite customers to share feedback in their customer portal.", event: "job.completed", filters: { field: "job.status", operator: "equals", value: "completed" }, enabledByDefault: false,
+      actions: [{ actionType: "send_email", purpose: "marketing", delay: { afterEventMinutes: 1440 }, configuration: { templateKey: "visit-review-request", subject: "How was your visit?", body: "We would love to hear how your visit went. Please open your customer portal and leave a review on the completed visit." } }] },
     { sourceKey: "signup-confirmation", name: "Welcome new clients", description: "Confirm a completed website signup.", event: "site_submission.created", filters: { field: "kind", operator: "equals", value: "customer" }, actions: [{ actionType: "send_email", purpose: "service", configuration: { templateKey: "signup-confirmation" } }], enabledByDefault: true },
     { sourceKey: "signup-review", name: "Review new service requests", description: "Alert the office when a website signup needs review.", event: "site_submission.created", filters: { field: "kind", operator: "equals", value: "lead" }, actions: [{ actionType: "notify_staff", configuration: { when: "manual_review" } }], enabledByDefault: true },
     { sourceKey: "cleanup-completed", name: "Cleanup complete", description: "Send the client a completion notice after a cleanup.", event: "job.completed", actions: [{ actionType: "send_sms", purpose: "service", configuration: { templateKey: "cleanup-completed" } }], enabledByDefault: true },

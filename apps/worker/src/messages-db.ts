@@ -2,7 +2,7 @@ import { and, desc, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import {
   type Database, communicationEvents, consentRecords, hasUsableFeature, loadTenantCapabilities,
   notificationPreferences, outboundMessages, loadEmailBusiness, emailUnsubscribeToken, reservePlatformEmail, openAccountEmail,
-  reserveAccountEmail, REMINDER_KEYS, reminderDeadline, domainEvents, auditEvents, invoices,
+  reserveAccountEmail, REMINDER_KEYS, reminderDeadline, domainEvents, auditEvents, invoices, tenants, estimates, estimateRevisions, jobs,
 } from "@modular-crm/db";
 import { ConnectorError, type ConnectorRegistry, createPlatformEmailSender, customerEmailParts, type EmailInput } from "@modular-crm/connectors";
 import { readServerConfig, DEVELOPMENT_AUTH_SECRET, messagePurpose, type ServerConfig } from "@modular-crm/config";
@@ -10,20 +10,21 @@ import type { PgBoss } from "pg-boss";
 import { enqueueOutboundMessage } from "./queues.js";
 import { hydrateMessagingConnector } from "./messaging-connectors.js";
 import { invoiceReminderBody } from "./invoice-reminders-db.js";
+import { nextOutsideQuietHours } from "./quiet-hours.js";
 import { createHash } from "node:crypto";
 
 type Message = typeof outboundMessages.$inferSelect;
 type Preference = typeof notificationPreferences.$inferSelect;
 type Consent = typeof consentRecords.$inferSelect;
 class MessageSetupError extends Error { readonly code = "business_details_missing"; readonly retryable = false; }
-const reminderReasons: Record<string, string> = { preference_disabled: "Customer reminders are turned off.", customer_suppressed: "The customer has asked not to receive these reminders.", customer_unsubscribed: "The customer has asked not to receive these messages.", capability_unavailable: "Customer notifications are not enabled.", invoice_reminder_canceled: "The invoice no longer needs this reminder.", reminder_expired: "The reminder is no longer current.", recipient_missing: "No customer email address is recorded." };
+const reminderReasons: Record<string, string> = { preference_disabled: "Customer reminders are turned off.", customer_suppressed: "The customer has asked not to receive these reminders.", customer_unsubscribed: "The customer has asked not to receive these messages.", capability_unavailable: "Customer notifications are not enabled.", invoice_reminder_canceled: "The invoice no longer needs this reminder.", reminder_expired: "The reminder is no longer current.", recipient_missing: "Add an email for this customer to send reminders" };
 type ReminderWriter = Pick<Database, "select" | "insert">;
 /** One reviewable fact per message/reason, including deferred quota attempts; replay never adds duplicate facts. */
 async function recordReminderNotSent(tx: ReminderWriter, message: Message, code: string, now: Date, note?: string) {
   if (message.templateKey !== "invoice_overdue" || !message.invoiceId) return;
   const [invoice] = await tx.select({ organizationId: invoices.organizationId, locationId: invoices.organizationLocationId }).from(invoices).where(and(eq(invoices.tenantId, message.tenantId), eq(invoices.id, message.invoiceId))).limit(1);
   if (!invoice) return;
-  const bytes = createHash("sha256").update(`${message.tenantId}:${message.id}:${code}`).digest("hex").slice(0, 32);
+  const bytes = createHash("sha256").update(`${message.tenantId}:${code === "recipient_missing" ? message.invoiceId : message.id}:${code}`).digest("hex").slice(0, 32);
   const id = `${bytes.slice(0,8)}-${bytes.slice(8,12)}-${bytes.slice(12,16)}-${bytes.slice(16,20)}-${bytes.slice(20)}`;
   await tx.insert(domainEvents).values({ id, tenantId: message.tenantId, ...invoice, eventType: "invoice.reminder_not_sent", actorType: "system", entityType: "invoice", entityId: message.invoiceId, occurredAt: now, payload: { messageId: message.id, reason: note ?? reminderReasons[code] ?? "Check the customer email address and your email settings.", code } }).onConflictDoNothing();
 }
@@ -66,6 +67,21 @@ export async function processOutboundMessage(db: Database, registry: ConnectorRe
     .returning();
   if (!message) return "skipped";
   const purpose = messagePurpose(message.category);
+  if (message.templateKey === "visit-review-request" && message.jobId) {
+    const [job] = await db.select({ status: jobs.status }).from(jobs).where(and(eq(jobs.tenantId, input.tenantId), eq(jobs.id, message.jobId))).limit(1);
+    if (!job || job.status !== "completed") {
+      await db.update(outboundMessages).set({ status: "suppressed", failureCode: "visit_no_longer_completed", nextSendAt: null, updatedAt: now }).where(and(eq(outboundMessages.tenantId, input.tenantId), eq(outboundMessages.id, message.id)));
+      return "suppressed";
+    }
+  }
+  if (typeof message.sendGuard.estimateId === "string") {
+    const [estimate] = await db.select().from(estimates).where(and(eq(estimates.tenantId, input.tenantId), eq(estimates.id, message.sendGuard.estimateId))).limit(1);
+    const [revision] = estimate ? await db.select({ id: estimateRevisions.id }).from(estimateRevisions).where(and(eq(estimateRevisions.tenantId, input.tenantId), eq(estimateRevisions.estimateId, estimate.id), eq(estimateRevisions.revisionNumber, estimate.currentRevision))).limit(1) : [];
+    if (!estimate || !["sent", "viewed"].includes(estimate.status) || (estimate.expiresAt && estimate.expiresAt <= now) || (message.sendGuard.revisionId && message.sendGuard.revisionId !== revision?.id)) {
+      await db.update(outboundMessages).set({ status: "suppressed", failureCode: "quote_no_longer_waiting", nextSendAt: null, updatedAt: now }).where(and(eq(outboundMessages.tenantId, input.tenantId), eq(outboundMessages.id, message.id)));
+      return "suppressed";
+    }
+  }
   const deadline = purpose === "service" && REMINDER_KEYS.includes(message.templateKey ?? "") && message.jobId ? await reminderDeadline(db, input.tenantId, message.jobId) : undefined;
   if ((message.expiresAt && message.expiresAt <= now) || (deadline && (!deadline.active || !deadline.expiresAt || deadline.expiresAt <= now || (message.expiresAt && message.expiresAt.getTime() !== deadline.expiresAt.getTime())))) {
     await db.transaction(async (tx) => {
@@ -93,7 +109,8 @@ export async function processOutboundMessage(db: Database, registry: ConnectorRe
   const preference = preferenceKeys.map((key) => preferences.find((item) => item.eventKey === key)).find(Boolean);
   const [consent] = message.customerId ? await db.select().from(consentRecords).where(and(eq(consentRecords.tenantId, input.tenantId), eq(consentRecords.customerId, message.customerId), eq(consentRecords.channel, message.channel), eq(consentRecords.category, "transactional"))).orderBy(desc(consentRecords.capturedAt)).limit(1) : [];
   const [marketingConsent] = message.customerId && purpose === "marketing" ? await db.select().from(consentRecords).where(and(eq(consentRecords.tenantId, input.tenantId), eq(consentRecords.customerId, message.customerId), eq(consentRecords.channel, message.channel), eq(consentRecords.category, "marketing"))).orderBy(desc(consentRecords.capturedAt)).limit(1) : [];
-  const reason = !message.recipient ? "recipient_missing" : purpose === "account" ? undefined : suppressReason(message, preference, consent) ?? (marketingConsent?.state === "opted_out" || marketingConsent?.state === "suppressed" ? "customer_unsubscribed" : undefined);
+  const recipeConsentMissing = ["quote-follow-up", "visit-review-request"].includes(message.templateKey ?? "") && marketingConsent?.state !== "opted_in";
+  const reason = recipeConsentMissing ? "marketing_consent_missing" : !message.recipient ? "recipient_missing" : purpose === "account" ? undefined : suppressReason(message, preference, consent) ?? (marketingConsent?.state === "opted_out" || marketingConsent?.state === "suppressed" ? "customer_unsubscribed" : undefined);
   if (reason) {
     await db.transaction(async (tx) => {
       await tx.update(outboundMessages).set({ status: "suppressed", failureCode: reason, updatedAt: now }).where(and(eq(outboundMessages.id, message.id), eq(outboundMessages.tenantId, input.tenantId)));
@@ -101,6 +118,14 @@ export async function processOutboundMessage(db: Database, registry: ConnectorRe
       await recordReminderNotSent(tx, message, reason, now);
     });
     return "suppressed";
+  }
+  if (purpose === "marketing" && ["quote-follow-up", "visit-review-request"].includes(message.templateKey ?? "")) {
+    const [tenant] = await db.select({ timezone: tenants.defaultTimezone, settings: tenants.settings }).from(tenants).where(eq(tenants.id, input.tenantId)).limit(1);
+    const next = nextOutsideQuietHours(now, tenant?.timezone ?? "UTC", tenant?.settings.quietHours);
+    if (next) {
+      await db.update(outboundMessages).set({ status: "queued", nextSendAt: next, failureCode: "quiet_hours", updatedAt: now }).where(and(eq(outboundMessages.tenantId, input.tenantId), eq(outboundMessages.id, message.id)));
+      return "queued";
+    }
   }
   try {
     const channel: "email" | "sms" = message.channel === "email" ? "email" : "sms";
@@ -164,8 +189,8 @@ export async function processOutboundMessage(db: Database, registry: ConnectorRe
 /** Recover a worker crash after a message was claimed, and requeue durable retry records. */
 export async function enqueuePendingMessages(db: Database, boss: PgBoss, now = new Date()): Promise<number> {
   await db.update(outboundMessages).set({ status: "retry", updatedAt: now }).where(and(eq(outboundMessages.status, "sending"), lt(outboundMessages.updatedAt, new Date(now.getTime() - 15 * 60000))));
-  const pending = await db.select({ id: outboundMessages.id, tenantId: outboundMessages.tenantId, category: outboundMessages.category }).from(outboundMessages).where(and(inArray(outboundMessages.status, ["queued", "retry"]), or(isNull(outboundMessages.nextSendAt), lte(outboundMessages.nextSendAt, now), lte(outboundMessages.expiresAt, now))))
+  const pending = await db.select({ id: outboundMessages.id, tenantId: outboundMessages.tenantId, requestId: outboundMessages.requestId, category: outboundMessages.category }).from(outboundMessages).where(and(inArray(outboundMessages.status, ["queued", "retry"]), or(isNull(outboundMessages.nextSendAt), lte(outboundMessages.nextSendAt, now), lte(outboundMessages.expiresAt, now))))
     .orderBy(sql`case when ${outboundMessages.category}='account' then 0 when ${outboundMessages.category} in ('service','transactional') then 1 else 2 end`, outboundMessages.queuedAt, outboundMessages.id).limit(100);
-  for (const item of pending) await enqueueOutboundMessage(boss, { tenantId: item.tenantId, messageId: item.id }, item.category);
+  for (const item of pending) await enqueueOutboundMessage(boss, { tenantId: item.tenantId, messageId: item.id, ...(item.requestId ? { requestId: item.requestId } : {}) }, item.category);
   return pending.length;
 }

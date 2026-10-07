@@ -4,11 +4,14 @@ import { schema } from "@modular-crm/db";
 import { getDb } from "./db";
 import { authSigningSecret } from "./runtime-secret";
 import { toPasswordSetupUrl } from "./auth-links";
+import { logJson } from "@modular-crm/config/observability";
 
 export const auth = betterAuth({
   appName: "Modular CRM",
   baseURL: process.env.BETTER_AUTH_URL ?? "http://localhost:3000",
   secret: authSigningSecret(),
+  // Library diagnostics can carry arbitrary exception data; record metadata only.
+  logger: { log: (level) => logJson(level === "error" ? "error" : level === "warn" ? "warn" : "info", "auth.library_event", { component: "auth" }) },
   database: drizzleAdapter(getDb(), { provider: "pg", schema }),
   emailAndPassword: {
     enabled: true,
@@ -25,5 +28,6 @@ export const auth = betterAuth({
       await sendPlatformEmail(user.email, "Verify your Modular CRM email", `Open this link to verify your email: ${url}`, await accountEmailBusiness(getDb(), user.id));
     },
   },
-  rateLimit: { enabled: true, window: 60, max: 30 },
+  // Shared, atomic PostgreSQL limits live in the HTTP adapter and V1 API wrapper.
+  rateLimit: { enabled: false },
 });

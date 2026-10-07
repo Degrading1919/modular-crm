@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DEVELOPMENT_AUTH_SECRET, readServerConfig } from "./index.ts";
 
 const healthy = {
@@ -11,6 +11,26 @@ const healthy = {
 };
 
 describe("production startup configuration", () => {
+  it("defaults to one production proxy and none locally, and validates the fixed hop count", () => {
+    expect(readServerConfig(healthy).trustedProxyHops).toBe(1);
+    expect(readServerConfig({ NODE_ENV: "test" }).trustedProxyHops).toBe(0);
+    expect(readServerConfig({ ...healthy, TRUSTED_PROXY_HOPS: "2" }).trustedProxyHops).toBe(2);
+    for (const TRUSTED_PROXY_HOPS of ["0", "17", "-1", "1.5", "NaN", "", "1e1"]) expect(() => readServerConfig({ ...healthy, TRUSTED_PROXY_HOPS })).toThrow("TRUSTED_PROXY_HOPS");
+  });
+  it("warns without failing when no reporter is configured and rejects unsafe collector URLs", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(readServerConfig(healthy).environment).toBe("production");
+      expect(warn.mock.calls).toHaveLength(1);
+      expect(JSON.parse(warn.mock.calls[0]![0] as string)).toMatchObject({ level: "warn", event: "error.reporter_not_configured", route: "startup" });
+      warn.mockClear();
+      expect(readServerConfig({ ...healthy, OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: "https://collector.example/v1/logs" }).environment).toBe("production");
+      expect(warn).not.toHaveBeenCalled();
+      for (const endpoint of ["http://collector.example/v1/logs", "https://user:password@collector.example/v1/logs", "file:///private"]) {
+        expect(() => readServerConfig({ ...healthy, OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: endpoint })).toThrow("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT");
+      }
+    } finally { warn.mockRestore(); }
+  });
   it("hides unconfigured payments and validates complete matching Stripe mode without leaking secrets", () => {
     expect(readServerConfig(healthy).stripePayments).toBeUndefined();
     const configured = { ...healthy, PAYMENTS_STRIPE_SECRET_KEY: "sk_test_fixture", PAYMENTS_STRIPE_WEBHOOK_SECRET: "whsec_fixture", PAYMENTS_STRIPE_MODE: "test" };

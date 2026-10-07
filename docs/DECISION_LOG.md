@@ -4,6 +4,23 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-06 — Spoof-resistant security budgets and structural error diagnostics
+
+- **Status:** Accepted
+- **Area:** Architecture
+- **Decision:** Use one validated trusted-proxy address boundary and add normalized-email-only sign-in/reset budgets independent of address changes. Preserve redaction while exposing error classes, bounded cause codes and sanitized stack-frame metadata to JSON logs and OTLP.
+- **Rationale:** Client-controlled forwarding headers must not bypass guessing limits; production failures must remain diagnosable without customer data or secrets.
+- **Authoritative doc:** docs/ARCHITECTURE.md
+- **Supersedes:** Forwarded-header replacement-only guidance in the first paid pilot hardening decision.
+
+## 2026-10-06 — Production hardening for the first paid pilot
+
+- **Status:** Accepted
+- **Area:** Architecture / Industry Packs / UX
+- **Decision:** Replace process-local security counters with atomic shared PostgreSQL windows and expiry cleanup. Add redacted structured logs, request IDs through durable events/jobs, and a provider-neutral error reporter with optional OTLP configuration. Offer unanswered-quote and post-visit-review recipes as opt-in drafts with consent, quiet hours and current-state rechecks; clarify active-rule edit cutoffs and deduplicate missing-email invoice prompts.
+- **Rationale:** Multiple app instances must enforce the same budgets, owner actions must be traceable without leaking customer data, and optional follow-ups must remain safe after delays or outages.
+- **Authoritative docs:** docs/ARCHITECTURE.md, docs/INDUSTRY_PACKS.md, docs/PRODUCT_SCOPE.md
+
 ## 2026-10-06 — Automation activation excludes historical outbox backlog
 
 - **Status:** Accepted

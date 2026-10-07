@@ -4,6 +4,10 @@ These are operator instructions, not authorization to deploy. CI builds/tests lo
 
 ## Build once, configure at runtime
 
+Optional error reporting: set OTEL_EXPORTER_OTLP_LOGS_ENDPOINT to a trusted collector's complete HTTPS /v1/logs endpoint accepting OTLP JSON. Local console reporting needs no service. Missing external reporting produces a production startup warning, not a startup failure; exported metadata excludes raw error messages, full stacks, paths and customer data. Structural class, SQLSTATE/driver code and up to five function@basename:line frames support diagnosis. Configure the collector through private infrastructure rather than credentials in its URL.
+
+TRUSTED_PROXY_HOPS selects the verified address at X-Forwarded-For chain length minus hops. Production defaults to 1 (one ALB) and validates an integer 1–16; development/test defaults to 0 (ignore all address headers and use the fixed local budget). Set the exact count for your fixed proxy chain, never the number of client-supplied entries. Missing, short or invalid chains fall back to the same local budget; x-real-ip is ignored. Restrict application ingress to the trusted proxies only and prevent alternate shorter paths. Configure each proxy to append the address it actually observes (or overwrite client headers at the outer boundary), never preserve an unverified header. [AWS ALB documentation](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/x-forwarded-headers.html) confirms default append mode places the observed address on the right; any client-supplied leftmost value is untrusted. IPv4/IPv6 client ports are normalized away. Local proxy simulations must explicitly set TRUSTED_PROXY_HOPS.
+
 From the repository root with Docker/BuildKit available:
 
 ```sh
@@ -28,6 +32,7 @@ All targets use digest-pinned Node 22 slim, frozen pnpm installs and a non-root 
 | `PLATFORM_EMAIL_FIRST_WEEK_HOURLY_LIMIT`, `PLATFORM_EMAIL_FIRST_WEEK_DAILY_LIMIT` | Defaults 25 / 100 for the first seven days; must not exceed regular caps | Not needed |
 | `MOCK_CONNECTORS`, `DOMAIN_VERIFICATION_MODE` | No mocks; omit or set `false` / `dns` respectively | Not needed |
 | `LOCAL_SMOKE_TEST` | Omit/false in deployment; true allows only loopback HTTP in isolated smoke | Not needed |
+| `TRUSTED_PROXY_HOPS` | Exact secured proxy-path count; production default 1, allowed 1–16; local default 0 | Not needed |
 | `PORT`, `HOSTNAME` | Web defaults 3000 / 0.0.0.0 | Not needed |
 | `WORKER_HEALTH_PORT` | Worker defaults 3001; do not publicly expose it | Not needed |
 | `WORKER_POLL_STALE_MS`, `WORKER_JOB_MAX_MS` | Worker defaults 60000 / 300000; valid 1000–86400000 ms | Not needed |

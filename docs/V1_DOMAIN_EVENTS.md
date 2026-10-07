@@ -19,9 +19,12 @@ Every meaningful domain event should expose a normalized envelope similar to:
 - entity_id
 - correlation_id
 - causation_id
+- request_id when the fact originated in an HTTP request or traced worker job
 - payload
 
 Events are immutable facts. Consumers must tolerate repeated delivery by using event_id/idempotency.
+
+`request_id` is an optional safe UUID correlation value, not authorization. The durable event outbox carries it into automation runs, messages, webhook deliveries and recovered queue jobs; older facts without it receive a new worker correlation ID. Operational logs do not include event payloads.
 
 Itemized estimate approval stores its accepted-line pricing on the immutable approval record tied to the revision. Approval event/audit facts identify that revision and accepted total. Estimate conversion emits `invoice.created` once with its source estimate and total; completion billing retains existing `invoice.created`/`invoice.issued` facts. New line editing does not change payment/refund event meanings or permit issued-price mutations.
 

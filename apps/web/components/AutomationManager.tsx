@@ -46,6 +46,7 @@ export function isAutomationRunRetryable(run: Pick<AutomationRun, "status" | "re
 }
 
 const TRIGGER_LABELS: Record<string, string> = {
+  "estimate.sent": "A quote is sent",
   "job.completed": "A service visit is completed",
   "invoice.issued": "An invoice is sent",
   "payment.failed": "A payment fails",

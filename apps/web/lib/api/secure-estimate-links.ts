@@ -1,15 +1,18 @@
+import { identifyTenant } from "@modular-crm/config/observability";
 import { createHash } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { auditEvents, domainEvents, estimateApprovals, estimateItems, estimateRevisions, estimates, secureEstimateTokens } from "@modular-crm/db";
+import { auditEvents, consumeRateLimit, domainEvents, estimateApprovals, estimateItems, estimateRevisions, estimates, secureEstimateTokens } from "@modular-crm/db";
 import { assertTransition, DomainError } from "@modular-crm/domain";
 import { getDb } from "../db";
 import { requireTenantFeature } from "./capability-enforcement";
 import { json, readBody } from "./http";
 import { applySecureEstimateDecisionInTransaction } from "./workflows";
 import { z } from "zod";
+import { clientAddress } from "./client-address";
+import { clientIpKey } from "./rate-limits";
 
 const RATE_WINDOW_MS = 10 * 60 * 1000;
-const windows = new Map<string, { startedAt: number; count: number }>();
+
 const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 const decisionBodySchema = z.object({ comment: z.string().trim().max(1000).nullable().optional(),acceptedOptionalIds:z.array(z.uuid()).max(100).optional() }).strict();
 
@@ -17,40 +20,28 @@ function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function requestIpHash(request: Request): string {
-  const raw = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-    || request.headers.get("x-real-ip")?.trim() || "unknown";
-  return digest(raw.slice(0, 160)).slice(0, 24);
-}
-
 function requestIp(request: Request): string | null {
-  const raw = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-    || request.headers.get("x-real-ip")?.trim();
-  return raw ? raw.slice(0, 160) : null;
+  const address = clientAddress(request);
+  return address === "local" ? null : address;
 }
 
-function rateLimited(request: Request, tokenHash: string, action: string, limit: number): Response | null {
-  const now = Date.now();
-  const ip = requestIpHash(request);
-  const scopedKeys = [`${action}:ip:${ip}`, `${action}:token:${tokenHash}:${ip}`];
-  const limits = [limit, Math.max(5, Math.floor(limit / 2))];
-  let retryAfter = 0;
-  for (let index = 0; index < scopedKeys.length; index += 1) {
-    const key = scopedKeys[index]!;
-    let window = windows.get(key);
-    if (!window || now - window.startedAt >= RATE_WINDOW_MS) {
-      window = { startedAt: now, count: 0 };
-      windows.set(key, window);
-    }
-    if (window.count >= limits[index]!) retryAfter = Math.max(retryAfter, Math.ceil((window.startedAt + RATE_WINDOW_MS - now) / 1000));
+async function rateLimited(request: Request, tokenHash: string, action: string, limit: number): Promise<Response | null> {
+  const ip = clientIpKey(request).slice(0, 24);
+  const policies = [[`estimate:${action}:ip:${ip}`, limit], [`estimate:${action}:token:${tokenHash}:${ip}`, Math.max(5, Math.floor(limit / 2))]] as const;
+  // Roll back both counters if either budget is exhausted.
+  class Limited extends Error { constructor(readonly seconds: number) { super("Rate limited"); } }
+  try {
+    await getDb().transaction(async (tx) => {
+      for (const [key, budget] of policies) {
+        const result = await consumeRateLimit(tx, key, budget, RATE_WINDOW_MS);
+        if (!result.allowed) throw new Limited(result.retryAfter);
+      }
+    });
+    return null;
+  } catch (error) {
+    if (!(error instanceof Limited)) throw error;
+    return json({ error: { code: "RATE_LIMITED", message: "Too many requests. Please try again in a few minutes." } }, 429, { "retry-after": String(error.seconds) });
   }
-  if (retryAfter > 0) return json({ error: { code: "RATE_LIMITED", message: "Too many requests. Please try again in a few minutes." } }, 429, { "retry-after": String(retryAfter) });
-  for (const key of scopedKeys) windows.get(key)!.count += 1;
-  if (windows.size > 5000) {
-    for (const [key, value] of windows) if (now - value.startedAt >= RATE_WINDOW_MS) windows.delete(key);
-    while (windows.size > 7500) windows.delete(windows.keys().next().value!);
-  }
-  return null;
 }
 
 function notAvailable(): never {
@@ -62,6 +53,7 @@ type CurrentEstimateForToken =
   | { expired: true };
 
 async function currentEstimateForToken(token: typeof secureEstimateTokens.$inferSelect, request: Request, tx: Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0]): Promise<CurrentEstimateForToken> {
+  identifyTenant(token.tenantId);
   await tx.execute(sql`SELECT id FROM estimates WHERE tenant_id = ${token.tenantId} AND id = ${token.estimateId} FOR UPDATE`);
   const [estimate] = await tx.select().from(estimates).where(and(eq(estimates.tenantId, token.tenantId), eq(estimates.id, token.estimateId))).limit(1);
   if (!estimate) notAvailable();
@@ -180,7 +172,7 @@ export async function handleSecureEstimateLink(request: Request, path: string[])
   if (new URL(request.url).searchParams.size > 0) throw new DomainError("VALIDATION_ERROR", "Estimate links do not accept query parameters.", 422);
   const tokenHash = digest(token.data);
   if (request.method === "GET" && path.length === 3) {
-    const limited = rateLimited(request, tokenHash, "view", 120);
+    const limited = await rateLimited(request, tokenHash, "view", 120);
     if (limited) return limited;
     const [record] = await getDb().select().from(secureEstimateTokens).where(eq(secureEstimateTokens.tokenHash, tokenHash)).limit(1);
     if (!record) notAvailable();
@@ -188,7 +180,7 @@ export async function handleSecureEstimateLink(request: Request, path: string[])
     return getPublicView(request, record);
   }
   if (request.method === "POST" && path.length === 4 && (path[3] === "approve" || path[3] === "decline")) {
-    const limited = rateLimited(request, tokenHash, "decision", 30);
+    const limited = await rateLimited(request, tokenHash, "decision", 30);
     if (limited) return limited;
     return decide(request, tokenHash, path[3]);
   }

@@ -4,6 +4,14 @@ This catalog preserves substantial Modular CRM feature concepts before or while 
 
 Accepted behavior should also be represented in the appropriate authoritative product or architecture document.
 
+### Automation marketing-consent reach preview
+
+- **State:** Proposed
+- **Problem:** Imported customers without explicit marketing opt-in cannot receive optional quote or review emails, which may surprise an owner enabling a recipe.
+- **Behavior:** Before activation show eligible-consent reach (for example, “12 of 340 customers have agreed to receive these emails”) with a guided link to collect consent; preserve explicit opt-in requirements. This nonblocking PR #25 review follow-up awaits a separate implementation slice.
+- **Industry scope:** Core
+- **Dependencies:** Consent records, automation recipe editor and guided consent collection
+
 ### V1 product spine
 
 - **State:** Accepted

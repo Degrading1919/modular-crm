@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import { requestContext } from "@modular-crm/config/observability";
 import { bigint, boolean, date, foreignKey, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { active, currency, jsonObject, money, record, status } from "./columns.ts";
 import { memberships, organizationLocations, organizations, tenants } from "./identity.ts";
@@ -97,7 +98,7 @@ export const domainEvents = pgTable("domain_events", {
   actorType: text("actor_type").notNull(), actorId: text("actor_id"), entityType: text("entity_type").notNull(),
   entityId: uuid("entity_id").notNull(), organizationId: uuid("organization_id").references(() => organizations.id),
   locationId: uuid("location_id").references(() => organizationLocations.id), correlationId: uuid("correlation_id"),
-  causationId: uuid("causation_id"), payload: jsonObject("payload"), publishedAt: timestamp("published_at", { withTimezone: true }),
+  causationId: uuid("causation_id"), requestId: uuid("request_id").$defaultFn(() => requestContext()?.requestId ?? sql`null`), payload: jsonObject("payload"), publishedAt: timestamp("published_at", { withTimezone: true }),
 }, (t) => [
   uniqueIndex("domain_events_tenant_id_id_ux").on(t.tenantId, t.id),
   foreignKey({ columns: [t.tenantId, t.organizationId], foreignColumns: [organizations.tenantId, organizations.id], name: "domain_events_organization_tenant_fk" }),
@@ -107,6 +108,7 @@ export const domainEvents = pgTable("domain_events", {
 ]);
 
 export const webhookDeliveries = pgTable("webhook_deliveries", {
+  requestId: uuid("request_id").$defaultFn(() => requestContext()?.requestId ?? sql`null`),
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), webhookSubscriptionId: uuid("webhook_subscription_id").notNull().references(() => webhookSubscriptions.id),
   domainEventId: uuid("domain_event_id").notNull(), status: status(), attemptCount: integer("attempt_count").notNull().default(0),
   responseStatus: integer("response_status"), responseExcerpt: text("response_excerpt"), nextRetryAt: timestamp("next_retry_at", { withTimezone: true }),
@@ -122,6 +124,12 @@ export const savedViews = pgTable("saved_views", {
   reportKey: text("report_key").notNull(), name: text("name").notNull(), filters: jsonObject("filters"), grouping: jsonObject("grouping"),
   columns: jsonb("columns").$type<string[]>().notNull().default(sql`'[]'::jsonb`), shared: boolean("shared").notNull().default(false),
 });
+
+// Shared, opaque security counters; never store an email, address or bearer token here.
+export const rateLimitWindows = pgTable("rate_limit_windows", {
+  key: text("key").primaryKey(), count: integer("count").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+}, (t) => [index("rate_limit_windows_expiry_idx").on(t.expiresAt)]);
 
 export const metricSnapshots = pgTable("metric_snapshots", {
   ...record(), tenantId: uuid("tenant_id").notNull().references(() => tenants.id), metricKey: text("metric_key").notNull(),

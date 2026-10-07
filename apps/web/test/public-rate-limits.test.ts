@@ -19,6 +19,8 @@ let pglite: PGlite;
 let db: Database;
 
 beforeAll(async () => {
+  // This suite simulates traffic delivered by one trusted ingress proxy.
+  vi.stubEnv("TRUSTED_PROXY_HOPS", "1");
   pglite = new PGlite();
   const testDb = drizzle(pglite, { schema });
   await migrate(testDb, { migrationsFolder: fileURLToPath(new URL("../../../packages/db/drizzle", import.meta.url)) });
@@ -32,7 +34,7 @@ beforeAll(async () => {
   ({ handleSecureEstimateLink } = await import("../lib/api/secure-estimate-links.ts"));
 }, 120_000);
 
-afterAll(async () => { await pglite?.close(); });
+afterAll(async () => { await pglite?.close(); vi.unstubAllEnvs(); });
 
 function request(path: string[], method = "GET", body?: unknown, ip = "198.51.100.201") {
   return new Request(`http://localhost/api/v1/${path.join("/")}`, {
@@ -70,6 +72,52 @@ async function sendMalformedAuth(path: string[], rawBody: string, ip: string) {
 }
 
 describe("public and authentication rate limits", () => {
+  it("bounds one normalized account across twenty real address changes and both sign-in paths", async () => {
+    const { handleAuthHttp } = await import("../lib/api/auth-http.ts");
+    const handler = vi.fn(async () => new Response(null, { status: 401 }));
+    for (let i = 0; i < 20; i++) {
+      const email = i % 2 ? "ROTATING@example.test" : "rotating@example.test";
+      const ip = `198.51.100.${i + 1}`;
+      const response = i % 2 ? await send(["auth", "login"], "POST", { email, password: "wrong" }, ip)
+        : await handleAuthHttp(request(["auth", "sign-in", "email"], "POST", { email, password: "wrong" }, ip), handler);
+      expect(response.status).toBe(i < 10 ? 401 : 429);
+      if (i >= 10) expect(Number(response.headers.get("retry-after"))).toBeGreaterThan(0);
+    }
+    expect(handler).toHaveBeenCalledTimes(5);
+  });
+  it("bounds password reset across twenty changing addresses without sharing another account's budget", async () => {
+    const { handleAuthHttp } = await import("../lib/api/auth-http.ts");
+    const handler = vi.fn(async () => new Response(null, { status: 200 }));
+    for (let i = 0; i < 20; i++) {
+      const response = await handleAuthHttp(request(["auth", "request-password-reset"], "POST", { email: "reset-rotating@example.test" }, `203.0.113.${i + 1}`), handler);
+      expect(response.status).toBe(i < 10 ? 200 : 429);
+    }
+    expect((await handleAuthHttp(request(["auth", "request-password-reset"], "POST", { email: "other-reset@example.test" }, "203.0.113.1"), handler)).status).toBe(200);
+  });
+  it("ignores rotating spoofed leftmost entries and a successful account cannot reset a different account", async () => {
+    const blockedEmail = "spoofed@example.test", ip = "203.0.113.220";
+    for (let i = 0; i < 5; i++) expect((await send(["auth", "login"], "POST", { email: blockedEmail, password: "wrong" }, `198.51.100.${i + 1}, ${ip}`)).status).toBe(401);
+    expect((await send(["auth", "login"], "POST", { email: "successful@example.test", password: "correct-password" }, ip)).status).toBe(200);
+    expect((await send(["auth", "login"], "POST", { email: blockedEmail, password: "wrong" }, `198.51.100.99, ${ip}`)).status).toBe(429);
+  });
+  it("shares credential budgets with direct Better Auth HTTP sign-in and bounds password reset", async () => {
+    const { handleAuthHttp } = await import("../lib/api/auth-http.ts");
+    const handler = vi.fn(async () => new Response(null, { status: 401 }));
+    const ip = "198.51.100.240", email = "direct-auth@example.test";
+    for (let i = 0; i < 3; i++) expect((await send(["auth", "login"], "POST", { email, password: "wrong" }, ip)).status).toBe(401);
+    for (let i = 0; i < 2; i++) expect((await handleAuthHttp(request(["auth", "sign-in", "email"], "POST", { email, password: "wrong" }, ip), handler)).status).toBe(401);
+    expect((await handleAuthHttp(request(["auth", "sign-in", "email"], "POST", { email, password: "wrong" }, ip), handler)).status).toBe(429);
+    for (let i = 0; i < 5; i++) expect((await handleAuthHttp(request(["auth", "request-password-reset"], "POST", { email }, ip), handler)).status).toBe(401);
+    const limited = await handleAuthHttp(request(["auth", "request-password-reset"], "POST", { email: email.toUpperCase() }, ip), handler);
+    expect(limited.status).toBe(429); expect(Number(limited.headers.get("retry-after"))).toBeGreaterThan(0);
+  });
+  it("does not fail open when shared credential storage fails", async () => {
+    const { handleAuthHttp } = await import("../lib/api/auth-http.ts");
+    const handler = vi.fn(async () => new Response(null, { status: 200 }));
+    getDbMock.mockImplementationOnce(() => { throw new Error("storage unavailable"); });
+    await expect(handleAuthHttp(request(["auth", "request-password-reset"], "POST", { email: "closed@example.test" }, "198.51.100.242"), handler)).rejects.toThrow("storage unavailable");
+    expect(handler).not.toHaveBeenCalled();
+  });
   it("bounds invalid sign-in attempts on the V1 route that calls Better Auth directly", async () => {
     const ip = "198.51.100.202";
     const body = { email: "nobody@example.test", password: "incorrect-password" };

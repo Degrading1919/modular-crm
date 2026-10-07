@@ -30,6 +30,7 @@ const owner: SessionActor = {
 };
 
 beforeAll(async () => {
+  vi.stubEnv("TRUSTED_PROXY_HOPS", "1");
   pglite = new PGlite();
   const testDb = drizzle(pglite, { schema });
   await migrate(testDb, { migrationsFolder: fileURLToPath(new URL("../../../packages/db/drizzle", import.meta.url)) });
@@ -38,7 +39,7 @@ beforeAll(async () => {
   await seedDevelopment(db);
 }, 120_000);
 
-afterAll(async () => { await pglite?.close(); });
+afterAll(async () => { await pglite?.close(); vi.unstubAllEnvs(); });
 
 async function createLeadEstimate(options: { tenantId?: string; expiresAt?: Date | null } = {}) {
   const tenantId = options.tenantId ?? seedIds.happyTenant;

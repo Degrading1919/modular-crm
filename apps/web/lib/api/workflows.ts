@@ -1,3 +1,4 @@
+import { clientAddress } from "./client-address";
 import { createHash, randomBytes } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -159,7 +160,7 @@ async function estimateAction(request: Request, actor: SessionActor, estimateId:
       await tx.update(secureEstimateTokens).set({ revokedAt: now, updatedAt: now }).where(and(eq(secureEstimateTokens.tenantId, actor.tenantId), eq(secureEstimateTokens.estimateId, current.id), isNull(secureEstimateTokens.consumedAt), isNull(secureEstimateTokens.revokedAt)));
       await tx.insert(secureEstimateTokens).values({ tenantId: actor.tenantId, estimateId: current.id, estimateRevisionId: revision.id, tokenHash: actionTokenHash, expiresAt });
     }
-    await recordEvent(actor, { type: `estimate.${to}`, entityType: "estimate", entityId: current.id, auditAction: `estimate.${to}`, before: { status: current.status }, after: { status: to, customerId,revisionId:revision.id,totalMinor:pricing?.totalMinor }, payload:{revisionId:revision.id,totalMinor:pricing?.totalMinor}, locationId: current.organizationLocationId }, tx);
+    await recordEvent(actor, { type: `estimate.${to}`, entityType: "estimate", entityId: current.id, auditAction: `estimate.${to}`, before: { status: current.status }, after: { status: to, customerId,revisionId:revision.id,totalMinor:pricing?.totalMinor }, payload:{customerId, estimate: { status: to, currentRevision: current.currentRevision }, revisionId:revision.id,totalMinor:pricing?.totalMinor}, locationId: current.organizationLocationId }, tx);
     return saved;
   });
   return json({ item: normalized(result), ...(rawActionToken ? { actionUrl: `/estimate/${rawActionToken}` } : {}) });
@@ -181,8 +182,8 @@ export async function applySecureEstimateDecisionInTransaction(
   if (!revision) throw new DomainError("CONFLICT", "Estimate revision is missing.", 409);
   let customerId = current.customerId;
   let convertedLocationId: string | null = null;
-  const ipAddress = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim().slice(0, 160)
-    || request.headers.get("x-real-ip")?.trim().slice(0, 160) || null;
+  const address = clientAddress(request);
+  const ipAddress = address === "local" ? null : address;
   const userAgent = request.headers.get("user-agent")?.slice(0, 500) ?? null;
   if (to === "approved" && !customerId && current.leadId) {
     const converted = await convertLeadCoreInTransaction(tenantId, current.leadId, tx, { secureTokenId: tokenId, ipAddress, userAgent });

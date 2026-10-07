@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -11,6 +11,8 @@ import { auth } from "../auth";
 import { getDb } from "../db";
 import { requireActor } from "./actor";
 import { json, readBody } from "./http";
+import { clientIpKey, limitKey } from "./rate-limits";
+import { limitAuthAccount, resetSignInBudget } from "./auth-budgets";
 
 const credentials = z.object({ email: z.email(), password: z.string().min(1) });
 const registration = credentials.extend({ name: z.string().min(2).max(120), businessName: z.string().min(2).max(160) });
@@ -20,57 +22,21 @@ const registration = credentials.extend({ name: z.string().min(2).max(120), busi
 // guessing by normalized email and IP so an office NAT can share the app.
 const AUTH_RATE_WINDOW_MS = 10 * 60 * 1000;
 const AUTH_IP_RATE_LIMIT = 300;
-const AUTH_EMAIL_RATE_LIMIT = 5;
-const authRateWindows = new Map<string, { startedAt: number; count: number }>();
-
-function clientIpHash(request: Request): string {
-  const rawIp = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-    || request.headers.get("x-real-ip")?.trim() || "unknown";
-  return createHash("sha256").update(rawIp.slice(0, 160)).digest("hex").slice(0, 24);
+function rateLimitAuthIp(request: Request): Promise<Response | null> {
+  return limitKey(`auth:ip:${clientIpKey(request).slice(0, 24)}`, AUTH_IP_RATE_LIMIT, AUTH_RATE_WINDOW_MS);
 }
-
-function consumeAuthRateLimit(key: string, limit: number): Response | null {
-  const now = Date.now();
-  let window = authRateWindows.get(key);
-  if (!window || now - window.startedAt >= AUTH_RATE_WINDOW_MS) {
-    window = { startedAt: now, count: 0 };
-    authRateWindows.set(key, window);
-  }
-  if (window.count >= limit) {
-    const retryAfter = Math.ceil((window.startedAt + AUTH_RATE_WINDOW_MS - now) / 1000);
-    return json({ error: { code: "RATE_LIMITED", message: "Too many sign-in attempts. Please try again in a few minutes." } }, 429, { "retry-after": String(retryAfter) });
-  }
-  window.count += 1;
-  if (authRateWindows.size > 5000) {
-    for (const [entry, value] of authRateWindows) if (now - value.startedAt >= AUTH_RATE_WINDOW_MS) authRateWindows.delete(entry);
-    while (authRateWindows.size > 7500) authRateWindows.delete(authRateWindows.keys().next().value!);
-  }
-  return null;
-}
-
-function rateLimitAuthIp(request: Request): Response | null {
-  return consumeAuthRateLimit(`ip:${clientIpHash(request)}`, AUTH_IP_RATE_LIMIT);
-}
-
-function credentialRateKey(request: Request, email: string): string {
-  const normalizedEmail = email.trim().toLowerCase();
-  const digest = createHash("sha256").update(`${normalizedEmail}\0${clientIpHash(request)}`).digest("hex");
-  return `credential:${digest}`;
-}
-
 function slugify(value: string) { return value.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "business"; }
 
 export async function handleAuthRoute(request: Request, path: string[]): Promise<Response> {
   const action = path[1];
   if (action === "login" && request.method === "POST") {
-    const limited = rateLimitAuthIp(request);
+    const limited = await rateLimitAuthIp(request);
     if (limited) return limited;
     const body = await readBody(request, credentials);
-    const emailKey = credentialRateKey(request, body.email);
-    const credentialLimited = consumeAuthRateLimit(emailKey, AUTH_EMAIL_RATE_LIMIT);
+    const { keys, limited: credentialLimited } = await limitAuthAccount(request, body.email, "signin");
     if (credentialLimited) return credentialLimited;
     const response = await auth.api.signInEmail({ body, headers: request.headers, asResponse: true });
-    if (response.ok) authRateWindows.delete(emailKey);
+    if (response.ok) await resetSignInBudget(keys);
     return response;
   }
   if (action === "logout" && request.method === "POST") {
@@ -82,7 +48,7 @@ export async function handleAuthRoute(request: Request, path: string[]): Promise
     return json({ user: { id: actor.userId, name: actor.name, email: actor.email, role: actor.kind === "staff" ? actor.role : "customer", permissions: actor.kind === "staff" ? [...actor.permissions] : [] }, tenant: { id: actor.tenantId, name: actor.tenantName, packKey: actor.packKey, timezone: tenant?.timezone ?? "UTC" } });
   }
   if (action === "register" && request.method === "POST") {
-    const limited = rateLimitAuthIp(request);
+    const limited = await rateLimitAuthIp(request);
     if (limited) return limited;
     const body = await readBody(request, registration);
     const db = getDb();
@@ -115,7 +81,7 @@ export async function handleAuthRoute(request: Request, path: string[]): Promise
       await tx.insert(ticketStatusDefinitions).values({ tenantId: tenant.id, key: "open", name: "Open", normalizedCategory: "open", sortOrder: 1 });
       const [site] = await tx.insert(sites).values({ tenantId: tenant.id, organizationId: organization.id, status: "draft", templateKey: PET_WASTE_REMOVAL_PACK.website.template, templateVersion: "1", slug, branding: { businessName: body.businessName }, settings: { serviceArea: [] } }).returning();
       if (site) await tx.insert(siteContents).values({ tenantId: tenant.id, siteId: site.id, contentKey: "home", content: { headline: PET_WASTE_REMOVAL_PACK.website.heroHeadline, description: PET_WASTE_REMOVAL_PACK.website.heroDescription } });
-      if (membership) await tx.insert(automationRules).values(PET_WASTE_REMOVAL_PACK.defaultAutomations.map((recipe) => ({ tenantId: tenant.id, name: recipe.name, description: recipe.description, source: "industry_pack", sourceKey: recipe.sourceKey, status: recipe.enabledByDefault ? "active" : "draft", activeFrom: recipe.enabledByDefault ? now : null, version: 1, triggerConfig: { event: recipe.event, ...(recipe.filters ? { filters: recipe.filters } : {}) }, conditions: {}, actions: recipe.actions.map((action) => ({ actionType: action.actionType, configuration: action.configuration, ...(action.purpose ? { purpose: action.purpose } : {}) })), createdByMembershipId: membership.id })));
+      if (membership) await tx.insert(automationRules).values(PET_WASTE_REMOVAL_PACK.defaultAutomations.map((recipe) => ({ tenantId: tenant.id, name: recipe.name, description: recipe.description, source: "industry_pack", sourceKey: recipe.sourceKey, status: recipe.enabledByDefault ? "active" : "draft", activeFrom: recipe.enabledByDefault ? now : null, version: 1, triggerConfig: { event: recipe.event, ...(recipe.filters ? { filters: recipe.filters } : {}) }, conditions: {}, actions: recipe.actions.map((action) => ({ actionType: action.actionType, configuration: action.configuration, ...(action.purpose ? { purpose: action.purpose } : {}), ...(action.delay ? { delay: action.delay } : {}) })), createdByMembershipId: membership.id })));
     });
     return signupResponse;
   }
