@@ -335,9 +335,12 @@ async function fieldMutation(request: Request, actor: SessionActor, id: string, 
   if (action === "skip") {
     const body = await readBody(request, z.object({ reason: z.string().min(1), note: z.string().optional(), clientOperationId: z.uuid().optional(), deviceTimestamp: z.iso.datetime({ offset: true }).optional(), expectedPriorState: z.string().min(1).max(40).optional() }));
     const pack = await tenantIndustryPack(actor.tenantId);
-    if (!(pack.noncompletionReasons.length ? pack.noncompletionReasons : DEFAULT_SKIP_REASONS).some(item => item.key === body.reason)) throw new DomainError("VALIDATION_ERROR", "Choose an available reason.", 422);
+    const reason = Object.hasOwn(pack.noncompletionReasonAliases ?? {}, body.reason) ? pack.noncompletionReasonAliases![body.reason]! : body.reason;
+    if (!(pack.noncompletionReasons.length ? pack.noncompletionReasons : DEFAULT_SKIP_REASONS).some(item => item.key === reason)) throw new DomainError("VALIDATION_ERROR", "Choose an available reason.", 422);
     return transitionJob(actor, id, "skipped", {
       ...body,
+      reason,
+      // Preserve the original queued payload fingerprint for replay compatibility.
       fieldOperation: { action: "job.transition.skipped", target: id, clientOperationId: body.clientOperationId, payload: body, deviceTimestamp: body.deviceTimestamp ? new Date(body.deviceTimestamp) : null },
     });
   }

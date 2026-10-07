@@ -75,4 +75,24 @@ describe("pack-selected service details", () => {
     const sensitiveQuantity: IndustryPack = { ...HOUSE_CLEANING_PACK, intake: { quantity: { locationField: "entry_instructions" } } };
     expect(() => validateIndustryPack(sensitiveQuantity)).toThrow();
   });
+  it("reads only recorded values, including legacy string warnings, without inventing defaults", () => {
+    const row = { id: "max", name: "Max", assetTypeKey: "pet", customFields: { species: "dog", safetyFlag: "Reactive near gate" } };
+    const staff = assetView(PET_WASTE_REMOVAL_PACK, row);
+    expect(staff.customFields).toEqual({ name: "Max", species: "dog", safety_flag: "Reactive near gate" });
+    expect(staff.fields.find(field => field.key === "safety_flag")).toMatchObject({ storageKey: "safetyFlag", displayAs: "warning" });
+    expect(assetView(PET_WASTE_REMOVAL_PACK, row, true).customFields).toEqual({ name: "Max", species: "dog" });
+    for (const pack of [PET_WASTE_REMOVAL_PACK, HOUSE_CLEANING_PACK]) {
+      expect(packFieldValues(pack.locationFields, {})).toEqual({});
+      for (const asset of pack.assets) expect(packFieldValues(asset.fields, {})).toEqual({});
+    }
+    expect(packFieldValues(HOUSE_CLEANING_PACK.locationFields, { supplies_provided: false, room_count: 0 })).toEqual({ supplies_provided: false, room_count: 0 });
+    const input = publicPackSchema(PET_WASTE_REMOVAL_PACK, "signup").parse({ slug: "happy-yards", address: "12 Oak Lane", zip: "30909", contact: { name: "Alex", email: "alex@example.test", phone: "555-010101" }, service: { id: "recurring-cleanup", frequency: "weekly" }, assets: [{ assetTypeKey: "pet", name: "New item", customFields: {} }], termsAccepted: true, idempotencyKey: "default-input-test" }) as { assets: { customFields: Record<string, unknown> }[] };
+    expect(input.assets[0]!.customFields.size).toBe("medium");
+  });
+  it("validates skip alias targets and warning metadata within the pack", () => {
+    expect(() => validateIndustryPack({ ...PET_WASTE_REMOVAL_PACK, noncompletionReasonAliases: { legacy: "missing" } })).toThrow("Unknown skip reason alias target");
+    expect(() => validateIndustryPack({ ...PET_WASTE_REMOVAL_PACK, noncompletionReasonAliases: { customer_skip: "other" } })).toThrow("Invalid skip reason alias");
+    const badStyle = { ...HOUSE_CLEANING_PACK, locationFields: [{ ...HOUSE_CLEANING_PACK.locationFields[0], displayAs: "script" }] } as unknown as IndustryPack;
+    expect(() => validateIndustryPack(badStyle)).toThrow("display style");
+  });
 });

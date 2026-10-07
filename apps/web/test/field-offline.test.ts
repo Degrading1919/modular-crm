@@ -181,4 +181,19 @@ describe("field offline mutation receipts", () => {
     await expect(postFieldJob({ ...technician, membershipId: seedIds.caseyMembership }, jobId, "complete", body)).rejects.toMatchObject({ status: 404 });
     await expect(postFieldJob({ ...technician, permissions: new Set() }, jobId, "complete", body)).rejects.toMatchObject({ status: 404 });
   });
+  it.each([["customer_requested", "customer_skip"], ["address_issue", "address_problem"]])("accepts queued legacy skip %s, stores %s and preserves replay isolation", async (reason, canonical) => {
+    const jobId = crypto.randomUUID(), clientOperationId = crypto.randomUUID();
+    await db.insert(jobs).values({ id: jobId, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, serviceId: seedIds.weeklyService, status: "dispatched", scheduledDate: "2026-10-04", billable: false });
+    await db.insert(jobAssignments).values({ tenantId: seedIds.happyTenant, jobId, membershipId: seedIds.terryMembership, assignmentRole: "primary" });
+    const body = { reason, clientOperationId, deviceTimestamp: "2026-10-04T15:00:00Z", expectedPriorState: "dispatched", note: "Queued on the previous app" };
+    const first = await postFieldJob(technician, jobId, "skip", body); expect(first.status).toBe(200);
+    expect((await db.select().from(jobs).where(eq(jobs.id, jobId)))[0]).toMatchObject({ status: "skipped", skipReasonCode: canonical });
+    const replay = await postFieldJob(technician, jobId, "skip", body);
+    expect(await replay.json()).toMatchObject({ item: { id: jobId, status: "skipped" }, duplicate: true });
+    expect(await db.select().from(jobStatusEvents).where(and(eq(jobStatusEvents.jobId, jobId), eq(jobStatusEvents.toStatus, "skipped")))).toHaveLength(1);
+    expect(await db.select().from(fieldOperationReceipts).where(eq(fieldOperationReceipts.clientOperationId, clientOperationId))).toHaveLength(1);
+    await expect(postFieldJob(technician, jobId, "skip", { ...body, note: "changed content" })).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT", status: 409 });
+    await expect(postFieldJob(cleanTechnician, jobId, "skip", body)).rejects.toMatchObject({ status: 404 });
+    await expect(postFieldJob({ ...technician, membershipId: seedIds.caseyMembership }, jobId, "skip", body)).rejects.toMatchObject({ status: 404 });
+  });
 });

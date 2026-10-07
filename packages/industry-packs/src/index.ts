@@ -11,6 +11,7 @@ export type PackField = Readonly<{
   customerEditable?: boolean;
   signupVisible?: boolean;
   storageKey?: string;
+  displayAs?: "warning";
   options?: readonly string[];
   defaultValue?: string | number | boolean;
   reportable?: boolean;
@@ -78,6 +79,7 @@ export type IndustryPack = Readonly<{
   formSteps: readonly { key: string; label: string; fields: readonly string[] }[];
   jobChecklist: readonly { key: string; label: string; required: boolean }[];
   noncompletionReasons: readonly { key: string; label: string; billableByDefault: boolean }[];
+  noncompletionReasonAliases?: Readonly<Record<string, string>>;
   workflows: Readonly<Record<string, readonly string[]>>;
   defaultAutomations: readonly PackRecipe[];
   reports: readonly PackReport[];
@@ -118,9 +120,9 @@ const UNSAFE_DATA_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 export function listIndustryPacks(): readonly IndustryPack[] { return Array.from(PACKS.values()); }
 export function getIndustryPack(key: string): IndustryPack | undefined { return PACKS.get(key); }
 
-/** Resolve old storage keys without rewriting existing customer data. */
+/** Resolve recorded values only; defaults belong to input forms and schemas. */
 export function packFieldValues(fields: readonly PackField[], stored: Record<string, unknown>, name?: string): Record<string, unknown> {
-  return Object.fromEntries(fields.filter(field => !field.sensitive).map(field => [field.key, field.key === "name" && name !== undefined ? name : stored[field.storageKey ?? field.key] ?? stored[field.key] ?? field.defaultValue]).filter(([, value]) => value !== undefined));
+  return Object.fromEntries(fields.filter(field => !field.sensitive).map(field => [field.key, field.key === "name" && name !== undefined ? name : stored[field.storageKey ?? field.key] ?? stored[field.key]]).filter(([, value]) => value !== undefined && value !== null));
 }
 
 export function packQuantity(pack: IndustryPack | undefined, assets: readonly { assetTypeKey: string }[], fields: Record<string, unknown>): { quantity: number; fields: Record<string, unknown> } {
@@ -262,7 +264,7 @@ function validateRecommendation(recommendation: unknown, questions: ReadonlyMap<
 
 function validateField(field: unknown, path: string): asserts field is PackField {
   requireRecord(field, path);
-  const allowed = ["key", "label", "type", "required", "sensitive", "customerVisible", "customerEditable", "signupVisible", "storageKey", "options", "defaultValue", "reportable"];
+  const allowed = ["key", "label", "type", "required", "sensitive", "customerVisible", "customerEditable", "signupVisible", "storageKey", "displayAs", "options", "defaultValue", "reportable"];
   exactKeys(field, allowed, path);
   requireNonEmptyString(field.key, `${path} key`);
   requireNonEmptyString(field.label, `${path} label`);
@@ -278,6 +280,7 @@ function validateField(field: unknown, path: string): asserts field is PackField
   }
   if (field.defaultValue !== undefined && typeof field.defaultValue !== "string" && typeof field.defaultValue !== "number" && typeof field.defaultValue !== "boolean") throw new Error(`Invalid ${path} default value`);
   if (field.storageKey !== undefined) requireNonEmptyString(field.storageKey, `${path} storage key`);
+  if (field.displayAs !== undefined && field.displayAs !== "warning") throw new Error(`Invalid ${path} display style`);
   if (field.defaultValue !== undefined) {
     const expected = field.type === "number" ? "number" : field.type === "boolean" ? "boolean" : "string";
     if (typeof field.defaultValue !== expected || (field.type === "enum" && !(field.options as string[]).includes(field.defaultValue as string))) throw new Error(`Invalid ${path} typed default`);
@@ -290,7 +293,7 @@ export function validateIndustryPack(pack: IndustryPack): void {
   requireRecord(pack, "Pack");
   exactKeys(pack, [
     "key", "version", "displayName", "customerTypes", "terminology", "locationFields", "assets", "services", "recurrencePresets",
-    "formSteps", "jobChecklist", "noncompletionReasons", "workflows", "defaultAutomations", "reports", "pricingTemplates",
+    "formSteps", "jobChecklist", "noncompletionReasons", "noncompletionReasonAliases", "workflows", "defaultAutomations", "reports", "pricingTemplates",
     "recommendationQuestions", "productCapabilityRecommendations", "recommendedConnectorCapabilities", "inventoryDefaults", "website", "intake", "importAliases",
   ], "pack");
   if (typeof pack.key !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(pack.key) || typeof pack.version !== "string" || !/^\d+\.\d+\.\d+$/.test(pack.version)) throw new Error("Invalid pack identity");
@@ -322,6 +325,13 @@ export function validateIndustryPack(pack: IndustryPack): void {
   }
   unique(pack.jobChecklist.map(item => item.key), "checklist item");
   unique(pack.noncompletionReasons.map(item => item.key), "skip reason");
+  if (pack.noncompletionReasonAliases) {
+    requireRecord(pack.noncompletionReasonAliases, "Skip reason aliases");
+    for (const [alias, key] of Object.entries(pack.noncompletionReasonAliases)) {
+      if (!KEY_PATTERN.test(alias) || pack.noncompletionReasons.some(item => item.key === alias)) throw new Error("Invalid skip reason alias");
+      if (!pack.noncompletionReasons.some(item => item.key === key)) throw new Error("Unknown skip reason alias target");
+    }
+  }
   for (const item of pack.jobChecklist) { requireNonEmptyString(item.label, "Checklist label"); if (typeof item.required !== "boolean") throw new Error("Invalid required checklist flag"); }
   if (pack.assets.some(asset => asset.fields.some(field => field.key === "name" && field.sensitive))) throw new Error("Item names cannot be sensitive; use a separate private field");
   if (pack.intake) {

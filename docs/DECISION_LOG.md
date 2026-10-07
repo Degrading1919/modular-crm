@@ -4,6 +4,14 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-06 — Preserve recorded service facts and queued pack compatibility
+
+- **Status:** Accepted
+- **Area:** Industry Packs / UX
+- **Decision:** Read views must show stored values only, with defaults restricted to input forms and schemas. Pack metadata preserves legacy warning storage keys and prominent staff-only warning presentation; pack-owned skip aliases normalize older queued requests without changing their replay fingerprint or tenant/assignment checks.
+- **Rationale:** Industry-neutral rendering must not hide safety information, invent historical facts or strand previously queued offline work.
+- **Authoritative doc:** docs/INDUSTRY_PACKS.md
+
 ## 2026-10-06 — Pack-driven service fields across the customer lifecycle
 
 - **Status:** Accepted

@@ -1,5 +1,6 @@
 "use client";
 import type { PackField } from "@modular-crm/industry-packs";
+import { Icon } from "./ui";
 
 export function PackFields({ fields, values, onChange, prefix = "detail", labelPrefix = "" }: { fields: readonly PackField[]; values: Record<string, unknown>; onChange: (key: string, value: string | number | boolean) => void; prefix?: string; labelPrefix?: string }) {
   return <>{fields.map(field => {
@@ -11,5 +12,11 @@ export function PackFields({ fields, values, onChange, prefix = "detail", labelP
 }
 
 export function PackDetails({ fields, values }: { fields: readonly PackField[]; values: Record<string, unknown> }) {
-  return <>{fields.filter(field => !field.sensitive && values[field.key] !== undefined && values[field.key] !== "").map(field => <div className="detail-list" key={field.key}><dt>{field.label}</dt><dd>{typeof values[field.key] === "boolean" ? values[field.key] ? "Yes" : "No" : String(values[field.key])}</dd></div>)}</>;
+  return <>{fields.filter(field => !field.sensitive && values[field.key] !== undefined && values[field.key] !== null && values[field.key] !== "").map(field => {
+    const value = values[field.key];
+    const text = typeof value === "boolean" ? value ? "Yes" : "No" : String(value);
+    return field.displayAs === "warning" && Boolean(value)
+      ? <div className="field-warning" role="alert" key={field.key}><Icon name="warning" size={18}/><span>{field.label}: {text}</span></div>
+      : <div className="detail-list" key={field.key}><dt>{field.label}</dt><dd>{text}</dd></div>;
+  })}</>;
 }

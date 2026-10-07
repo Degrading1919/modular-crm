@@ -2,7 +2,7 @@ import type { IndustryPack } from "./index.ts";
 
 export const PET_WASTE_REMOVAL_PACK: IndustryPack = {
   key: "pet-waste-removal",
-  version: "1.3.0",
+  version: "1.3.1",
   displayName: "Pet Waste Removal",
   customerTypes: ["residential", "commercial"],
   terminology: { customer: "Client", serviceLocation: "Service Address", customerAsset: "Pet", workArea: "Yard / Service Area", job: "Cleanup", servicePlan: "Service Plan", fieldTechnician: "Technician" },
@@ -27,7 +27,7 @@ export const PET_WASTE_REMOVAL_PACK: IndustryPack = {
     { key: "date_of_birth_or_age", label: "Birth date or age", type: "text", customerVisible: true, customerEditable: true },
     { key: "photo", label: "Photo", type: "media", customerVisible: true, customerEditable: true },
     { key: "active_at_location", storageKey: "activeAtLocation", label: "Active at this address", type: "boolean", defaultValue: true, customerVisible: true, customerEditable: true, reportable: true },
-    { key: "safety_flag", label: "Safety warning", type: "boolean", reportable: true },
+    { key: "safety_flag", storageKey: "safetyFlag", label: "Safety warning", type: "boolean", displayAs: "warning", reportable: true },
     { key: "safety_notes", label: "Safety notes", type: "text", sensitive: true },
     { key: "waste_notes", label: "Cleanup notes", type: "text" },
   ] }],
@@ -76,6 +76,7 @@ export const PET_WASTE_REMOVAL_PACK: IndustryPack = {
     { key: "address_problem", label: "Could not locate property", billableByDefault: false },
     { key: "other", label: "Other", billableByDefault: false },
   ],
+  noncompletionReasonAliases: { customer_requested: "customer_skip", address_issue: "address_problem" },
   workflows: {
     cleanup: ["scheduled", "assigned", "dispatched", "en_route", "started", "completed"],
     recovery: ["requested", "review", "needs_return", "scheduled", "completed"],

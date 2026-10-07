@@ -5,7 +5,7 @@ import { PGlite } from "../../../packages/db/node_modules/@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import { and, eq } from "drizzle-orm";
-import { auditEvents, automationRules, customerAssets, customers, domainEvents, importRows, jobs, memberships, organizations, priceRules, roleTemplates, schema, seedDevelopment, seedIds, seedUserIds, serviceLocations, services, sites, siteSubmissions, tenants, type Database } from "@modular-crm/db";
+import { auditEvents, automationRules, customerAssets, customers, domainEvents, importRows, jobAssignments, jobs, memberships, organizations, priceRules, roleTemplates, schema, seedDevelopment, seedIds, seedUserIds, serviceLocations, services, sites, siteSubmissions, tenants, type Database } from "@modular-crm/db";
 import { PET_WASTE_REMOVAL_PACK } from "@modular-crm/industry-packs";
 import { permissionsForRole } from "@modular-crm/domain";
 import type { SessionActor } from "../lib/api/actor.ts";
@@ -69,6 +69,30 @@ it("retains exact seeded legacy records without migration or read-time mutation"
   expect(await db.select().from(customerAssets).where(eq(customerAssets.customerId, seedIds.carter))).toEqual(before);
 });
 
+it("retains Max's legacy warning for staff and assigned work, hides it in the portal and never fills missing read values", async () => {
+  const before = await db.select().from(customerAssets).where(eq(customerAssets.customerId, seedIds.nguyen));
+  const legacyOwner = { ...owner, tenantId: seedIds.happyTenant, membershipId: seedIds.oliviaMembership, organizationId: seedIds.happyOrganization };
+  const record = await response(handleRecords(request(`customers/${seedIds.nguyen}`), ["customers", seedIds.nguyen], legacyOwner));
+  expect(record.status).toBe(200);
+  const asset = (await record.json()).item.assets.find((item: { name: string }) => item.name === "Max");
+  expect(asset.customFields).toEqual({ name: "Max", species: "dog", safety_flag: "Reactive near gate" });
+  expect(asset.fields.find((field: { key: string }) => field.key === "safety_flag").displayAs).toBe("warning");
+  const jobId = randomUUID();
+  await db.insert(jobs).values({ id: jobId, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: seedIds.nguyen, serviceLocationId: seedIds.nguyenLocation, serviceId: seedIds.weeklyService, status: "dispatched", scheduledDate: "2026-10-07", billable: false });
+  await db.insert(jobAssignments).values({ tenantId: seedIds.happyTenant, jobId, membershipId: seedIds.terryMembership, assignmentRole: "primary" });
+  const legacyTech: SessionActor = { ...legacyOwner, role: "technician", userId: seedUserIds.happyTech, membershipId: seedIds.terryMembership, permissions: permissionsForRole("technician"), locationIds: new Set([seedIds.augusta]), allLocations: false };
+  const field = await response(handleRoutesField(request(`field/jobs/${jobId}`), ["field", "jobs", jobId], legacyTech));
+  expect(field.status).toBe(200);
+  expect((await field.json()).item.assets[0].customFields).toEqual(asset.customFields);
+  const legacyCustomer = { ...customer, tenantId: seedIds.happyTenant, customerIds: new Set([seedIds.nguyen]), locationIds: new Set([seedIds.nguyenLocation]), customerLocationIds: new Map([[seedIds.nguyen, new Set([seedIds.nguyenLocation])]]) };
+  const portal = await response(handlePortal(request("portal/profile"), ["portal", "profile"], legacyCustomer));
+  expect(portal.status).toBe(200);
+  const profile = await portal.json();
+  expect(profile.item.assets[0].customFields).toEqual({ name: "Max", species: "dog" });
+  expect(JSON.stringify(profile)).not.toContain("Reactive near gate");
+  expect(await db.select().from(customerAssets).where(eq(customerAssets.customerId, seedIds.nguyen))).toEqual(before);
+});
+
 it("shows only customer-visible fields and rejects private, read-only and cross-tenant edits", async () => {
   await db.update(customerAssets).set({ customFields: { floor_surface: "tile", care_notes: "Soft cloth", hidden_internal: "office only" } }).where(eq(customerAssets.id, seedIds.houseRoom));
   const read = await response(handlePortal(request("portal/profile"), ["portal", "profile"], customer)); expect(read.status).toBe(200);
@@ -88,6 +112,7 @@ it("uses the second pack checklist and skip reasons at the assigned-job boundary
   const item = (await read.json()).item; expect(item.assets[0].pluralLabel).toBe("Rooms"); expect(item.fieldValues.room_count).toBe(3);
   expect(item.checklist.map((check: { key: string }) => check.key)).toEqual(["propertyConfirmed", "roomsCleaned", "propertySecured"]);
   const invalid = await response(handleRoutesField(request(`field/jobs/${seedIds.houseJob}/skip`, { reason: "unsafe_animal" }), ["field", "jobs", seedIds.houseJob, "skip"], tech)); expect(invalid.status).toBe(422);
+  const wrongAlias = await response(handleRoutesField(request(`field/jobs/${seedIds.houseJob}/skip`, { reason: "address_issue" }), ["field", "jobs", seedIds.houseJob, "skip"], tech)); expect(wrongAlias.status).toBe(422);
   const missing = await response(handleRoutesField(request(`field/jobs/${seedIds.houseJob}/complete`, { checklist: { propertyConfirmed: true, propertySecured: true } }), ["field", "jobs", seedIds.houseJob, "complete"], tech)); expect(missing.status).toBe(422);
   const foreign = await response(handleRoutesField(request(`field/jobs/${seedIds.upcomingJob}`), ["field", "jobs", seedIds.upcomingJob], tech)); expect(foreign.status).toBe(404);
   expect((await db.select().from(jobs).where(eq(jobs.id, seedIds.houseJob)))[0].status).toBe("dispatched");

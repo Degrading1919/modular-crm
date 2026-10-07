@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { chooseStaffRecord } from "./staff-picker";
+import { seedIds } from "@modular-crm/db";
 
 async function signIn(page: Page, email: string, password = "Demo12345!") {
   await page.goto("/login"); await page.getByLabel("Email address").fill(email); await page.getByLabel("Password").fill(password);
@@ -21,6 +22,27 @@ async function invitationLink(page: Page, email: string) {
   }
   return "";
 }
+
+test("legacy recorded warning is prominent in staff and field views without invented details", async ({ page, browser }) => {
+  await signIn(page, "owner@happyyards.test"); await expect(page).toHaveURL(/\/app\/dashboard$/);
+  await page.goto(`/app/customers/${seedIds.nguyen}`);
+  await expect(page.locator(".field-warning").filter({ hasText: "Reactive near gate" })).toBeVisible();
+  await expect(page.getByText("Active at this address", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Size", { exact: true })).toHaveCount(0);
+  const created = await page.request.post("/api/v1/jobs", { data: { customerId: seedIds.nguyen, serviceLocationId: seedIds.nguyenLocation, serviceId: seedIds.weeklyService, scheduledDate: new Date().toISOString().slice(0, 10) } });
+  expect(created.ok(), await created.text()).toBeTruthy(); const job = (await created.json()).item;
+  const assigned = await page.request.post(`/api/v1/jobs/${job.id}/assign`, { data: { technicianId: seedIds.terryMembership, scheduledDate: new Date().toISOString().slice(0, 10) } }); expect(assigned.ok(), await assigned.text()).toBeTruthy();
+  const dispatch = await page.request.post(`/api/v1/jobs/${job.id}/transition`, { data: { status: "dispatched" } }); expect(dispatch.ok(), await dispatch.text()).toBeTruthy();
+  const techPage = await browser.newPage();
+  try {
+    await signIn(techPage, "tech@happyyards.test"); await expect(techPage).toHaveURL(/\/field\/today$/);
+    await techPage.goto(`/field/job/${job.id}`);
+    await expect(techPage.locator(".field-warning").filter({ hasText: "Reactive near gate" })).toBeVisible();
+    await expect(techPage.getByText("Active at this address", { exact: true })).toHaveCount(0);
+    await expect(techPage.getByText("Size", { exact: true })).toHaveCount(0);
+    await expect(techPage.getByText("Max", { exact: true })).toBeVisible();
+  } finally { await techPage.close(); }
+});
 
 test("second-pack signup, quote, customer detail, portal edit and technician completion", async ({ page, browser }) => {
   const unique = Date.now(); const name = `House customer ${unique}`; const email = `house-${unique}@example.test`;
