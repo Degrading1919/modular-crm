@@ -136,7 +136,14 @@ describe("website custom domains", () => {
     await sweepWebsiteDomains(db, hosting);
     const route = await findWebsiteHost(hostname);
     expect(route?.tenantId).toBe(owner.tenantId);
-    expect(await findWebsiteHost(hostname, new Date(Date.now() + 31 * 60_000))).toBeNull();
+    expect(await findWebsiteHost(hostname, new Date(Date.now() + 23 * 60 * 60_000))).not.toBeNull();
+    expect(await findWebsiteHost(hostname, new Date(Date.now() + 25 * 60 * 60_000))).toBeNull();
+    const [evidence] = await db.select().from(schema.websiteDomainChecks).where(eq(schema.websiteDomainChecks.domainId, item.id));
+    await checkWebsiteDomain(db, owner.tenantId, item.id, { ...hosting, dns: { check: vi.fn().mockResolvedValue({ ownership: "missing", routing: "missing", unavailable: true }) } }, true);
+    const [afterOutage] = await db.select().from(schema.websiteDomainChecks).where(eq(schema.websiteDomainChecks.domainId, item.id));
+    expect(afterOutage).toMatchObject({ state: "live", ownershipVerified: true, routingVerified: true, checkedAt: evidence!.checkedAt });
+    expect(await findWebsiteHost(hostname)).not.toBeNull();
+    expect(await findWebsiteHost(hostname, new Date(Date.now() + 25 * 60 * 60_000))).toBeNull();
     await expect(assertWebsiteHostSlug(new Request("http://localhost", { headers: { host: hostname } }), "cleanpaws")).rejects.toMatchObject({ status: 404 });
     await expect(assertWebsiteHostSlug(new Request("http://localhost", { headers: { host: hostname } }), route!.slug)).resolves.toBeUndefined();
     const request = (path: string, headers = {}) => new NextRequest(`http://localhost:3000${path}`, { headers: { host: hostname, ...headers } });
@@ -160,6 +167,29 @@ describe("website custom domains", () => {
     await checkWebsiteDomain(db, owner.tenantId, item.id, hosting, true);
     expect((await db.select().from(schema.websiteDomainChecks).where(eq(schema.websiteDomainChecks.domainId, item.id)))[0]?.state).toBe("needs_attention");
     await db.update(schema.platformSubscriptions).set({ status: "active" }).where(eq(schema.platformSubscriptions.tenantId, owner.tenantId));
+    await call("DELETE", ["website", "domains", item.id]);
+  });
+
+  it("retains live edge evidence on transient errors without extending its age or trusting an unfinished edge", async () => {
+    const hostname = "edge-outage.example.test";
+    const { item } = await (await call("POST", ["website", "domains"], owner, { hostname }))!.json();
+    const hosting = createWebsiteHosting({ NODE_ENV: "test", DOMAIN_VERIFICATION_MODE: "mock" });
+    await call("POST", ["website", "domains", item.id, "mock-dns"], owner, { ownership: "valid", routing: "valid", certificate: "ready" });
+    const live = await checkWebsiteDomain(db, owner.tenantId, item.id, hosting, true);
+    expect(live.state).toBe("live");
+    const unavailable = { ...hosting, edge: { ...hosting.edge, ensure: vi.fn().mockRejectedValue(new Error("edge timeout")) } };
+    const outage = await checkWebsiteDomain(db, owner.tenantId, item.id, unavailable, true, new Date(Date.now() + 60_000));
+    expect(outage).toMatchObject({ state: "live", edgeReference: live.edgeReference, checkedAt: live.checkedAt, ownershipVerified: true,
+      routingVerified: true, problem: expect.stringMatching(/recheck.*still available/) });
+    expect(await findWebsiteHost(hostname)).not.toBeNull();
+    expect(await findWebsiteHost(hostname, new Date(live.checkedAt!.getTime() + 25 * 60 * 60_000))).toBeNull();
+    await db.update(schema.websiteDomainChecks).set({ state: "securing" }).where(eq(schema.websiteDomainChecks.domainId, item.id));
+    expect((await checkWebsiteDomain(db, owner.tenantId, item.id, unavailable, true)).state).toBe("needs_attention");
+    expect(await findWebsiteHost(hostname)).toBeNull();
+    await db.update(schema.websiteDomainChecks).set({ state: "live", mockRecords: { ownership: "valid", routing: "wrong" } }).where(eq(schema.websiteDomainChecks.domainId, item.id));
+    expect((await checkWebsiteDomain(db, owner.tenantId, item.id, unavailable, true)).state).toBe("needs_attention");
+    expect(await findWebsiteHost(hostname)).toBeNull();
+    expect(unavailable.edge.ensure).toHaveBeenCalledTimes(2);
     await call("DELETE", ["website", "domains", item.id]);
   });
 

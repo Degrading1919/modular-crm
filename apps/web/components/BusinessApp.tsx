@@ -1,5 +1,7 @@
 "use client";
 import PlanBilling, { BillingBanner } from "./PlanBilling";
+import StaffAccess from "./StaffAccess";
+import BusinessSwitcher from "./BusinessSwitcher";
 import ServiceDetails from "./ServiceDetails";
 import { PackDetails } from "./PackFields";
 import { DocumentEditor } from "./DocumentEditor";
@@ -95,7 +97,7 @@ export default function BusinessApp({ section }: { section: string[] }) {
   return <WorkspaceAccessContext.Provider value={access}><div className="app-layout">
     {menuOpen && <div className="sidebar-overlay" onClick={() => setMenuOpen(false)}/>}
     <aside className={`app-sidebar ${menuOpen ? "open" : ""}`}>
-      <div className="sidebar-top"><Link href="/app/dashboard" onClick={() => setMenuOpen(false)}><Logo light/></Link></div>
+      <div className="sidebar-top"><Link href="/app/dashboard" onClick={() => setMenuOpen(false)}><Logo light/></Link><BusinessSwitcher/></div>
       <nav className="sidebar-nav" aria-label="Business navigation">{visibleNav.map((group) => <div key={group.label}><div className="nav-label">{group.label}</div>{group.items.map((item) => <Link key={item.key} className={`sidebar-link ${current === item.key ? "active" : ""}`} href={`/app/${item.key}`} onClick={() => setMenuOpen(false)}><Icon name={item.icon}/>{item.label}</Link>)}</div>)}</nav>
       <div className="sidebar-bottom"><button type="button" className="sidebar-link" style={{ width: "100%", border: 0, background: "transparent" }} onClick={logout}><Icon name="arrow"/>Sign out</button><div className="sidebar-account"><div className="avatar">{displayedName.slice(0, 1)}</div><div><strong>{displayedName}</strong><span>{friendly(identity.data.user?.role)}</span></div></div></div>
     </aside>
@@ -115,10 +117,11 @@ export default function BusinessApp({ section }: { section: string[] }) {
         {current === "capabilities" && <CapabilitySetup mode="manage" canManage={identity.data.user?.permissions?.includes("tenant.billing_manage") === true} onSaved={capabilityResult.reload}/>}
         {current === "settings" && <Settings />}
         {current === "plan-billing" && <PlanBilling />}
+        {current === "staff" && <StaffAccess permissions={access.permissions}/>}
         {current === "developer" && <DeveloperApp />}
         {current === "franchise" && <FranchiseApp />}
         {current === "inventory" && <><Header eyebrow="Your business" title="Inventory" subtitle="Keep supplies ready across branches, vehicles, and jobs."/><InventoryOperations permissions={access.permissions}/></>}
-        {resources[current] && current !== "inventory" && current !== "automations" && (section[1] && ["customers", "jobs", "invoices", "leads"].includes(current) ? <RecordDetail key={`${current}/${section[1]}`} resource={current} id={section[1]}/> : <ResourcePage resourceKey={current} resource={resources[current]} id={section[1]} features={features} permissions={identity.data.user?.permissions} />)}
+        {resources[current] && current !== "inventory" && current !== "automations" && current !== "staff" && (section[1] && ["customers", "jobs", "invoices", "leads"].includes(current) ? <RecordDetail key={`${current}/${section[1]}`} resource={current} id={section[1]}/> : <ResourcePage resourceKey={current} resource={resources[current]} id={section[1]} features={features} permissions={identity.data.user?.permissions} />)}
         {!resources[current] && !["dashboard", "schedule", "routes", "sales", "billing", "connections", "website", "automations", "reports", "payroll", "import", "capabilities", "settings", "developer", "franchise", "inventory", "plan-billing"].includes(current) && <Empty title="Page not found" description="This area is not part of your workspace." action={<Link className="btn btn-primary" href="/app/dashboard">Back to overview</Link>} />}
       </>}
     </div></main>

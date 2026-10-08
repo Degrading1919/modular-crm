@@ -13,6 +13,7 @@ import { evaluatePrice, snapshotPriceResult, type PriceResult, type PriceRule, t
 import { evaluateConditions, type Condition } from "@modular-crm/config";
 import { z } from "zod";
 import { getDb } from "../db";
+import { mocksAllowed, requireMocks } from "../mock-policy";
 import { json } from "./http";
 import { requireTenantFeature } from "./capability-enforcement";
 import { getIndustryPack, packFieldValues, packQuantity, type IndustryPack } from "@modular-crm/industry-packs";
@@ -437,6 +438,7 @@ async function saveContact(request: Request, site: typeof sites.$inferSelect, in
 }
 
 async function createSignup(request: Request, row: PublicSiteRow, input: SignupInput): Promise<Response> {
+  if (input.paymentMethod === "demo") requireMocks();
   const db = getDb();
   const termsVersion = publicTermsVersion(row.site);
   const pack = selectedPack(row.tenant.industryPackKey);
@@ -450,7 +452,8 @@ async function createSignup(request: Request, row: PublicSiteRow, input: SignupI
   const confident = !!quote && quote.eligibility.eligible && !quote.quoteRequired && !!input.quoteId && input.quoteId === quote.quoteId;
   const recurring = input.service.frequency !== "one_time" && quote?.service.serviceType !== "one_time";
   const recurringEnabled = recurring && hasUsableFeature(await loadTenantCapabilities(db, row.site.tenantId), "recurring_service_management");
-  const paymentMode = stringValue(settingsObject(row.tenant.settings).paymentMode) || stringValue(settingsObject(settingsObject(row.tenant.settings).onboarding).paymentMode) || "demo";
+  const savedPaymentMode = stringValue(settingsObject(row.tenant.settings).paymentMode) || stringValue(settingsObject(settingsObject(row.tenant.settings).onboarding).paymentMode);
+  const paymentMode = savedPaymentMode === "demo" && !mocksAllowed() ? "manual" : savedPaymentMode || (mocksAllowed() ? "demo" : "manual");
   // A request-provided demo method cannot stand in for a provider the business has not connected.
   const canAutoActivate = confident && recurringEnabled && paymentMode !== "connect";
   const storedLocation = storePackFields(pack.locationFields, input.locationFields);

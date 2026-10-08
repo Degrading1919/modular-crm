@@ -1,7 +1,7 @@
 import { trustedWebsiteOrigin } from "./website-origin";
 import { and, eq, gte } from "drizzle-orm";
 import { domains, sites, tenants, websiteDomainChecks } from "@modular-crm/db";
-import { DomainError } from "@modular-crm/domain";
+import { WEBSITE_DOMAIN_EVIDENCE_MAX_AGE_MS, DomainError } from "@modular-crm/domain";
 import { getDb } from "./db";
 
 export function websiteRequestHost(request: Request, env: Record<string, string | undefined> = process.env): string | null {
@@ -26,7 +26,7 @@ export async function findWebsiteHost(hostname: string, now = new Date()) {
     .innerJoin(tenants, eq(tenants.id, sites.tenantId))
     .where(and(eq(domains.hostname, hostname), eq(domains.domainType, "custom"), eq(websiteDomainChecks.state, "live"),
       eq(websiteDomainChecks.ownershipVerified, true), eq(websiteDomainChecks.routingVerified, true), eq(tenants.status, "active"),
-      gte(websiteDomainChecks.checkedAt, new Date(now.getTime() - 30 * 60_000)))).limit(1);
+      gte(websiteDomainChecks.checkedAt, new Date(now.getTime() - WEBSITE_DOMAIN_EVIDENCE_MAX_AGE_MS)))).limit(1);
   return row && row.status !== "disabled" && (row.status === "published" || row.publishedAt) ? row : null;
 }
 /** Defense at the public API boundary as well as the request router: never trust a supplied slug on a customer Host. */

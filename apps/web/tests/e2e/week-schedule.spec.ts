@@ -20,7 +20,12 @@ test("owner drags unscheduled work to Wednesday, publishes it to field, then mov
     const calendar = page.getByRole("region", { name: "Week calendar" });
     const card = page.getByRole("complementary", { name: "Unscheduled visits" }).locator(`[data-visit-id="${jobId}"]`);
     const wednesday = calendar.locator(`[data-schedule-day="2027-02-03"][data-technician-id="${seedIds.terryMembership}"]`);
-    await expect(card).toBeVisible(); await card.dragTo(wednesday);
+    await expect(card).toBeVisible();
+    // Extra staff lanes can put the target below the viewport. Scroll before
+    // mouse-down so dragTo does not move the source out from under the pointer.
+    await wednesday.scrollIntoViewIfNeeded();
+    await expect(card).toBeInViewport(); await expect(wednesday).toBeInViewport();
+    await card.dragTo(wednesday, { sourcePosition: { x: 8, y: 8 }, targetPosition: { x: 20, y: 20 } });
     await expect(wednesday.locator(`[data-visit-id="${jobId}"]`)).toContainText(name);
     const [scheduled] = await db.select().from(schema.jobs).where(eq(schema.jobs.id, jobId!)); expect(scheduled).toMatchObject({ scheduledDate: "2027-02-03", status: "scheduled", assignedRouteId: null });
     const create = await page.request.post("/api/v1/routes", { data: { date: "2027-02-03", technicianId: seedIds.terryMembership } }); expect(create.status(), await create.text()).toBe(201); const route = (await create.json()).item; routes.push(route.id);

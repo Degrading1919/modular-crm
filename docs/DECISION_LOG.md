@@ -4,6 +4,23 @@ Compact history of accepted and superseded Modular CRM decisions.
 
 Newest entries go first.
 
+## 2026-10-08 — Recoverable business selection and transient edge checks
+
+- **Status:** Accepted
+- **Area:** Architecture / UX
+- **Decision:** Accounts with multiple active staff memberships use a deterministic latest-joined default after sign-in and a plain Switch business control validated against their own active memberships. Existing live domain evidence survives transient edge-provider errors without refreshing proof age; unfinished edges and definite invalid evidence remain unavailable.
+- **Rationale:** Owner-authorized Claude review [6049532280](https://github.com/Degrading1919/modular-crm/pull/30#issuecomment-6049532280) identifies inaccessible accepted invitations after another login and unnecessary website outages on temporary edge errors. Deferred role-template/email-delivery hardening is not part of this correction.
+- **Authoritative doc:** docs/ARCHITECTURE.md; docs/V1_WEBSITE_SYSTEM.md
+
+## 2026-10-07 — Production safety and usable staff control
+
+- **Status:** Accepted
+- **Area:** Connectors / Architecture / UX
+- **Decision:** Production forbids simulated/local-only providers and demo payment requests at the server boundary while local/test flows retain mocks. Staff owners can manage status, role and locations with immediate session revocation and preserved history; existing accounts explicitly accept hashed, user-bound invitations under the existing seat guard. Unavailable DNS retains prior state without refreshing proof age, with a 24-hour evidence limit and immediate rejection of definite wrong/missing proof.
+- **Rationale:** Owner-authorized W1b handoff [6045563955](https://github.com/Degrading1919/modular-crm/pull/29#issuecomment-6045563955) closes predictable production and staff-control friction, including PR #29's DNS follow-up. [6045616007](https://github.com/Degrading1919/modular-crm/pull/29#issuecomment-6045616007) also requires completed custom-host signup to link to the absolute workspace login.
+- **Authoritative doc:** docs/CONNECTOR_SYSTEM.md; docs/ARCHITECTURE.md; docs/V1_PERMISSIONS.md; docs/V1_WEBSITE_SYSTEM.md
+- **Supersedes:** 30-minute domain evidence window and treating transient DNS unavailability as lost proof.
+
 ## 2026-10-07 — Breadth-first 1.0, then owner playtesting
 
 - **Status:** Accepted

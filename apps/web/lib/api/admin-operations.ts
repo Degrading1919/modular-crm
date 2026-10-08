@@ -12,6 +12,7 @@ import { getDb } from "../db";
 import { requireStaff, type SessionActor } from "./actor";
 import { json, readBody } from "./http";
 import { normalized } from "./sql";
+import { inviteExistingStaff, updateStaffAccess } from "./staff-access";
 
 type Database = ReturnType<typeof getDb>;
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -480,6 +481,7 @@ const staffCreateSchema = z.object({
 
 async function createStaffMember(request: Request, actor: StaffActor): Promise<Response> {
   const body = await readBody(request, staffCreateSchema);
+  if (body.role === "office") requirePermission(actor, "roles.manage");
   const db = getDb();
   const location = await defaultOrganizationLocation(db, actor, body.locationId);
   const existingRows = await db.select().from(user).where(sql`lower(${user.email}) = ${body.email}`).limit(1);
@@ -492,7 +494,7 @@ async function createStaffMember(request: Request, actor: StaffActor): Promise<R
       eq(memberships.status, "active"),
     )).limit(1);
     if (activeMember) throw new DomainError("CONFLICT", "This person is already on your team.", 409);
-    throw new DomainError("CONFLICT", "This email already has an account and needs to accept an invitation before joining another team.", 409);
+    return inviteExistingStaff(actor, existingUser, body.role, location.id);
   }
   let userId: string | undefined;
   let temporaryPassword: string | undefined;
@@ -541,7 +543,7 @@ async function createStaffMember(request: Request, actor: StaffActor): Promise<R
           roleTemplateId: resolvedRole.id,
           status: "active",
           invitedAt: now,
-          joinedAt: newlyCreatedUser ? null : now,
+          joinedAt: now,
           updatedAt: now,
         }).where(and(eq(memberships.id, previous.id), eq(memberships.tenantId, actor.tenantId))).returning();
         await tx.delete(membershipLocationScopes).where(and(
@@ -557,7 +559,7 @@ async function createStaffMember(request: Request, actor: StaffActor): Promise<R
           roleTemplateId: resolvedRole.id,
           status: "active",
           invitedAt: now,
-          joinedAt: newlyCreatedUser ? null : now,
+          joinedAt: now,
         }).returning();
       }
       if (!membership) throw new Error("Could not add staff member");
@@ -642,6 +644,7 @@ async function handleOrganization(request: Request, path: string[], actor: Sessi
 
 async function handleStaff(request: Request, path: string[], actor: SessionActor): Promise<Response | null> {
   if (path.length > 2) return null;
+  if (request.method === "PATCH" && path.length === 2) return updateStaffAccess(request, path[1]!, actor);
   if (request.method === "GET") {
     authorize(actor, "staff.read");
     if (path.length === 2) return json({ item: await listStaff(actor, path[1]) });

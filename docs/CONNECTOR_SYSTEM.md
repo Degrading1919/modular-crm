@@ -20,6 +20,8 @@ They should not be required to choose technical infrastructure before understand
 
 ## Connector marketplace
 
+Production never registers or lists mock/test or local-only providers, hydrates historical demo installations, or uses simulated payment/geocoding adapters. Server-side invoice payment rejects `method: test` for every actor, including customers; onboarding and public signup reject crafted demo selections. Production setup defaults to manual invoices, real email setup and texts off, and existing demo business settings do not activate simulated payments. Local development, tests and Playwright retain the explicit mock workflows. An unavailable real capability degrades to its existing guided/manual state, never fabricated success.
+
 The product should expose an integration marketplace similar in spirit to an app/plugin directory.
 
 Providers may satisfy one or more capabilities.

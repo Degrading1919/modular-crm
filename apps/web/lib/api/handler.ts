@@ -39,9 +39,12 @@ import { handleOnlinePaymentAccounts } from "./online-payment-accounts";
 import { handleOnlinePaymentSession } from "./online-payment-sessions";
 import { handleOnlinePaymentRefund } from "./online-payment-refunds";
 import { handleMockHostedPayment } from "./mock-hosted-payments";
+import { handleStaffInvitation } from "./staff-access";
 
 async function dispatchV1(request: Request, path: string[]): Promise<Response> {
   try {
+    const staffInvitation = await handleStaffInvitation(request, path);
+    if (staffInvitation) return staffInvitation;
     const platformWebhook = await handlePlatformBillingPublic(request, path);
     if (platformWebhook) return platformWebhook;
     const paymentWebhook = await handleOnlinePaymentWebhook(request, path);

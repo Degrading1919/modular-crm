@@ -43,6 +43,8 @@ Default:
 
 ### Staff and access
 
+The Staff screen supports invitation, deactivation/reactivation, role and location changes without deleting memberships or history. Changes require `staff.update`; status additionally requires `staff.deactivate`, and role changes or Office invitations require `roles.manage`. Owner access additionally requires `tenant.security_manage`. A scoped manager may edit only members whose entire current and requested location scope is accessible. Self-access changes require another owner, and the last active owner cannot be removed. Existing accounts must explicitly accept a user-bound, hashed, single-use 48-hour email invitation before joining; pending invitations reserve seats under the existing database guard. New accounts retain the password-setup email workflow. Every invitation, acceptance and change records tenant audit/domain history. Live sessions resolve current status, role and locations on each request, so deactivation and permission changes take effect immediately.
+
 - `staff.read`
 - `staff.invite`
 - `staff.update`

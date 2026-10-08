@@ -1,5 +1,5 @@
 import { identifyTenant } from "@modular-crm/config/observability";
-import { and, eq, inArray, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { membershipLocationScopes, memberships, organizationLocations, portalAccess, portalLocationAccess, rolePermissions, roleTemplates, serviceLocations, tenants } from "@modular-crm/db";
 import { DomainError, permissionsForRole, type Actor, type Permission, type RoleTemplate } from "@modular-crm/domain";
 import { auth } from "../auth";
@@ -19,6 +19,8 @@ export async function resolveActor(request: Request): Promise<SessionActor | nul
   const session = await auth.api.getSession({ headers: request.headers });
   if (!session) return null;
   const db = getDb();
+  const selectedMembership = request.headers.get("cookie")?.split(";").map(part => part.trim()).find(part => part.startsWith("crm_membership="))?.slice("crm_membership=".length);
+  if (selectedMembership && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(selectedMembership)) return null;
   const member = await db.select({
     membership: memberships,
     role: roleTemplates,
@@ -26,7 +28,9 @@ export async function resolveActor(request: Request): Promise<SessionActor | nul
   }).from(memberships)
     .innerJoin(roleTemplates, eq(memberships.roleTemplateId, roleTemplates.id))
     .innerJoin(tenants, eq(memberships.tenantId, tenants.id))
-    .where(and(eq(memberships.userId, session.user.id), eq(memberships.status, "active")))
+    .where(and(eq(memberships.userId, session.user.id), eq(memberships.status, "active"), selectedMembership ? eq(memberships.id, selectedMembership) : undefined))
+    // Legacy memberships may have no joinedAt; ties still resolve consistently.
+    .orderBy(sql`${memberships.joinedAt} desc nulls last`, desc(memberships.createdAt), asc(memberships.id))
     .limit(1);
   if (member[0]) {
     const { membership, role, tenant } = member[0];
