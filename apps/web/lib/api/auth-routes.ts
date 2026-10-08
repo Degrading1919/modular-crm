@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readPlatformBillingConfig } from "@modular-crm/config";
 import { startPlatformTrial } from "@modular-crm/db";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import {
   automationRules, grantRecommendedCapabilitySetup, installInitialCapabilityCatalog, memberships,
@@ -32,6 +32,31 @@ function slugify(value: string) { return value.toLowerCase().normalize("NFKD").r
 
 export async function handleAuthRoute(request: Request, path: string[]): Promise<Response> {
   const action = path[1];
+  if ((action === "businesses" && request.method === "GET") || (action === "switch-business" && request.method === "POST")) {
+    // Selection is account-level: a revoked current workspace must not prevent
+    // recovery into another business, but never grants access to the revoked one.
+    const session = await auth.api.getSession({ headers: request.headers });
+    if (!session) throw new DomainError("UNAUTHENTICATED", "Sign in to continue.", 401);
+    const db = getDb();
+    if (action === "businesses") {
+      const items = await db.select({ id: memberships.id, name: tenants.name, organizationName: organizations.displayName, role: roleTemplates.key })
+        .from(memberships).innerJoin(tenants, eq(memberships.tenantId, tenants.id))
+        .innerJoin(organizations, and(eq(memberships.organizationId, organizations.id), eq(memberships.tenantId, organizations.tenantId)))
+        .innerJoin(roleTemplates, and(eq(memberships.roleTemplateId, roleTemplates.id), eq(memberships.tenantId, roleTemplates.tenantId)))
+        .where(and(eq(memberships.userId, session.user.id), eq(memberships.status, "active")))
+        .orderBy(asc(tenants.name), asc(memberships.id));
+      return json({ items });
+    }
+    const origin = request.headers.get("origin");
+    if (origin && origin !== new URL(process.env.APP_BASE_URL ?? request.url).origin) throw new DomainError("FORBIDDEN", "Open your workspace to switch business.", 403);
+    const { membershipId } = await readBody(request, z.object({ membershipId: z.uuid() }));
+    const [item] = await db.select({ id: memberships.id, role: roleTemplates.key }).from(memberships)
+      .innerJoin(roleTemplates, and(eq(memberships.roleTemplateId, roleTemplates.id), eq(memberships.tenantId, roleTemplates.tenantId)))
+      .where(and(eq(memberships.id, membershipId), eq(memberships.userId, session.user.id), eq(memberships.status, "active"))).limit(1);
+    if (!item) throw new DomainError("NOT_FOUND", "Business access not found.", 404);
+    return json({ item, destination: item.role === "technician" ? "/field/today" : "/app/dashboard" }, 200,
+      { "set-cookie": `crm_membership=${item.id}; Path=/; HttpOnly; SameSite=Lax${process.env.NODE_ENV === "production" ? "; Secure" : ""}` });
+  }
   if (action === "login" && request.method === "POST") {
     const limited = await rateLimitAuthIp(request);
     if (limited) return limited;

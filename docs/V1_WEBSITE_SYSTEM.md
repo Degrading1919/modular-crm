@@ -138,7 +138,7 @@ Custom domain flow:
 3. **Check now** independently checks ownership and routing. The worker sets up and renews HTTPS without per-owner infrastructure edits.
 4. Distinguish **Waiting for DNS**, **Verified**, **Secure connection being set up**, **Live** and **Needs attention**, with a specific record/certificate problem.
 5. Only a fresh live domain can become primary; removing it restores the included address. Other verified addresses continue to serve the same site; a canonical redirect is not implemented in this slice.
-6. Periodic rechecks stop routing for definite missing/wrong evidence or when the site is unpublished/disabled. An unavailable DNS check retains the previous state but does not extend proof age; serving stops after 24 hours without successful evidence. Unknown hosts never fall through to the staff application. Customer login links, including the completed signup screen, use the configured workspace URL rather than a relative login path on the custom Host.
+6. Periodic rechecks stop routing for definite missing/wrong evidence or when the site is unpublished/disabled. An unavailable DNS check retains the previous state but does not extend proof age; a transient edge-provider exception also keeps an already-live secure connection serving, records the problem and rechecks without extending evidence. Unfinished connections stay unavailable. Serving stops after 24 hours without successful evidence. Unknown hosts never fall through to the staff application. Customer login links, including the completed signup screen, use the configured workspace URL rather than a relative login path on the custom Host.
 
 Infrastructure-specific domain provisioning belongs in a deployment/domain adapter.
 

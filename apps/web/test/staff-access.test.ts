@@ -15,6 +15,7 @@ vi.mock("../lib/mail", () => ({ sendPlatformEmail: sendEmail }));
 const { updateStaffAccess, inviteExistingStaff, handleStaffInvitation } = await import("../lib/api/staff-access");
 const { resolveActor } = await import("../lib/api/actor");
 const { apiError } = await import("../lib/api/http");
+const { handleAuthRoute } = await import("../lib/api/auth-routes");
 let pglite: PGlite, db: Database;
 const owner: SessionActor = { kind: "staff", userId: "demo-happy-owner", tenantId: seedIds.happyTenant, tenantName: "Happy Yards", packKey: "pet-waste-removal", email: "owner@happyyards.test", name: "Olivia", role: "owner", permissions: permissionsForRole("owner"), allLocations: true, locationIds: new Set([seedIds.augusta, seedIds.northAugusta]), membershipId: seedIds.oliviaMembership, organizationId: seedIds.happyOrganization, defaultLocationId: seedIds.augusta };
 const office: SessionActor = { ...owner, userId: "demo-happy-manager", role: "office", permissions: permissionsForRole("office"), allLocations: false, locationIds: new Set([seedIds.augusta]), membershipId: seedIds.morganMembership };
@@ -87,6 +88,36 @@ it("reactivates previously active legacy accounts without bypassing invitation a
   expect((await db.select().from(schema.memberships).where(eq(schema.memberships.id, seedIds.terryMembership)))[0]!.joinedAt).not.toBeNull();
   await change(seedIds.terryMembership, { status: "active" });
   session("demo-happy-tech"); expect(await resolveActor(selected(seedIds.terryMembership))).toMatchObject({ role: "technician" });
+});
+
+it("chooses the latest joined business consistently and only switches to this account's active memberships", async () => {
+  const [happy] = await db.select().from(schema.memberships).where(eq(schema.memberships.userId, person.id));
+  const [cleanRole] = await db.select().from(schema.roleTemplates).where(and(eq(schema.roleTemplates.tenantId, seedIds.cleanTenant), eq(schema.roleTemplates.key, "owner")));
+  const [clean] = await db.insert(schema.memberships).values({ tenantId: seedIds.cleanTenant, userId: person.id, organizationId: seedIds.cleanOrganization,
+    defaultLocationId: seedIds.cleanBranch, roleTemplateId: cleanRole!.id, status: "active", joinedAt: new Date("2020-01-01") }).returning();
+  try {
+    session(person.id);
+    expect(await resolveActor(new Request("http://localhost"))).toMatchObject({ tenantId: owner.tenantId, membershipId: happy!.id });
+    const listed = await handleAuthRoute(new Request("http://localhost/api/v1/auth/businesses"), ["auth", "businesses"]);
+    expect((await listed.json()).items.map((item: { id: string }) => item.id).sort()).toEqual([clean!.id, happy!.id].sort());
+    const switchTo = (id: string, origin?: string) => handleAuthRoute(new Request("http://localhost/api/v1/auth/switch-business", {
+      method: "POST", body: JSON.stringify({ membershipId: id }), headers: origin ? { origin } : {},
+    }), ["auth", "switch-business"]);
+    const response = await switchTo(clean!.id);
+    expect(response.headers.get("set-cookie")).toContain(`crm_membership=${clean!.id}; Path=/; HttpOnly; SameSite=Lax`);
+    expect(await resolveActor(selected(clean!.id))).toMatchObject({ tenantId: seedIds.cleanTenant, role: "owner" });
+    await expect(switchTo(seedIds.oliviaMembership)).rejects.toMatchObject({ status: 404 });
+    await expect(switchTo(clean!.id, "https://foreign.example.test")).rejects.toMatchObject({ status: 403 });
+    for (const status of ["invited", "inactive"]) {
+      await db.update(schema.memberships).set({ status }).where(eq(schema.memberships.id, clean!.id));
+      await expect(switchTo(clean!.id)).rejects.toMatchObject({ status: 404 });
+      expect(await resolveActor(selected(clean!.id))).toBeNull();
+      expect((await (await handleAuthRoute(new Request("http://localhost"), ["auth", "businesses"])).json()).items).toHaveLength(1);
+    }
+    getSession.mockResolvedValue(null);
+    await expect(switchTo(happy!.id)).rejects.toMatchObject({ status: 401 });
+    await expect(handleAuthRoute(new Request("http://localhost"), ["auth", "businesses"])).rejects.toMatchObject({ status: 401 });
+  } finally { await db.delete(schema.memberships).where(eq(schema.memberships.id, clean!.id)); }
 });
 
 it("reuses the database seat guard for invitations and reactivation with a plain-language error", async () => {

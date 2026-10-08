@@ -1,6 +1,7 @@
 "use client";
 import PlanBilling, { BillingBanner } from "./PlanBilling";
 import StaffAccess from "./StaffAccess";
+import BusinessSwitcher from "./BusinessSwitcher";
 import ServiceDetails from "./ServiceDetails";
 import { PackDetails } from "./PackFields";
 import { DocumentEditor } from "./DocumentEditor";
@@ -96,7 +97,7 @@ export default function BusinessApp({ section }: { section: string[] }) {
   return <WorkspaceAccessContext.Provider value={access}><div className="app-layout">
     {menuOpen && <div className="sidebar-overlay" onClick={() => setMenuOpen(false)}/>}
     <aside className={`app-sidebar ${menuOpen ? "open" : ""}`}>
-      <div className="sidebar-top"><Link href="/app/dashboard" onClick={() => setMenuOpen(false)}><Logo light/></Link></div>
+      <div className="sidebar-top"><Link href="/app/dashboard" onClick={() => setMenuOpen(false)}><Logo light/></Link><BusinessSwitcher/></div>
       <nav className="sidebar-nav" aria-label="Business navigation">{visibleNav.map((group) => <div key={group.label}><div className="nav-label">{group.label}</div>{group.items.map((item) => <Link key={item.key} className={`sidebar-link ${current === item.key ? "active" : ""}`} href={`/app/${item.key}`} onClick={() => setMenuOpen(false)}><Icon name={item.icon}/>{item.label}</Link>)}</div>)}</nav>
       <div className="sidebar-bottom"><button type="button" className="sidebar-link" style={{ width: "100%", border: 0, background: "transparent" }} onClick={logout}><Icon name="arrow"/>Sign out</button><div className="sidebar-account"><div className="avatar">{displayedName.slice(0, 1)}</div><div><strong>{displayedName}</strong><span>{friendly(identity.data.user?.role)}</span></div></div></div>
     </aside>

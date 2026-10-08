@@ -170,6 +170,29 @@ describe("website custom domains", () => {
     await call("DELETE", ["website", "domains", item.id]);
   });
 
+  it("retains live edge evidence on transient errors without extending its age or trusting an unfinished edge", async () => {
+    const hostname = "edge-outage.example.test";
+    const { item } = await (await call("POST", ["website", "domains"], owner, { hostname }))!.json();
+    const hosting = createWebsiteHosting({ NODE_ENV: "test", DOMAIN_VERIFICATION_MODE: "mock" });
+    await call("POST", ["website", "domains", item.id, "mock-dns"], owner, { ownership: "valid", routing: "valid", certificate: "ready" });
+    const live = await checkWebsiteDomain(db, owner.tenantId, item.id, hosting, true);
+    expect(live.state).toBe("live");
+    const unavailable = { ...hosting, edge: { ...hosting.edge, ensure: vi.fn().mockRejectedValue(new Error("edge timeout")) } };
+    const outage = await checkWebsiteDomain(db, owner.tenantId, item.id, unavailable, true, new Date(Date.now() + 60_000));
+    expect(outage).toMatchObject({ state: "live", edgeReference: live.edgeReference, checkedAt: live.checkedAt, ownershipVerified: true,
+      routingVerified: true, problem: expect.stringMatching(/recheck.*still available/) });
+    expect(await findWebsiteHost(hostname)).not.toBeNull();
+    expect(await findWebsiteHost(hostname, new Date(live.checkedAt!.getTime() + 25 * 60 * 60_000))).toBeNull();
+    await db.update(schema.websiteDomainChecks).set({ state: "securing" }).where(eq(schema.websiteDomainChecks.domainId, item.id));
+    expect((await checkWebsiteDomain(db, owner.tenantId, item.id, unavailable, true)).state).toBe("needs_attention");
+    expect(await findWebsiteHost(hostname)).toBeNull();
+    await db.update(schema.websiteDomainChecks).set({ state: "live", mockRecords: { ownership: "valid", routing: "wrong" } }).where(eq(schema.websiteDomainChecks.domainId, item.id));
+    expect((await checkWebsiteDomain(db, owner.tenantId, item.id, unavailable, true)).state).toBe("needs_attention");
+    expect(await findWebsiteHost(hostname)).toBeNull();
+    expect(unavailable.edge.ensure).toHaveBeenCalledTimes(2);
+    await call("DELETE", ["website", "domains", item.id]);
+  });
+
   it("requires the origin key for forwarded hosts, including malformed Unicode keys", () => {
     const env = { WEBSITE_ORIGIN_SECRET: "x".repeat(48) };
     expect(websiteRequestHost(new Request("http://localhost", { headers: { "x-website-host": "www.example.test" } }), env)).toBeNull();
