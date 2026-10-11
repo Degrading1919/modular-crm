@@ -35,6 +35,13 @@ test("owner publishes an ordered route and technician completes the field workda
 
     const today = businessDate();
     const unique = Date.now();
+    const field = await fieldContext.newPage();
+    await signIn(field, "tech@happyyards.test");
+    await expect(field).toHaveURL(/\/field\/today$/);
+    const priorRouteResponse = await field.request.get("/api/v1/field/route");
+    expect(priorRouteResponse.ok()).toBeTruthy();
+    const priorRoute = (await priorRouteResponse.json()).item;
+    const priorStops: Array<{ id: string; status: string }> = priorRoute.route?.date === today ? priorRoute.jobs.map((job: { id: string; status: string }) => ({ id: job.id, status: job.status })) : [];
     const jobs: Array<{ id: string; instruction: string }> = [];
     for (const customer of ["Carter Household", "Nguyen Household"]) {
       const instruction = `Field access note ${unique} ${customer}`;
@@ -43,6 +50,7 @@ test("owner publishes an ordered route and technician completes the field workda
       await chooseStaffRecord(owner, "Customer", customer);
       await chooseStaffRecord(owner, "Service", "Yard cleanup");
       await owner.getByLabel("Service day").fill(today);
+      await owner.getByLabel("Visit price").fill("45.00");
       await owner.getByLabel("Job instructions").fill(instruction);
       const createdResponse = owner.waitForResponse((response) =>
         new URL(response.url()).pathname === "/api/v1/jobs" && response.request().method() === "POST",
@@ -84,9 +92,6 @@ test("owner publishes an ordered route and technician completes the field workda
     expect(publishResponse.ok(), await publishResponse.text()).toBeTruthy();
     expect((await publishResponse.json()).item.status).toBe("published");
 
-    const field = await fieldContext.newPage();
-    await signIn(field, "tech@happyyards.test");
-    await expect(field).toHaveURL(/\/field\/today$/);
     const profileResponse = await field.request.get("/api/v1/field/profile");
     expect(profileResponse.ok()).toBeTruthy();
     expect((await profileResponse.json()).item.id).toBe(technician!.id);
@@ -105,8 +110,8 @@ test("owner publishes an ordered route and technician completes the field workda
     expect(fieldRouteResponse.ok()).toBeTruthy();
     const fieldRoute = (await fieldRouteResponse.json()).item;
     expect(fieldRoute.route.status).toBe("published");
-    expect(fieldRoute.jobs.map((job: { id: string }) => job.id)).toEqual(orderedJobIds);
-    expect(fieldRoute.jobs.every((job: { status: string }) => job.status === "dispatched")).toBe(true);
+    const allJobIds = [...priorStops.map(job => job.id), ...orderedJobIds];
+    expect(fieldRoute.jobs.map((job: { id: string; status: string }) => ({ id: job.id, status: job.status }))).toEqual([...priorStops, ...orderedJobIds.map(id => ({ id, status: "dispatched" }))]);
 
     await field.getByRole("navigation", { name: "Field navigation" }).getByRole("link", { name: "Time" }).click();
     await field.getByRole("button", { name: "Clock in" }).click();
@@ -114,11 +119,11 @@ test("owner publishes an ordered route and technician completes the field workda
 
     await field.getByRole("navigation", { name: "Field navigation" }).getByRole("link", { name: "Route" }).click();
     const openJobs = field.getByRole("link", { name: /Open job/i });
-    await expect(openJobs).toHaveCount(2);
+    await expect(openJobs).toHaveCount(allJobIds.length);
     const visibleOrder = await openJobs.evaluateAll((links) => links.map((link) => link.getAttribute("href")));
-    expect(visibleOrder).toEqual(orderedJobIds.map((id) => `/field/job/${id}`));
+    expect(visibleOrder).toEqual(allJobIds.map((id) => `/field/job/${id}`));
 
-    await openJobs.first().click();
+    await field.locator(`a[href="/field/job/${orderedJobIds[0]}"]`).click();
     await expect(field.getByText("Before you begin")).toBeVisible();
     await expect(field.getByText("Access", { exact: true })).toBeVisible();
     await expect(field.getByText(jobs.find((job) => job.id === orderedJobIds[0])!.instruction)).toBeVisible();

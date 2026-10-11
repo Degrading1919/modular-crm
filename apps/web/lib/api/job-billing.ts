@@ -161,11 +161,11 @@ export async function finishedWork(request: Request, actor: SessionActor) {
     const candidates = await tx.select().from(jobs).where(conditions).orderBy(jobs.id).limit(1001);
     if (candidates.length > 1000) throw new DomainError("VALIDATION_ERROR", "Choose a shorter billing range.", 422);
     await lockSourceEstimates(tx, actor.tenantId, candidates);
-    const work = candidates.length ? await tx.select().from(jobs).where(and(conditions, inArray(jobs.id, candidates.map(job => job.id)))).orderBy(jobs.id).for("update") : [];
-    // Completion billing uses job → plan locks too. Serialize all once claims before invoice creation.
-    const planIds = [...new Set(work.map(job => job.servicePlanId).filter((id): id is string => !!id))];
+    // Plan → job matches completion, generation and plan withdrawal; lock before claiming visits.
+    const planIds = [...new Set(candidates.map(job => job.servicePlanId).filter((id): id is string => !!id))];
     const lockedPlans = planIds.length ? await tx.select().from(servicePlans).where(and(eq(servicePlans.tenantId, actor.tenantId), inArray(servicePlans.id, planIds))).orderBy(servicePlans.id).for("update") : [];
     const plans = new Map(lockedPlans.map(plan => [plan.id, plan]));
+    const work = candidates.length ? await tx.select().from(jobs).where(and(conditions, inArray(jobs.id, candidates.map(job => job.id)))).orderBy(jobs.id).for("update") : [];
     const groups = new Map<string, Job[]>();
     for (const job of work) {
       // Recheck after obtaining locks: another billing transaction may have just claimed it.

@@ -28,6 +28,7 @@ export const workspaceRules: Record<string, AccessRule> = {
   connections: tool(undefined, "connectors.read"),
   staff: tool("staff_access_management", "staff.read"),
   payroll: tool("payroll_inputs", "payroll.read"),
+  time: tool("time_tracking", "time.all_read"),
   inventory: tool("inventory_tracking", "inventory.read"),
   automations: tool("automation_workflows", "automations.read"),
   communications: tool("customer_notifications", "communications.read"),

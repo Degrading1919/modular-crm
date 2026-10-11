@@ -77,8 +77,8 @@ export async function handleAuthRoute(request: Request, path: string[]): Promise
   }
   if (action === "me" && request.method === "GET") {
     const actor = await requireActor(request);
-    const [tenant] = await getDb().select({ timezone: tenants.defaultTimezone }).from(tenants).where(eq(tenants.id, actor.tenantId)).limit(1);
-    return json({ user: { id: actor.userId, name: actor.name, email: actor.email, role: actor.kind === "staff" ? actor.role : "customer", permissions: actor.kind === "staff" ? [...actor.permissions] : [] }, tenant: { id: actor.tenantId, name: actor.tenantName, packKey: actor.packKey, timezone: tenant?.timezone ?? "UTC" } });
+    const [tenant] = await getDb().select({ timezone: tenants.defaultTimezone, settings: tenants.settings }).from(tenants).where(eq(tenants.id, actor.tenantId)).limit(1);
+    return json({ user: { id: actor.userId, name: actor.name, email: actor.email, role: actor.kind === "staff" ? actor.role : "customer", permissions: actor.kind === "staff" ? [...actor.permissions] : [] }, tenant: { id: actor.tenantId, name: actor.tenantName, packKey: actor.packKey, timezone: tenant?.timezone ?? "UTC", ownerFieldWorker: tenant?.settings.ownerFieldWorker === true } });
   }
   if (action === "register" && request.method === "POST") {
     const limited = await rateLimitAuthIp(request);

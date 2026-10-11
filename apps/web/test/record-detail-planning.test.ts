@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { PGlite } from "../../../packages/db/node_modules/@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { schema, seedDevelopment, seedIds, type Database } from "@modular-crm/db";
 import { permissionsForRole } from "@modular-crm/domain";
 import type { SessionActor } from "../lib/api/actor";
@@ -157,15 +157,17 @@ it("optimizes only active stops and preserves the withdrawn stop's sequence and 
 });
 it("reassigns within the job's business only, retaining assignment history", async () => {
   const job = await createJob();
-  await expect(handleWorkflow(request({ technicianId: seedIds.oliviaMembership }), ["jobs",job.id,"assign"], owner)).rejects.toMatchObject({ status: 404 });
-  await expect(action(job, "reassign", { technicianId: seedIds.caseyMembership })).rejects.toMatchObject({ status: 404 });
+  expect((await handleWorkflow(request({ technicianId: seedIds.oliviaMembership }), ["jobs",job.id,"assign"], owner))!.status).toBe(200);
+  const ownerAssigned = (await db.select().from(schema.jobs).where(eq(schema.jobs.id, job.id)))[0]!;
+  expect((await db.select().from(schema.jobAssignments).where(and(eq(schema.jobAssignments.jobId, job.id), sql`${schema.jobAssignments.removedAt} is null`)))[0]!.membershipId).toBe(seedIds.oliviaMembership);
+  await expect(action(ownerAssigned, "reassign", { technicianId: seedIds.caseyMembership })).rejects.toMatchObject({ status: 404 });
   await db.insert(schema.outboundMessages).values({ tenantId: owner.tenantId, customerId: job.customerId, jobId: job.id, channel: "sms", category: "service", templateKey: "service-day-reminder", recipient: "+17065550101", renderedBody: "Old dispatch", status: "queued", idempotencyKey: crypto.randomUUID() });
-  await expect(action(job, "reassign", { technicianId: seedIds.oliviaMembership })).rejects.toMatchObject({ status: 404 });
+  await expect(action(ownerAssigned, "reassign", { technicianId: seedIds.cleanOwnerMembership })).rejects.toMatchObject({ status: 404 });
   await db.insert(schema.membershipLocationScopes).values({ tenantId: owner.tenantId, membershipId: seedIds.caseyMembership, locationId: seedIds.augusta });
-  expect((await action(job, "reassign", { technicianId: seedIds.caseyMembership }))!.status).toBe(200);
+  expect((await action(ownerAssigned, "reassign", { technicianId: seedIds.caseyMembership }))!.status).toBe(200);
   expect((await db.select().from(schema.outboundMessages).where(eq(schema.outboundMessages.jobId,job.id)))[0]).toMatchObject({ status: "suppressed", failureCode: "visit_rescheduled" });
   const assignments = await db.select().from(schema.jobAssignments).where(eq(schema.jobAssignments.jobId, job.id));
-  expect(assignments).toHaveLength(2); expect(assignments.filter((row) => !row.removedAt)).toHaveLength(1);
+  expect(assignments).toHaveLength(3); expect(assignments.filter((row) => !row.removedAt)).toHaveLength(1);
   expect(assignments.find((row) => !row.removedAt)!.membershipId).toBe(seedIds.caseyMembership);
 });
 it("requires a cancellation reason and emits one audited notification event on replay", async () => {

@@ -124,7 +124,7 @@ Field Technician: read scoped summary only
 - `jobs.update`
 - `jobs.assign`
 - `jobs.dispatch`
-- `jobs.start`
+- `jobs.start` — effective field eligibility for active Owner/Office/Technician memberships as well as starting work; role-name changes are not required, and branch access still applies.
 - `jobs.complete`
 - `jobs.skip`
 - `jobs.cancel`
@@ -208,8 +208,8 @@ Field Technician: scoped read/create/update for assigned/job-related tickets
 - `time.own_create`
 - `time.own_correct_request`
 - `time.all_read`
-- `time.correct`
-- `time.approve`
+- `time.correct` — audited office close-out of forgotten open shifts; resulting hours remain pending.
+- `time.approve` — separately approve scoped recorded hours from Review work time; cannot change locked payroll sources.
 - `mileage.own_manage`
 - `mileage.all_read`
 

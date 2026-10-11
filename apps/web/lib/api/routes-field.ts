@@ -1,3 +1,4 @@
+import { fieldWorkerSql } from "@modular-crm/db";
 import { DEFAULT_JOB_CHECKLIST, DEFAULT_SKIP_REASONS, packFieldValues } from "@modular-crm/industry-packs";
 import { assetView, tenantIndustryPack } from "./pack-fields";
 import { createHash, randomUUID } from "node:crypto";
@@ -106,11 +107,11 @@ async function createRoute(request: Request, actor: SessionActor): Promise<Respo
   const body = await readBody(request, z.object({ date: z.iso.date(), technicianId: z.uuid() }));
   const db = getDb();
   const technician = await rows(sql`select m.id,m.default_location_id from memberships m join role_templates rt on rt.id=m.role_template_id and rt.tenant_id=m.tenant_id
-    where m.tenant_id=${actor.tenantId} and m.id=${body.technicianId} and m.status='active' and rt.key='technician' limit 1`);
+    where m.tenant_id=${actor.tenantId} and m.id=${body.technicianId} and m.status='active' and m.organization_id=${actor.organizationId} and ${fieldWorkerSql(sql`rt.id`, sql`rt.key`)} limit 1`);
   if (!technician.length) throw new DomainError("NOT_FOUND", "Technician not found.", 404);
   const assigned = await rows(sql`select distinct j.id, j.organization_location_id from jobs j join job_assignments ja on ja.job_id=j.id and ja.tenant_id=j.tenant_id and ja.removed_at is null
     where j.tenant_id=${actor.tenantId} and ja.membership_id=${body.technicianId} and j.scheduled_date=${body.date}
-    and j.status='scheduled' order by j.id`);
+    and j.organization_id=${actor.organizationId} and j.status='scheduled' order by j.id`);
   if (!assigned.length) throw new DomainError("VALIDATION_ERROR", "No assigned jobs were found for that date.", 422);
   if (assigned.some((job) => !locationAllowed(actor, job.organization_location_id as string | null))) throw new DomainError("NOT_FOUND", "Some jobs are outside your locations.", 404);
   const routeLocationId = assigned[0]!.organization_location_id as string | null;
@@ -218,7 +219,7 @@ async function mutateRoute(request: Request, actor: SessionActor, id: string, ac
 
 async function fieldRouteData(actor: SessionActor, dateMode: "today" | "nearest") {
   requireStaff(actor);
-  if (actor.role !== "technician") throw new DomainError("FORBIDDEN", "Field workspace requires a technician account.", 403);
+  requirePermission(actor, "jobs.start");
   const businessDate = await today(actor, actor.defaultLocationId);
   const routeDateCondition = dateMode === "today" ? sql`rp.route_date=${businessDate}` : sql`rp.route_date >= ${businessDate}`;
   const route = await rows(sql`select rp.* from route_plans rp where rp.tenant_id=${actor.tenantId} and rp.membership_id=${actor.membershipId}
@@ -229,27 +230,30 @@ async function fieldRouteData(actor: SessionActor, dateMode: "today" | "nearest"
       and (${actor.allLocations} or j.organization_location_id = any(${uuidArray(actor.locationIds)}))
       and exists (select 1 from job_assignments ja where ja.tenant_id=j.tenant_id and ja.job_id=j.id
         and ja.membership_id=rp.membership_id and ja.removed_at is null))
-    order by rp.route_date asc, rp.published_at desc limit 1`);
+    order by rp.route_date asc, rp.published_at asc, rp.id`);
+  const dayRoutes = route.filter(r => r.route_date === route[0]?.route_date);
   const list = route[0] ? await rows(sql`select j.id, j.status, j.scheduled_date, c.display_name as customer_name, c.billing_phone as phone,
-    s.name as service_name, sl.address_line1 as address, sl.latitude, sl.longitude, rs.sequence, j.estimated_duration_minutes as duration_minutes
+    s.name as service_name, sl.address_line1 as address, sl.latitude, sl.longitude, rs.sequence, rs.route_plan_id, j.service_window_start, j.service_window_end, j.estimated_duration_minutes as duration_minutes
     from route_stops rs join jobs j on j.id=rs.job_id and j.tenant_id=rs.tenant_id
     join customers c on c.id=j.customer_id and c.tenant_id=j.tenant_id
     join services s on s.id=j.service_id and s.tenant_id=j.tenant_id
     join service_locations sl on sl.id=j.service_location_id and sl.tenant_id=j.tenant_id
-    where rs.tenant_id=${actor.tenantId} and rs.route_plan_id=${route[0].id} and rs.status <> 'removed' and j.scheduled_date=${route[0].route_date}
+    where rs.tenant_id=${actor.tenantId} and rs.route_plan_id=any(${uuidArray(dayRoutes.map(r => String(r.id)))}) and rs.status <> 'removed' and j.scheduled_date=${route[0].route_date}
       and (${actor.allLocations} or j.organization_location_id = any(${uuidArray(actor.locationIds)}))
       and exists (select 1 from job_assignments ja where ja.tenant_id=j.tenant_id and ja.job_id=j.id
         and ja.membership_id=${actor.membershipId} and ja.removed_at is null)
-    order by rs.sequence`) : [];
+    order by rs.route_plan_id, rs.sequence`) : [];
+  const routeOrder = new Map(dayRoutes.map((r, index) => [String(r.id), index]));
+  list.sort((a, b) => routeOrder.get(String(a.route_plan_id))! - routeOrder.get(String(b.route_plan_id))! || Number(a.sequence) - Number(b.sequence));
   return {
-    route: route[0] ? normalized({ ...route[0], date: route[0].route_date, distanceMiles: Number(route[0].estimated_distance_meters ?? 0) / 1609.344, driveMinutes: Math.round(Number(route[0].estimated_drive_seconds ?? 0) / 60) }) : null,
+    route: route[0] ? normalized({ ...route[0], date: route[0].route_date, routeCount: dayRoutes.length, distanceMiles: dayRoutes.reduce((total, r) => total + Number(r.estimated_distance_meters ?? 0), 0) / 1609.344, driveMinutes: Math.round(dayRoutes.reduce((total, r) => total + Number(r.estimated_drive_seconds ?? 0), 0) / 60) }) : null,
     jobs: normalized(list),
   };
 }
 
 async function fieldToday(actor: SessionActor) {
   requireStaff(actor);
-  if (actor.role !== "technician") throw new DomainError("FORBIDDEN", "Field workspace requires a technician account.", 403);
+  requirePermission(actor, "jobs.start");
   const routeData = await fieldRouteData(actor, "today");
   const [shift] = await getDb().select().from(shifts).where(and(eq(shifts.tenantId, actor.tenantId), eq(shifts.membershipId, actor.membershipId))).orderBy(sql`${shifts.clockInAt} desc`).limit(1);
   const timezone = await fieldTimeZone(actor, shift?.organizationLocationId ?? actor.defaultLocationId);
@@ -267,7 +271,7 @@ async function fieldRoute(actor: SessionActor) {
 async function fieldJob(actor: SessionActor, id: string) {
   requireStaff(actor);
   const job = await getAssignedJob(actor, id);
-  if (actor.role !== "technician") throw new DomainError("FORBIDDEN", "Field workspace requires a technician account.", 403);
+  requirePermission(actor, "jobs.start");
   const [details] = await rows(sql`select j.*, c.display_name as customer_name, c.billing_phone as phone, s.name as service_name,
     sl.address_line1 as address, sl.access_instructions_encrypted, sl.custom_fields as location_fields
     from jobs j join customers c on c.id=j.customer_id and c.tenant_id=j.tenant_id
@@ -278,7 +282,7 @@ async function fieldJob(actor: SessionActor, id: string) {
   const assets = await rows(sql`select id,name,asset_type_key,custom_fields from customer_assets where tenant_id=${actor.tenantId} and customer_id=${job.customerId} and archived_at is null and (service_location_id is null or service_location_id=${job.serviceLocationId})`);
   const { access_instructions_encrypted: encryptedAccess, location_fields: storedFields, ...safeDetails } = details ?? {};
   const fields = pack.locationFields.filter(field => !field.sensitive);
-  return { ...normalized(safeDetails) as Record<string, unknown>, accessNotes: decryptServiceAccessInstructions(encryptedAccess), durationMinutes: job.estimatedDurationMinutes, notes: job.internalSummary,
+  return { ...normalized(safeDetails) as Record<string, unknown>, timeZone: await fieldTimeZone(actor, job.organizationLocationId), accessNotes: decryptServiceAccessInstructions(encryptedAccess), durationMinutes: job.estimatedDurationMinutes, notes: job.internalSummary,
     assets: assets.map(row => ({ ...assetView(pack, { id: row.id, name: String(row.name), assetTypeKey: String(row.asset_type_key), customFields: row.custom_fields as Record<string, unknown> ?? {} }), accessNotes: decryptServiceAccessInstructions((row.custom_fields as Record<string, unknown> | null)?.accessInstructionsEncrypted) })),
     fields, fieldValues: packFieldValues(fields, storedFields as Record<string, unknown> ?? {}), checklist: pack.jobChecklist.length ? pack.jobChecklist : DEFAULT_JOB_CHECKLIST, skipReasons: pack.noncompletionReasons.length ? pack.noncompletionReasons : DEFAULT_SKIP_REASONS };
 }
@@ -364,15 +368,17 @@ async function fieldMutation(request: Request, actor: SessionActor, id: string, 
 
 async function fieldTime(request: Request, actor: SessionActor): Promise<Response> {
   requireStaff(actor);
-  if (actor.role !== "technician") throw new DomainError("FORBIDDEN", "Field workspace requires a technician account.", 403);
+  requirePermission(actor, "jobs.start");
   const db = getDb();
   if (request.method === "GET") {
+    requirePermission(actor, "time.own_read");
     const state = await fieldToday(actor);
     const entries = await rows(sql`select id, source as action, starts_at as created_at, duration_seconds from time_entries where tenant_id=${actor.tenantId} and membership_id=${actor.membershipId} order by starts_at desc limit 20`);
     const miles = await rows(sql`select id, source as action, occurred_on as created_at, round(distance_meters / 1609.344,1) as miles from mileage_records where tenant_id=${actor.tenantId} and membership_id=${actor.membershipId} order by occurred_on desc limit 20`);
     return json({ item: { shift: state.shift, entries: normalized([...entries, ...miles]) } });
   }
   const body = await readBody(request, z.object({ action: z.enum(["clock_in", "clock_out", "break_start", "break_end", "mileage"]), miles: z.number().positive().optional(), clientOperationId: z.uuid().optional(), deviceTimestamp: z.iso.datetime({ offset: true }).optional() }));
+  requirePermission(actor, "time.own_create");
   const receivedAt = new Date();
   const deviceTime = body.deviceTimestamp ? new Date(body.deviceTimestamp) : null;
   const effectiveAt = fieldEffectiveTime(deviceTime, receivedAt);

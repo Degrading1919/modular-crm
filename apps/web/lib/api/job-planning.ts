@@ -10,13 +10,14 @@ import { json, readBody } from "./http";
 import { normalized, uuidArray } from "./sql";
 import { recordJobReschedule, suppressJobReminders } from "./job-reschedule";
 import { arrivalInstant } from "../schedule-dates";
+import { fieldWorkerSql } from "@modular-crm/db";
 
 type Tx = Parameters<Parameters<ReturnType<typeof getDb>["transaction"]>[0]>[0];
 const plannable = new Set(["draft", "unscheduled", "scheduled", "dispatched", "missed"]);
 
-export async function assignableTechnician(tx: Pick<Tx, "select">, actor: SessionActor, job: typeof jobs.$inferSelect, technicianId: string) {
+export async function assignableTechnician(tx: Pick<Tx, "select">, actor: SessionActor, job: Pick<typeof jobs.$inferSelect, "organizationId" | "organizationLocationId">, technicianId: string) {
   const [technician] = await tx.select({ id: memberships.id }).from(memberships).innerJoin(roleTemplates, and(eq(roleTemplates.id, memberships.roleTemplateId), eq(roleTemplates.tenantId, memberships.tenantId)))
-    .where(and(eq(memberships.tenantId, actor.tenantId), eq(memberships.id, technicianId), eq(memberships.organizationId, job.organizationId), sql`(${memberships.defaultLocationId} = ${job.organizationLocationId} or exists(select 1 from membership_location_scopes mls where mls.tenant_id=${actor.tenantId} and mls.membership_id=${memberships.id} and mls.location_id=${job.organizationLocationId}))`, eq(memberships.status, "active"), eq(roleTemplates.key, "technician")));
+    .where(and(eq(memberships.tenantId, actor.tenantId), eq(memberships.id, technicianId), eq(memberships.organizationId, job.organizationId), sql`(${roleTemplates.key}='owner' or ${memberships.defaultLocationId} = ${job.organizationLocationId} or exists(select 1 from membership_location_scopes mls where mls.tenant_id=${actor.tenantId} and mls.membership_id=${memberships.id} and mls.location_id=${job.organizationLocationId}))`, eq(memberships.status, "active"), fieldWorkerSql(roleTemplates.id, roleTemplates.key)));
   if (!technician) throw new DomainError("NOT_FOUND", "Technician not found for this business location.", 404);
   return technician;
 }

@@ -1,3 +1,4 @@
+import { fieldWorkerSql } from "@modular-crm/db";
 import { randomBytes, randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import {
@@ -428,6 +429,7 @@ async function listStaff(actor: StaffActor, memberId?: string) {
     name: user.name,
     email: user.email,
     role: roleTemplates.key,
+    fieldWorker: fieldWorkerSql(roleTemplates.id, roleTemplates.key),
   }).from(memberships).innerJoin(user, eq(memberships.userId, user.id)).innerJoin(roleTemplates, eq(memberships.roleTemplateId, roleTemplates.id)).where(and(
     eq(memberships.tenantId, actor.tenantId),
     eq(memberships.organizationId, actor.organizationId),
@@ -458,6 +460,7 @@ async function listStaff(actor: StaffActor, memberId?: string) {
       name: entry.name,
       email: entry.email,
       role: entry.role,
+      fieldWorker: entry.fieldWorker,
       locationName: names.join(", "),
       locationIds: names.length ? [...ids].filter((id) => locations.some((location) => location.id === id)) : [],
       status: entry.membership.status,
@@ -648,7 +651,11 @@ async function handleStaff(request: Request, path: string[], actor: SessionActor
   if (request.method === "GET") {
     authorize(actor, "staff.read");
     if (path.length === 2) return json({ item: await listStaff(actor, path[1]) });
-    return json({ items: await listStaff(actor) });
+    const rows = await listStaff(actor);
+    const items = Array.isArray(rows) ? rows : [rows];
+    const params = new URL(request.url).searchParams;
+    const search = (params.get("search") ?? "").toLowerCase();
+    return json({ items: items.filter(item => (!params.has("fieldWorkers") || item.fieldWorker && item.status === "active") && (!search || `${item.name} ${item.email}`.toLowerCase().includes(search))) });
   }
   if (request.method === "POST" && path.length === 1) {
     authorize(actor, "staff.invite");

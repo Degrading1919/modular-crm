@@ -1,3 +1,4 @@
+import { fieldWorkerSql } from "@modular-crm/db";
 import { sql } from "drizzle-orm";
 import { DomainError, requirePermission } from "@modular-crm/domain";
 import { z } from "zod";
@@ -28,11 +29,11 @@ export async function handleSchedule(request: Request, path: string[], actor: Se
   const from = weekStart(day, startsOn), through = addDays(from, 6);
   const branchIds = branches.filter(branch => !locationId || branch.id === locationId).map(branch => String(branch.id));
   const technicians = await rows(sql`select m.id,u.name,m.organization_id,
-      array(select l.id from organization_locations l where l.tenant_id=m.tenant_id and l.id=any(${uuidArray(branchIds)})
-        and (l.id=m.default_location_id or exists(select 1 from membership_location_scopes ms where ms.tenant_id=m.tenant_id and ms.membership_id=m.id and ms.location_id=l.id))) as location_ids
+      array(select l.id from organization_locations l where l.tenant_id=m.tenant_id and l.organization_id=m.organization_id and l.id=any(${uuidArray(branchIds)})
+        and (r.key='owner' or l.id=m.default_location_id or exists(select 1 from membership_location_scopes ms where ms.tenant_id=m.tenant_id and ms.membership_id=m.id and ms.location_id=l.id))) as location_ids
     from memberships m join "user" u on u.id=m.user_id join role_templates r on r.id=m.role_template_id and r.tenant_id=m.tenant_id
-    where m.tenant_id=${actor.tenantId} and m.status='active' and r.key='technician'
-      and exists(select 1 from organization_locations l where l.tenant_id=m.tenant_id and l.id=any(${uuidArray(branchIds)}) and (l.id=m.default_location_id or exists(select 1 from membership_location_scopes ms where ms.tenant_id=m.tenant_id and ms.membership_id=m.id and ms.location_id=l.id)))
+    where m.tenant_id=${actor.tenantId} and m.status='active' and ${fieldWorkerSql(sql`r.id`, sql`r.key`)}
+      and exists(select 1 from organization_locations l where l.tenant_id=m.tenant_id and l.organization_id=m.organization_id and l.id=any(${uuidArray(branchIds)}) and (r.key='owner' or l.id=m.default_location_id or exists(select 1 from membership_location_scopes ms where ms.tenant_id=m.tenant_id and ms.membership_id=m.id and ms.location_id=l.id)))
     order by u.name,m.id`);
   const items = await rows(sql`select j.id,j.status,j.scheduled_date,j.updated_at,j.organization_location_id,j.assigned_route_id,
       c.display_name as customer_name,s.name as service_name,l.name as branch_name,l.timezone,

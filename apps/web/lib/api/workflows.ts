@@ -1,3 +1,4 @@
+import { withdrawPlanVisits } from "./plan-withdrawal";
 import { clientAddress } from "./client-address";
 import { createHash, randomBytes } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
@@ -5,7 +6,7 @@ import { z } from "zod";
 import {
   auditEvents, completionProofs, connectorInstallations, customerAssets, customerContacts, customers, domainEvents, estimateApprovals, estimateRevisions, estimates, hasUsableFeature, invoiceItems, invoices, jobAssignments, jobStatusEvents,
   jobs, jobInvoiceLinks, leads, loadTenantCapabilities, paymentAllocations, payments, recurrenceRules, serviceLocations, servicePlans, services, tenants,
-  secureEstimateTokens, organizations,
+  secureEstimateTokens, organizations, organizationLocations,
 } from "@modular-crm/db";
 import { assertTransition, documentCharges, frozenDocument, invoiceDueDate, DomainError, manualPaymentMethods, requirePermission, type Permission } from "@modular-crm/domain";
 import { updateInvoiceFinancialPosition } from "./invoice-payment-ledger";
@@ -266,6 +267,7 @@ export async function transitionJob(actor: SessionActor, jobId: string, next: st
     ? await hasUsableInvoicingCapability(actor.tenantId)
     : false;
   const outcome = await db.transaction(async (tx) => {
+    if (requestedJob.servicePlanId) await tx.select({ id: servicePlans.id }).from(servicePlans).where(and(eq(servicePlans.tenantId, actor.tenantId), eq(servicePlans.id, requestedJob.servicePlanId))).for("update");
     await tx.execute(sql`SELECT id FROM jobs WHERE tenant_id = ${actor.tenantId} AND id = ${jobId} FOR UPDATE`);
     const [job] = await tx.select().from(jobs).where(and(eq(jobs.id, jobId), eq(jobs.tenantId, actor.tenantId))).limit(1);
     if (!job) throw new DomainError("NOT_FOUND", "Job not found.", 404);
@@ -346,7 +348,7 @@ async function issueCompletionInvoice(
 ): Promise<{ id: string; invoiceNumber: string; status: string } | null> {
   if (!job.servicePlanId) return null;
   const [plan] = await tx.select().from(servicePlans).where(and(eq(servicePlans.tenantId, actor.tenantId), eq(servicePlans.id, job.servicePlanId))).for("update");
-  if (!plan || plan.customerId !== job.customerId || plan.serviceId !== job.serviceId || !configuredForCompletionBilling(plan.billingConfiguration)) return null;
+  if (!plan || plan.status !== "active" || plan.customerId !== job.customerId || plan.serviceId !== job.serviceId || !configuredForCompletionBilling(plan.billingConfiguration)) return null;
   let amountMinor = snapshotAmount(job.priceSnapshot) ?? snapshotAmount(plan.pricingSnapshot);
   const [customer] = await tx.select().from(customers).where(and(eq(customers.tenantId, actor.tenantId), eq(customers.id, job.customerId))).limit(1);
   const [service] = await tx.select().from(services).where(and(eq(services.tenantId, actor.tenantId), eq(services.id, job.serviceId))).limit(1);
@@ -495,7 +497,10 @@ async function servicePlanAction(actor: SessionActor, planId: string, action: st
     if (!current) throw new DomainError("NOT_FOUND", "Service plan not found.", 404);
     assertTransition("servicePlan", current.status, next);
     const now = new Date();
-    const [saved] = await tx.update(servicePlans).set({ status: next, pauseFrom: next === "paused" ? businessDate(now, tenant?.timezone ?? "UTC") : null, pauseUntil: next === "active" ? null : undefined, canceledAt: next === "canceled" ? now : undefined, updatedAt: now }).where(and(eq(servicePlans.id, planId), eq(servicePlans.tenantId, actor.tenantId))).returning();
+    const [calendar] = await tx.select({ zone: sql<string>`coalesce(${organizationLocations.timezone},${organizations.timezone},${tenants.defaultTimezone})` }).from(serviceLocations).innerJoin(customers, and(eq(customers.tenantId, serviceLocations.tenantId), eq(customers.id, serviceLocations.customerId))).innerJoin(organizations, and(eq(organizations.tenantId, customers.tenantId), eq(organizations.id, customers.organizationId))).innerJoin(tenants, eq(tenants.id, organizations.tenantId)).leftJoin(organizationLocations, and(eq(organizationLocations.tenantId, serviceLocations.tenantId), eq(organizationLocations.id, serviceLocations.organizationLocationId))).where(and(eq(serviceLocations.tenantId, actor.tenantId), eq(serviceLocations.id, current.serviceLocationId)));
+    const effectiveDate = businessDate(now, calendar?.zone ?? tenant?.timezone ?? "UTC");
+    const [saved] = await tx.update(servicePlans).set({ status: next, pauseFrom: next === "paused" ? effectiveDate : null, pauseUntil: next === "active" ? null : undefined, canceledAt: next === "canceled" ? now : undefined, updatedAt: now }).where(and(eq(servicePlans.id, planId), eq(servicePlans.tenantId, actor.tenantId))).returning();
+    if (next === "paused" || next === "canceled") await withdrawPlanVisits(tx, actor, planId, effectiveDate, `service_plan_${next}`);
     await recordEvent(actor, { type: `service_plan.${next}`, entityType: "service_plan", entityId: planId, auditAction: `service_plan.${next}`, before: { status: current.status }, after: { status: next }, locationId: current.organizationLocationId }, tx);
     return saved;
   });
@@ -532,7 +537,7 @@ export async function handleWorkflow(request: Request, path: string[], actor: Se
     if (body.status === "completed") throw new DomainError("VALIDATION_ERROR", "Complete the job using the field checklist.", 422);
     return transitionJob(actor, id, body.status, {
       ...body,
-      ...(actor.kind === "staff" && actor.role === "technician" ? { fieldOperation: { action: `job.transition.${body.status}`, target: id, clientOperationId: body.clientOperationId, payload: body, deviceTimestamp: body.deviceTimestamp ? new Date(body.deviceTimestamp) : null } } : {}),
+      ...(actor.kind === "staff" && (actor.role === "technician" || body.clientOperationId) ? { fieldOperation: { action: `job.transition.${body.status}`, target: id, clientOperationId: body.clientOperationId, payload: body, deviceTimestamp: body.deviceTimestamp ? new Date(body.deviceTimestamp) : null } } : {}),
     });
   }
   if (resource === "invoices" && action === "void") return voidInvoice(actor, id);

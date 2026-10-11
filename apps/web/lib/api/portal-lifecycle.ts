@@ -1,3 +1,4 @@
+import { withdrawPlanVisits } from "./plan-withdrawal";
 import { identifyTenant } from "@modular-crm/config/observability";
 import { limitRequest } from "./rate-limits";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
@@ -335,9 +336,11 @@ async function resolveRequest(request: Request, actor: SessionActor, requestId: 
     : response ? { customerResponse: response } : null;
   const [updated] = await db.transaction(async (tx) => {
     if (plan && planAfter) {
+      await tx.select({ id: servicePlans.id }).from(servicePlans).where(and(eq(servicePlans.tenantId, actor.tenantId), eq(servicePlans.id, plan.id))).for("update");
       const [updatedPlan] = await tx.update(servicePlans).set({ status: String(planAfter.status), pauseFrom: planAfter.pauseFrom as string | null, pauseUntil: planAfter.pauseUntil as string | null, effectiveTo: planAfter.effectiveTo as string | null, canceledAt: planAfter.canceledAt ? new Date(String(planAfter.canceledAt)) : null, cancellationReason: planAfter.cancellationReason as string | null, updatedAt: now })
         .where(and(eq(servicePlans.id, plan.id), eq(servicePlans.tenantId, actor.tenantId), eq(servicePlans.customerId, row.customerId), eq(servicePlans.serviceLocationId, row.serviceLocationId!), eq(servicePlans.status, plan.status))).returning();
       if (!updatedPlan) throw new DomainError("CONFLICT", "The service plan changed while this request was being reviewed.", 409);
+      if (planAfter.status === "paused" || planAfter.status === "canceled") await withdrawPlanVisits(tx, actor, plan.id, String(planAfter.status === "paused" ? planAfter.pauseFrom : planAfter.effectiveTo), `service_plan_${planAfter.status}`);
     }
     const result = await tx.update(customerChangeRequests).set({ status, reviewedByMembershipId: staff.membershipId, reviewedAt: now, internalNote: response, appliedChanges, updatedAt: now })
         .where(and(eq(customerChangeRequests.id, row.id), eq(customerChangeRequests.tenantId, actor.tenantId), inArray(customerChangeRequests.status, ["pending", "submitted", "reviewing"]))).returning();

@@ -90,6 +90,7 @@ test("second-pack signup, quote, customer detail, portal edit and technician com
     await chooseStaffRecord(page, "Customer", name); await chooseStaffRecord(page, "Service", "Recurring Cleaning");
     await page.getByLabel("Service day").fill(new Date().toISOString().slice(0, 10));
     const jobPromise = page.waitForResponse(response => new URL(response.url()).pathname === "/api/v1/jobs" && response.request().method() === "POST");
+    await page.getByLabel("Visit price").fill("45.00");
     await page.getByRole("button", { name: "Create job", exact: true }).click(); const jobResponse = await jobPromise; expect(jobResponse.ok(), await jobResponse.text()).toBeTruthy(); const job = (await jobResponse.json()).item;
     const staff = await page.request.get("/api/v1/staff"); expect(staff.ok()).toBeTruthy(); const cleaner = (await staff.json()).items.find((item: { name: string }) => item.name === "Dana Cleaner"); expect(cleaner).toBeTruthy();
     const assigned = await page.request.post(`/api/v1/jobs/${job.id}/assign`, { data: { technicianId: cleaner.id, scheduledDate: new Date().toISOString().slice(0, 10) } }); expect(assigned.ok(), await assigned.text()).toBeTruthy();
