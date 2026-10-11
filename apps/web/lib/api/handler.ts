@@ -1,3 +1,5 @@
+import { handleOperationsSettings } from "./operations-settings";
+import { handleTimeReview } from "./time-review";
 import { observeRequest, identifyTenant } from "@modular-crm/config/observability";
 import { DomainError } from "@modular-crm/domain";
 import { requireActor } from "./actor";
@@ -110,10 +112,14 @@ async function dispatchV1(request: Request, path: string[]): Promise<Response> {
     if (tenantCapabilities) return tenantCapabilities;
     const reporting = await handleReporting(request, path, actor);
     if (reporting) return reporting;
+    const time = await handleTimeReview(request, path, actor);
+    if (time) return time;
     const payroll = await handlePayroll(request, path, actor);
     if (payroll) return payroll;
     const schedule = await handleSchedule(request, path, actor);
     if (schedule) return schedule;
+    const operationsSettings = await handleOperationsSettings(request, path, actor);
+    if (operationsSettings) return operationsSettings;
     const planning = await handleJobPlanning(request, path, actor);
     if (planning) return planning;
     const workflow = await handleWorkflow(request, path, actor);

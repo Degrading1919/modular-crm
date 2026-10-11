@@ -58,7 +58,9 @@ function toPriceRule(rule: typeof priceRules.$inferSelect): PriceRule | null {
 }
 
 /** Price a plan through the shared rules engine and return a billing-compatible immutable snapshot. */
-export async function calculateServicePlanPrice(tx: DbTransaction, input: ServicePlanPriceInput): Promise<Record<string, unknown>> {
+export async function calculateServicePlanPrice(tx: DbTransaction, input: ServicePlanPriceInput & { allowUnpricedQuote: true }): Promise<Record<string, unknown> | null>;
+export async function calculateServicePlanPrice(tx: DbTransaction, input: ServicePlanPriceInput): Promise<Record<string, unknown>>;
+export async function calculateServicePlanPrice(tx: DbTransaction, input: ServicePlanPriceInput & { allowUnpricedQuote?: boolean }): Promise<Record<string, unknown> | null> {
   const [tenant] = await tx.select({ currency: tenants.defaultCurrency }).from(tenants).where(eq(tenants.id, input.tenantId)).limit(1);
   if (!tenant) throw new DomainError("NOT_FOUND", "Business not found.", 404);
   const [service] = await tx.select({ taxable: services.taxable, serviceKey: services.key }).from(services)
@@ -87,7 +89,11 @@ export async function calculateServicePlanPrice(tx: DbTransaction, input: Servic
   } catch {
     throw new DomainError("VALIDATION_ERROR", "The configured service price could not be calculated.", 422);
   }
-  if (result.quoteRequired) throw new DomainError("VALIDATION_ERROR", "This service needs a confirmed price before a plan can be activated.", 422);
+  if (result.quoteRequired) {
+    // Legacy one-time API clients may save a quote-only visit, but never get a guessed billable amount.
+    if (input.allowUnpricedQuote) return null;
+    throw new DomainError("VALIDATION_ERROR", "This service needs a confirmed price before a plan can be activated.", 422);
+  }
   const pricedAt = new Date().toISOString();
   return {
     ...snapshotPriceResult(result, pricedAt),

@@ -16,7 +16,9 @@ Primary bottom/compact navigation:
 - Tickets
 - Profile
 
-Opening a route stop takes the technician directly to the job surface.
+Opening a route stop takes the worker directly to the job surface. Active Owner, Office and Technician memberships with effective field-work permission are eligible within their existing business/location access; assignment does not change roles. The owner’s onboarding field-work choice exposes a field-work shortcut.
+
+Today/Route includes all the worker’s published routes for that selected day, in publication and stop order, with aggregate travel totals. Arrival windows use the visit branch’s timezone. Offline action identity, receipts and evidence retention apply equally to owner/office workers. Forgotten open shifts can be closed by authorized office staff from **Review work time**, with an audited reason; their hours still require a separate approval before payroll.
 
 ## Job card priorities
 

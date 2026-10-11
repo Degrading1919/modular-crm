@@ -2,6 +2,15 @@
 
 Compact history of accepted and superseded Modular CRM decisions.
 
+## 2026-10-11 — Usable operations for solo owners and office field workers
+
+- **Status:** Accepted
+- **Area:** Product / Architecture / UX
+- **Decision:** Effective field permission, not a Technician role label, governs assignment and field access; show all published same-day routes and branch-local arrival windows. Record one-time visit prices and usual recurring workers, withdraw future unstarted/uninvoiced work on plan pause/cancel without rewriting history, and provide separate audited office clock-out correction and time approval before payroll.
+- **Rationale:** Owner-authorized W1c handoff [6052920753](https://github.com/Degrading1919/modular-crm/pull/30#issuecomment-6052920753) requires the core operations spine to work for solo, office and field businesses. Existing authorization, offline receipts, invoice ownership and locked payroll remain authoritative.
+- **Authoritative doc:** docs/PRODUCT_SCOPE.md; docs/ARCHITECTURE.md
+- **Supersedes:** Optional-policy withdrawal on pause/cancel in V1_STATE_MACHINES.md; frequency/pricing edit defaults remain unchanged.
+
 Newest entries go first.
 
 ## 2026-10-08 — Recoverable business selection and transient edge checks

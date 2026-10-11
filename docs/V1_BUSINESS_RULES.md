@@ -145,7 +145,7 @@ Rules:
 
 ## Time and payroll
 
-- Staff time can come from shifts, job timers, manual entries, and approved corrections.
+- Staff time can come from shifts, job timers, manual entries, and approved corrections. Field clock-outs and office corrections start pending; **Review work time** is the normal separate approval path. Forgotten open shifts require an authorized correction time and recorded reason, never a guessed automatic clock-out. Approved/exported pay periods prevent source changes.
 - Overlapping shift/time entries are flagged.
 - Managers approve corrections and payroll periods according to permission.
 - Gross-pay components may include hourly time, overtime rules, per-job pay, commission, bonus, mileage, and tips.

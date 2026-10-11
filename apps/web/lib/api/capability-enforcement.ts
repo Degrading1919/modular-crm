@@ -27,6 +27,7 @@ export function requiredFeatureForApi(path: readonly string[], method: string): 
     if (second === "jobs") return "field_job_tracking";
     return null;
   }
+  if (root === "time") return "time_tracking";
   if (root === "payroll") return second === "statements" ? null : "payroll_inputs";
   if (root === "inventory" || root === "vendors" || root === "purchase-orders") return "inventory_tracking";
   if (root === "automations") return "automation_workflows";

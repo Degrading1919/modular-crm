@@ -15,7 +15,9 @@ vi.mock("nodemailer", () => ({ default: { createTransport: () => ({ sendMail }) 
 const config = readServerConfig({ NODE_ENV: "test", MOCK_CONNECTORS: "false", SMTP_HOST: "localhost", SMTP_FROM: "Platform <mail@platform.test>", APP_BASE_URL: "http://localhost:3000" });
 let pg: PGlite, db: Database;
 const now = new Date("2026-10-10T12:00:00Z");
-beforeAll(async () => { pg = new PGlite(); const raw = drizzle(pg, { schema }); await migrate(raw, { migrationsFolder: fileURLToPath(new URL("../../../packages/db/drizzle", import.meta.url)) }); db = raw as unknown as Database; await seedDevelopment(db); }, 120_000);
+beforeAll(async () => { pg = new PGlite(); const raw = drizzle(pg, { schema }); await migrate(raw, { migrationsFolder: fileURLToPath(new URL("../../../packages/db/drizzle", import.meta.url)) }); db = raw as unknown as Database; await seedDevelopment(db);
+  // These reminders run at a fixed historical instant; their capability grants must already be effective then.
+  await db.update(schema.tenantCapabilityGrants).set({ effectiveFrom: new Date(now.getTime() - 86_400_000) }).where(eq(schema.tenantCapabilityGrants.tenantId, seedIds.happyTenant)); }, 120_000);
 afterAll(async () => { vi.unstubAllEnvs(); await pg?.close(); });
 beforeEach(async () => { sendMail.mockReset(); sendMail.mockResolvedValue({ accepted: ["carter@example.test"], rejected: [], messageId: "accepted" }); await schedule(false); });
 async function schedule(enabled = true, maxReminders = 3) {

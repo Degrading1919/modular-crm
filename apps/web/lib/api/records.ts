@@ -1,3 +1,4 @@
+import { assignableTechnician } from "./job-planning";
 import { packFieldValues, packQuantity } from "@modular-crm/industry-packs";
 import { assetView, tenantIndustryPack } from "./pack-fields";
 import { randomUUID } from "node:crypto";
@@ -215,7 +216,7 @@ async function readResource(resource: RecordResource, actor: SessionActor, id?: 
 
 const customerSchema = z.object({ name: z.string().min(2), email: z.email().optional().or(z.literal("")), phone: z.string().optional(), address: z.string().optional(), customerType: z.enum(["residential", "commercial"]).default("residential") });
 const leadSchema = z.object({ name: z.string().min(2), email: z.email().optional().or(z.literal("")), phone: z.string().optional(), source: z.string().optional(), address: z.string().optional(), notes: z.string().optional() });
-const jobSchema = z.object({ customerId: z.uuid(), serviceLocationId: z.uuid().optional(), serviceId: z.uuid().optional(), serviceName: z.string().optional(), address: z.string().optional(), scheduledDate: z.iso.date().optional(), notes: z.string().optional() });
+const jobSchema = z.object({ customerId: z.uuid(), serviceLocationId: z.uuid().optional(), serviceId: z.uuid().optional(), serviceName: z.string().optional(), address: z.string().optional(), scheduledDate: z.iso.date().optional(), priceCents: z.number().int().min(0).max(100_000_000).optional(), notes: z.string().optional() });
 const estimateSchema = z.object({
   customerId: z.uuid().optional(), leadId: z.uuid().optional(), serviceId: z.uuid().optional(),
   title: z.string().min(1), totalCents: z.number().int().nonnegative().optional(), notes: z.string().optional(), ...pricingFields,
@@ -226,7 +227,7 @@ const invoiceSchema = z.object({ customerId: z.uuid(), description: z.string().m
 const planSchema = z.object({
   customerId: z.uuid(), serviceLocationId: z.uuid().optional(), serviceId: z.uuid(), frequency: z.string().default("weekly"), startDate: z.iso.date().optional(),
   interval: z.number().int().min(1).max(52).optional(), daysOfWeek: z.array(z.number().int().min(0).max(6)).min(1).max(7).optional(),
-  dayOfMonth: z.number().int().min(1).max(31).optional(),
+  dayOfMonth: z.number().int().min(1).max(31).optional(), technicianId: z.uuid().optional(),
 });
 const ticketSchema = z.object({ subject: z.string().min(2), customerId: z.uuid().optional(), type: z.string().optional(), description: z.string().min(1) });
 const serviceSchema = z.object({ name: z.string().min(2), description: z.string().optional(), basePriceCents: z.number().int().nonnegative().optional(), durationMinutes: z.number().int().positive().optional() });
@@ -298,12 +299,14 @@ async function createResource(resource: RecordResource, request: Request, actor:
     const location = await chosenServiceLocation(actor, customer.id, body.serviceLocationId);
     const organizationLocationId = location.organizationLocationId ?? customer.owningLocationId ?? locationId;
     assertLocationAccess(actor, organizationLocationId);
+    const [tenant] = await db.select({ currency: tenants.defaultCurrency }).from(tenants).where(eq(tenants.id, actor.tenantId));
     const status = body.scheduledDate ? "scheduled" : "unscheduled";
     const job = await db.transaction(async (tx) => {
-      const [created] = await tx.insert(jobs).values({ tenantId: actor.tenantId, organizationId: customer.organizationId, organizationLocationId, customerId: customer.id, serviceLocationId: location.id, serviceId: service.id, status, scheduledDate: body.scheduledDate, estimatedDurationMinutes: service.defaultDurationMinutes, internalSummary: body.notes }).returning();
+      const priceSnapshot = body.priceCents !== undefined ? { amountMinor: body.priceCents, currency: tenant?.currency ?? "USD", source: "office" } : await calculateServicePlanPrice(tx, { tenantId: actor.tenantId, organizationId: customer.organizationId, organizationLocationId, serviceId: service.id, customerType: customer.customerType, serviceZoneId: location.serviceZoneId, frequency: "one_time", quantity: 1, fields: {}, at: new Date().toISOString(), allowUnpricedQuote: true });
+      const [created] = await tx.insert(jobs).values({ tenantId: actor.tenantId, organizationId: customer.organizationId, organizationLocationId, customerId: customer.id, serviceLocationId: location.id, serviceId: service.id, status, scheduledDate: body.scheduledDate, priceSnapshot, estimatedDurationMinutes: service.defaultDurationMinutes, internalSummary: body.notes }).returning();
       if (!created) throw new Error("Could not create job");
       await tx.insert(jobStatusEvents).values({ tenantId: actor.tenantId, jobId: created.id, fromStatus: null, toStatus: status, actorType: "staff", actorId: actor.userId });
-      await recordEvent(actor, { type: "job.created", entityType: "job", entityId: created.id, payload: { status }, auditAction: "job.create", locationId: created.organizationLocationId }, tx);
+      await recordEvent(actor, { type: "job.created", entityType: "job", entityId: created.id, payload: { status, priceSnapshot }, after: { status, priceSnapshot }, auditAction: "job.create", locationId: created.organizationLocationId }, tx);
       return created;
     });
     return json({ item: normalized({ ...job, customerName: customer.displayName, serviceName: service.name, address: location.addressLine1 }) }, 201);
@@ -412,6 +415,7 @@ async function createResource(resource: RecordResource, request: Request, actor:
         frequency, quantity: pricingInput.quantity, fields: { ...customerFields, ...locationFields, ...pricingInput.fields },
         at: `${effectiveFrom}T12:00:00.000Z`,
       });
+      if (body.technicianId) { requirePermission(actor, "jobs.assign"); await assignableTechnician(tx, actor, { organizationId: customer.organizationId, organizationLocationId }, body.technicianId); }
       const planPriceSnapshot = { ...priceSnapshot, priceVersions: [{ effectiveFrom, snapshot: priceSnapshot }] };
       const [rule] = await tx.insert(recurrenceRules).values({
         tenantId: actor.tenantId, frequencyType: recurrence.frequencyType, interval: recurrence.interval,
@@ -423,7 +427,7 @@ async function createResource(resource: RecordResource, request: Request, actor:
         tenantId: actor.tenantId, customerId: customer.id, serviceLocationId: location.id,
         organizationLocationId,
         serviceId: service.id, recurrenceRuleId: rule.id, status: "active", effectiveFrom,
-        pricingSnapshot: planPriceSnapshot, billingConfiguration: { type: "per_job" },
+        pricingSnapshot: planPriceSnapshot, billingConfiguration: { type: "per_job" }, preferredAssignment: body.technicianId ? { membershipId: body.technicianId } : null,
       }).returning();
       if (!plan) throw new Error("Could not create plan");
       await recordEvent(actor, {

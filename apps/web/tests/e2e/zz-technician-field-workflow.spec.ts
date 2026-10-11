@@ -43,6 +43,7 @@ test("owner publishes an ordered route and technician completes the field workda
       await chooseStaffRecord(owner, "Customer", customer);
       await chooseStaffRecord(owner, "Service", "Yard cleanup");
       await owner.getByLabel("Service day").fill(today);
+      await owner.getByLabel("Visit price").fill("45.00");
       await owner.getByLabel("Job instructions").fill(instruction);
       const createdResponse = owner.waitForResponse((response) =>
         new URL(response.url()).pathname === "/api/v1/jobs" && response.request().method() === "POST",
