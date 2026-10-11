@@ -44,7 +44,10 @@ for (const [role, email] of [["Morgan", "manager@happyyards.test"], ["Owner", "o
 test("payment rows never fall back to generic details for any unsettled state", async ({ page }) => {
   await signIn(page, "owner@happyyards.test");
   const statuses = ["succeeded", "refunded", "partially_refunded", "pending", "processing", "failed"];
-  await page.route("**/api/v1/payments", (route) => route.fulfill({ json: { items: statuses.map((status) => ({ id: `ui-${status}`, customerName: `Payment state ${status}`, status, amountCents: 1000, currency: "USD", method: "mock", createdAt: "2026-10-04T12:00:00Z" })) } }));
+  await page.route(url => url.pathname === "/api/v1/payments", (route) => {
+    expect(new URL(route.request().url()).searchParams.get("page")).toBe("0");
+    return route.fulfill({ json: { page: 0, hasMore: false, items: statuses.map((status) => ({ id: `ui-${status}`, customerName: `Payment state ${status}`, status, amountCents: 1000, currency: "USD", method: "mock", createdAt: "2026-10-04T12:00:00Z" })) } });
+  });
   await page.goto("/app/payments");
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 900 });

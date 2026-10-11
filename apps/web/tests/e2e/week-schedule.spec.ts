@@ -10,12 +10,14 @@ async function signIn(page: Page, email = "owner@happyyards.test") {
 
 test("owner drags unscheduled work to Wednesday, publishes it to field, then moves dispatch to Thursday", async ({ page, browser }, info) => {
   test.setTimeout(120_000); await signIn(page); const db = createDatabase(process.env.DATABASE_URL!), field = await browser.newPage(); const routes: string[] = [];
-  let jobId: string | undefined;
+  let jobId: string | undefined; const extraJobs: string[] = [];
   try {
     const name = `Calendar customer ${crypto.randomUUID()}`;
     const response = await page.request.post("/api/v1/customers", { data: { name, address: "123 Calendar Lane" } }); expect(response.status()).toBe(201); const customer = (await response.json()).item;
     const [location] = await db.select().from(schema.serviceLocations).where(eq(schema.serviceLocations.customerId, customer.id));
-    const [job] = await db.insert(schema.jobs).values({ tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: customer.id, serviceLocationId: location!.id, serviceId: seedIds.weeklyService, status: "unscheduled" }).returning(); jobId = job!.id;
+    // A full tray must stay usable without assuming the new visit is above the fold.
+    extraJobs.push(...(await db.insert(schema.jobs).values(Array.from({ length: 6 }, () => ({ tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: customer.id, serviceLocationId: location!.id, serviceId: seedIds.weeklyService, status: "unscheduled" as const }))).returning({ id: schema.jobs.id })).map(item => item.id));
+    const [job] = await db.insert(schema.jobs).values({ id: `ffffffff-ffff-4fff-8fff-${crypto.randomUUID().slice(-12)}`, tenantId: seedIds.happyTenant, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: customer.id, serviceLocationId: location!.id, serviceId: seedIds.weeklyService, status: "unscheduled" }).returning(); jobId = job!.id;
     await page.goto("/app/schedule?week=2027-02-01&day=2027-02-03&view=week");
     const calendar = page.getByRole("region", { name: "Week calendar" });
     const card = page.getByRole("complementary", { name: "Unscheduled visits" }).locator(`[data-visit-id="${jobId}"]`);
@@ -24,6 +26,7 @@ test("owner drags unscheduled work to Wednesday, publishes it to field, then mov
     // Extra staff lanes can put the target below the viewport. Scroll before
     // mouse-down so dragTo does not move the source out from under the pointer.
     await wednesday.scrollIntoViewIfNeeded();
+    await card.scrollIntoViewIfNeeded();
     await expect(card).toBeInViewport(); await expect(wednesday).toBeInViewport();
     await card.dragTo(wednesday, { sourcePosition: { x: 8, y: 8 }, targetPosition: { x: 20, y: 20 } });
     await expect(wednesday.locator(`[data-visit-id="${jobId}"]`)).toContainText(name);
@@ -42,6 +45,7 @@ test("owner drags unscheduled work to Wednesday, publishes it to field, then mov
     await page.screenshot({ path: info.outputPath("week-dispatch.png"), fullPage: true });
   } finally {
     if (jobId) await db.update(schema.jobs).set({ status: "canceled", assignedRouteId: null }).where(eq(schema.jobs.id, jobId));
+    for (const id of extraJobs) await db.update(schema.jobs).set({ status: "canceled" }).where(eq(schema.jobs.id, id));
     for (const id of routes) { await db.delete(schema.routeStops).where(eq(schema.routeStops.routePlanId, id)); await db.delete(schema.routePlans).where(eq(schema.routePlans.id, id)); }
     await field.close(); await closeDatabase(db);
   }

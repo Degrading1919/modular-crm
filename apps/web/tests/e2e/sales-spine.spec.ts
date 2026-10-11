@@ -47,7 +47,10 @@ test("office turns a website message into a two-line biweekly estimate on the se
     const messages = (await (await page.request.get(`${mailbox}/api/v1/messages`)).json()).messages;
     const message = messages.find((mail: { To: Array<{ Address: string }> }) => mail.To.some(to => to.Address === email)); expect(message).toBeTruthy();
     const mail = await (await page.request.get(`${mailbox}/api/v1/message/${message.ID}`)).json(); expect(mail.Text).toContain(delivery.actionUrl); const link = mail.Text.match(/https?:\/\/[^\s]+\/estimate\/[A-Za-z0-9_-]+/)?.[0]; expect(link).toBeTruthy();
-    await customerLink.goto(link!); await expect(customerLink.getByText("Custom setup work", { exact: true })).toBeVisible(); await expect(customerLink.getByRole("button", { name: "Approve estimate", exact: true })).toBeEnabled();
+    await customerLink.goto(link!); await expect(customerLink.getByText("Custom setup work", { exact: true })).toBeVisible();
+    await expect(customerLink.getByRole("button", { name: "Approve estimate", exact: true })).toBeDisabled();
+    await customerLink.getByRole("checkbox", { name: "I have reviewed this estimate and agree to its terms.", exact: true }).check();
+    await expect(customerLink.getByRole("button", { name: "Approve estimate", exact: true })).toBeEnabled();
     page.once("dialog", dialog => dialog.accept()); await page.getByRole("button", { name: "Record verbal approval", exact: true }).click(); await expect(page.getByText("Customer decision recorded.", { exact: true })).toBeVisible();
     const db = createDatabase(process.env.DATABASE_URL!);
     try {
