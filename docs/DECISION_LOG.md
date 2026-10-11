@@ -2,6 +2,14 @@
 
 Compact history of accepted and superseded Modular CRM decisions.
 
+## 2026-10-11 — Complete the office sales spine and pending-time review
+
+- **Status:** Accepted
+- **Area:** Product / UX / Implementation
+- **Decision:** Staff manage customer properties, contacts and notes, advance leads, and prepare property-bound estimates with an explicit recurring frequency. Email secure approval links without persisting raw tokens, record verbal decisions, and create distinct work for every accepted line while retaining once-only setup billing. Provide truthful portal ticket replies/closure and server search/paging; prioritize pending time and reject clock-out before any recorded break.
+- **Rationale:** Owner-authorized W1d handoff [6111376494](https://github.com/Degrading1919/modular-crm/pull/31#issuecomment-6111376494) and [6111426148](https://github.com/Degrading1919/modular-crm/pull/31#issuecomment-6111426148) follow the approved, frozen operations slice. Tenant/location isolation, frozen pricing, hashes-only bearer-token storage and idempotent billing remain authoritative.
+- **Authoritative doc:** docs/PRODUCT_SCOPE.md
+
 ## 2026-10-11 — Usable operations for solo owners and office field workers
 
 - **Status:** Accepted

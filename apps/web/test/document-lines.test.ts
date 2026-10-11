@@ -71,6 +71,9 @@ it("secure link includes optional choices and rejects changed-choice replay with
 });
 it("shows branch-wide estimates only when every property is granted, while retaining tenant and branch isolation",async()=>{
   const response=await handleRecords(request("estimates",{customerId:seedIds.carter,title:"Portal branch scope",lines:lines.slice(0,2)}),["estimates"],owner);const id=(await response!.json()).item.id;
+  // New estimates bind a property. Preserve this historical branch-wide fixture
+  // explicitly so its stricter all-properties authorization remains covered.
+  await db.update(schema.estimates).set({serviceLocationId:null}).where(eq(schema.estimates.id,id));
   await handleWorkflow(request(`estimates/${id}/send`),["estimates",id,"send"],owner);
   const list=await handlePortal(request("portal/estimates",{},"GET"),["portal","estimates"],portal);expect((await list!.json()).items.map((item:{id:string})=>item.id)).toContain(id);
   const [hidden]=await db.insert(schema.serviceLocations).values({tenantId:owner.tenantId,customerId:seedIds.carter,organizationLocationId:seedIds.augusta,name:"Unshared property",addressLine1:"9 Private Lane",city:"",region:"",postalCode:""}).returning();
@@ -81,6 +84,21 @@ it("shows branch-wide estimates only when every property is granted, while retai
   await db.update(schema.estimates).set({organizationLocationId:seedIds.northAugusta}).where(eq(schema.estimates.id,id));
   const outside=await handlePortal(request("portal/estimates",{},"GET"),["portal","estimates"],portal);expect((await outside!.json()).items.map((item:{id:string})=>item.id)).not.toContain(id);
   const otherTenant={...portal,tenantId:seedIds.cleanTenant};const isolated=await handlePortal(request("portal/estimates",{},"GET"),["portal","estimates"],otherTenant);expect((await isolated!.json()).items.map((item:{id:string})=>item.id)).not.toContain(id);
+});
+it("allows a property-bound quote only for that granted property, not unrelated unshared properties",async()=>{
+  const response=await handleRecords(request("estimates",{customerId:seedIds.carter,serviceLocationId:seedIds.carterLocation,title:"Property-bound portal scope",lines:lines.slice(0,2)}),["estimates"],owner);const id=(await response!.json()).item.id;
+  await handleWorkflow(request(`estimates/${id}/send`),["estimates",id,"send"],owner);
+  const [hidden]=await db.insert(schema.serviceLocations).values({tenantId:owner.tenantId,customerId:seedIds.carter,organizationLocationId:seedIds.augusta,name:"Another unshared property",addressLine1:"10 Private Lane",city:"Augusta",region:"GA",postalCode:"30901"}).returning();
+  try {
+    const list=await handlePortal(request("portal/estimates",{},"GET"),["portal","estimates"],portal);expect((await list!.json()).items.map((item:{id:string})=>item.id)).toContain(id);
+    expect((await getDocument(portal,"estimate",id)).lines).toHaveLength(2);
+    const wrong={...portal,locationIds:new Set([hidden!.id]),customerLocationIds:new Map([[seedIds.carter,new Set([hidden!.id])]])};
+    await expect(handleWorkflow(request(`estimates/${id}/approve`,{acceptedOptionalIds:[]}),["estimates",id,"approve"],wrong)).rejects.toMatchObject({status:404});
+    await db.update(schema.estimates).set({organizationLocationId:seedIds.northAugusta}).where(eq(schema.estimates.id,id));
+    for (const action of ["approve", "decline"]) await expect(handleWorkflow(request(`estimates/${id}/${action}`,{acceptedOptionalIds:[]}),["estimates",id,action],portal)).rejects.toMatchObject({status:404});
+    await db.update(schema.estimates).set({organizationLocationId:seedIds.augusta}).where(eq(schema.estimates.id,id));
+    expect((await handleWorkflow(request(`estimates/${id}/approve`,{acceptedOptionalIds:[]}),["estimates",id,"approve"],portal))!.status).toBe(200);
+  }finally{await db.delete(schema.serviceLocations).where(eq(schema.serviceLocations.id,hidden!.id));}
 });
 it("uses the selected customer's business tax default without exposing another tenant or unauthorized branch",async()=>{
   const [org]=await db.select().from(schema.organizations).where(eq(schema.organizations.id,seedIds.franchiseEastOrganization));

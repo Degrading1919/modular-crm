@@ -302,6 +302,11 @@ export async function handlePortal(request: Request, path: string[], actor: Sess
       latestInvoice, requests: requests.items, services: plans, invoices: bills, tickets: tickets.items,
       balances, balanceCents: balances.length === 1 ? balances[0]!.cents : null } });
   }
+  if (request.method === "GET" && resource === "tickets" && path.length === 4 && path[3] === "thread") {
+    const visible = await (await portalList(actor, "tickets")).json();
+    if (!visible.items.some((item: { id: string }) => item.id === path[2])) throw new DomainError("NOT_FOUND", "Ticket not found.", 404);
+    return json({ items: normalized(await rows(sql`select id,body,created_at,actor_type from ticket_comments where tenant_id=${actor.tenantId} and ticket_id=${path[2]} and visibility='customer' order by created_at,id`)) });
+  }
   if (request.method === "GET" && ["services", "visits", "estimates", "invoices", "payments", "tickets", "requests", "files"].includes(resource ?? "")) return portalList(actor, resource!);
   if (request.method === "POST" && resource === "requests") return createRequest(request, actor);
   if (request.method === "POST" && resource === "tickets") return createTicket(request, actor);

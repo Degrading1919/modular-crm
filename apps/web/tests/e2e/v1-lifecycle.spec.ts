@@ -63,7 +63,7 @@ test("V1 lifecycle: estimate approval through field work, billing, and feedback"
   await page.goto(`/app/estimates/${estimateId}`);
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Send estimate" }).click();
-  await expect(page.getByText("Estimate sent. Copy the secure link to share it with your customer.")).toBeVisible();
+  await expect(page.getByText("Estimate email accepted by the email service.")).toBeVisible();
   const secureLink = await page.getByLabel("Secure estimate link").inputValue();
   expect(secureLink).toMatch(/\/estimate\/[A-Za-z0-9_-]+$/);
 

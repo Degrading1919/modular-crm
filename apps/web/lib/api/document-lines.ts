@@ -12,10 +12,12 @@ export async function documentPricing(db: Reader, tenantId: string, organization
   const lines = body.lines ?? [{ description: body.title ?? body.description ?? "Service", quantity: "1", unitAmountMinor: body.totalCents ?? 0, serviceId: body.serviceId, taxable: false }];
   if (!estimate && lines.some(line => line.optional)) throw new DomainError("VALIDATION_ERROR","Optional add-ons belong on an estimate, not an invoice.",422);
   let primaryServiceType: string | undefined;
+  const serviceTypes = new Map<string, string>();
   for (const line of lines) if (line.serviceId) {
     const [service] = await db.select({ id: services.id, type: services.serviceType }).from(services).where(and(eq(services.tenantId,tenantId),eq(services.organizationId,organizationId),eq(services.id,line.serviceId),eq(services.active,true))).limit(1);
     if (!service) throw new DomainError("NOT_FOUND","Service not found in this business.",404);
     primaryServiceType ??= service.type;
+    serviceTypes.set(service.id, service.type);
   }
   const [org] = await db.select({ settings: organizations.settings }).from(organizations).where(and(eq(organizations.tenantId,tenantId),eq(organizations.id,organizationId))).limit(1);
   const defaultTax = Number((org?.settings as Record<string,unknown>)?.defaultTaxRateBasisPoints ?? 0);
@@ -25,7 +27,7 @@ export async function documentPricing(db: Reader, tenantId: string, organization
     const net = required.length ? priceDocument(required, 0).totalMinor : 0;
     if (body.discount.value > net) throw new DomainError("VALIDATION_ERROR", "The discount cannot exceed the required lines' price. Reduce the discount so the customer can decline optional add-ons.", 422);
   }
-  return priceDocument(lines.map(line => ({ ...line, ...(estimate ? { charge: line.charge ?? (primaryServiceType === "recurring" ? "every_visit" : "once") } : {}) })),body.lines ? body.taxRateBasisPoints ?? defaultTax : 0,body.discount);
+  return priceDocument(lines.map(line => ({ ...line, ...(estimate ? { charge: line.charge ?? ((line.serviceId ? serviceTypes.get(line.serviceId) : primaryServiceType) === "recurring" ? "every_visit" : "once") } : {}) })),body.lines ? body.taxRateBasisPoints ?? defaultTax : 0,body.discount);
 }
 export function storedLine(line: ReturnType<typeof priceDocument>["items"][number]) {
   return { serviceId: line.serviceId ?? null, description: line.description,quantity: line.quantity,unitAmountMinor: BigInt(line.unitAmountMinor),discountMinor: BigInt(line.discountMinor + line.documentDiscountMinor),taxMinor: BigInt(line.taxMinor),totalMinor: BigInt(line.totalMinor),sortOrder: line.sortOrder,metadata: { taxable: !!line.taxable, optional: !!line.optional, lineDiscountMinor: line.discountMinor, ...(line.charge ? { charge: line.charge } : {}) } };

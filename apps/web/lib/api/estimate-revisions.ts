@@ -17,6 +17,7 @@ const revisionSchema = z.object({
   totalCents: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
   notes: z.string().max(10_000).optional(),
   serviceId: z.uuid().nullable().optional(),
+  frequency: z.enum(["weekly", "every_two_weeks", "every_four_weeks", "monthly"]).optional(),
   ...pricingFields,
 }).strict().refine(body => !!body.lines || body.totalCents !== undefined,"Add estimate lines.");
 
@@ -86,6 +87,7 @@ export async function reviseEstimate(request: Request, estimateId: string, actor
     };
     const snapshot = {
       ...priorSnapshot,
+      frequency: body.frequency ?? priorSnapshot.frequency ?? "weekly",
       title: body.title,
       serviceId,
       serviceName: service?.name ?? (serviceId ? priorSnapshot.serviceName ?? null : null),

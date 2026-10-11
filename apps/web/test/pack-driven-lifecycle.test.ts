@@ -208,14 +208,15 @@ it.each([
     expect((await response(handleWorkflow(request(`leads/${lead!.id}/convert`, {}), ["leads", lead!.id, "convert"], staff))).status).toBe(200);
     expect((await response(handleWorkflow(request(`leads/${lead!.id}/convert`, {}), ["leads", lead!.id, "convert"], staff))).status).toBe(200);
   } else {
-    const [estimate] = await db.insert(estimates).values({ tenantId: staff.tenantId, leadId: lead!.id, organizationLocationId: staff.defaultLocationId, status: "draft", currentRevision: 1, totalMinor: 7500n, createdByMembershipId: staff.membershipId }).returning();
+    const [estimate] = await db.insert(estimates).values({ tenantId: staff.tenantId, leadId: lead!.id, organizationLocationId: lead!.owningLocationId, status: "draft", currentRevision: 1, totalMinor: 7500n, createdByMembershipId: staff.membershipId }).returning();
     const [revision] = await db.insert(estimateRevisions).values({ tenantId: staff.tenantId, estimateId: estimate!.id, revisionNumber: 1, subtotalMinor: 7500n, totalMinor: 7500n, termsText: "Service terms", snapshot: { title: "Requested service" } }).returning();
     await db.insert(estimateItems).values({ tenantId: staff.tenantId, estimateRevisionId: revision!.id, serviceId, description: "Requested service", quantity: "1", unitAmountMinor: 7500n, totalMinor: 7500n });
     const sent = await estimateAction(request(`estimates/${estimate!.id}/send`, {}), staff, estimate!.id, "send");
     expect(sent.status).toBe(200);
     const token = (await sent.json()).actionUrl.split("/").at(-1);
     const approve = () => handleV1(request(`public/estimate-links/${token}/approve`, {}), ["public", "estimate-links", token, "approve"]);
-    expect((await approve()).status).toBe(200);
+    const approval = await approve();
+    expect(approval.status, await approval.text()).toBe(200);
     expect((await approve()).status).toBe(200);
   }
   const [converted] = await db.select().from(leads).where(eq(leads.id, lead!.id));

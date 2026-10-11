@@ -73,8 +73,15 @@ it("reuses an estimate-converted invoice rather than billing its completed one-t
   const work = await db.select().from(schema.jobs).where(eq(schema.jobs.customerId, seedIds.carter));
   const job = work.find(job => job.priceSnapshot?.estimateRevisionId === revision.id)!;
   await db.update(schema.jobs).set({ status: "completed", actualCompletedAt: new Date("2026-09-15T12:00:00Z") }).where(eq(schema.jobs.id, job.id));
-  expect((await (await jobInvoice(owner, job.id)).json()).item.id).toBe(invoiceId);
-  expect((await db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, invoiceId))).every(line => line.jobId === job.id)).toBe(true);
+  const estimatedJobs = work.filter(item => item.priceSnapshot?.estimateRevisionId === revision.id);
+  expect(estimatedJobs).toHaveLength(2);
+  const invoiceLines = await db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, invoiceId));
+  expect(invoiceLines).toHaveLength(2);
+  for (const estimatedJob of estimatedJobs) {
+    await db.update(schema.jobs).set({ status: "completed", actualCompletedAt: new Date("2026-09-15T12:00:00Z") }).where(eq(schema.jobs.id, estimatedJob.id));
+    expect((await (await jobInvoice(owner, estimatedJob.id)).json()).item.id).toBe(invoiceId);
+    expect(invoiceLines.find(line => line.sortOrder === estimatedJob.priceSnapshot?.estimateLineOrder)?.jobId).toBe(estimatedJob.id);
+  }
 });
 it("preserves a finished visit's frozen tax rate and amounts through an unchanged draft edit", async () => {
   const job = await completed();

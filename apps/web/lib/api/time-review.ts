@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { breaks, memberships, shifts, timeEntries } from "@modular-crm/db";
 import { DomainError, requirePermission } from "@modular-crm/domain";
 import { z } from "zod";
@@ -15,7 +15,7 @@ function timeRows(items: Record<string, unknown>[]) {
 
 const scope = (actor: SessionActor) => actor.kind === "staff" && actor.allLocations ? sql`true` : sql`coalesce(s.organization_location_id,j.organization_location_id,m.default_location_id)=any(${uuidArray(actor.locationIds)})`;
 
-async function visibleEntries(actor: SessionActor, id?: string) {
+async function visibleEntries(actor: SessionActor, id?: string, page = 0) {
   return rows(sql`select t.*,t.status as approval_status,u.name as staff_name,coalesce(s.organization_location_id,j.organization_location_id,m.default_location_id) as location_id
     from time_entries t join memberships m on m.tenant_id=t.tenant_id and m.id=t.membership_id
     join "user" u on u.id=m.user_id
@@ -25,7 +25,7 @@ async function visibleEntries(actor: SessionActor, id?: string) {
     and (t.shift_id is null or s.id is not null) and (t.job_id is null or j.id is not null)
     and exists(select 1 from organization_locations l where l.tenant_id=t.tenant_id and l.organization_id=m.organization_id and l.id=coalesce(s.organization_location_id,j.organization_location_id,m.default_location_id))
     and (t.shift_id is null or t.job_id is null or s.organization_location_id=j.organization_location_id)
-    ${id ? sql`and t.id=${id}` : sql``} order by t.starts_at desc,t.id limit ${id ? 1 : 200}`);
+    ${id ? sql`and t.id=${id}` : sql``} order by (t.status='pending') desc,t.starts_at desc,t.id limit ${id ? 1 : 51} offset ${id ? 0 : page * 50}`);
 }
 
 export async function handleTimeReview(request: Request, path: string[], actor: SessionActor): Promise<Response | null> {
@@ -33,13 +33,14 @@ export async function handleTimeReview(request: Request, path: string[], actor: 
   requireStaff(actor);
   requirePermission(actor, "time.all_read");
   if (path.length === 1 && request.method === "GET") {
-    const entries = await visibleEntries(actor);
+    const page = z.coerce.number().int().min(0).max(1_000_000).parse(new URL(request.url).searchParams.get("page") ?? 0);
+    const entries = await visibleEntries(actor, undefined, page);
     const open = await rows(sql`select s.*,u.name as staff_name from shifts s
       join memberships m on m.tenant_id=s.tenant_id and m.id=s.membership_id join "user" u on u.id=m.user_id
       where s.tenant_id=${actor.tenantId} and m.organization_id=${actor.organizationId} and s.status='clocked_in'
       and exists(select 1 from organization_locations l where l.tenant_id=s.tenant_id and l.organization_id=m.organization_id and l.id=s.organization_location_id)
       and (${actor.allLocations} or s.organization_location_id=any(${uuidArray(actor.locationIds)})) order by s.clock_in_at desc,s.id limit 200`);
-    return json({ entries: timeRows(entries), shifts: timeRows(open) });
+    return json({ entries: timeRows(entries.slice(0, 50)), shifts: timeRows(open), page, hasMore: entries.length > 50 });
   }
   const id = z.uuid().parse(path[2]);
   if (path[1] === "entries" && path[3] === "approve" && path.length === 4 && request.method === "POST") {
@@ -80,8 +81,9 @@ export async function handleTimeReview(request: Request, path: string[], actor: 
       if (shift.status !== "clocked_in" || shift.updatedAt.toISOString() !== body.expectedUpdatedAt) throw new DomainError("CONFLICT", "This shift changed. Refresh before correcting it.", 409);
       if (end < shift.clockInAt || end > now) throw new DomainError("VALIDATION_ERROR", "Clock-out must be after clock-in and not in the future.", 422);
       await assertPayrollSourceEditable(tx, actor, { startsAt: shift.clockInAt, endsAt: end });
-      const active = await tx.select().from(breaks).where(and(eq(breaks.tenantId, actor.tenantId), eq(breaks.shiftId, id), isNull(breaks.endedAt)));
-      if (active.some(b => b.startedAt > end)) throw new DomainError("VALIDATION_ERROR", "Clock-out cannot precede the current break.", 422);
+      const recordedBreaks = await tx.select().from(breaks).where(and(eq(breaks.tenantId, actor.tenantId), eq(breaks.shiftId, id)));
+      if (recordedBreaks.some(b => b.startedAt > end || b.endedAt && b.endedAt > end)) throw new DomainError("VALIDATION_ERROR", "Clock-out cannot precede a recorded break.", 422);
+      const active = recordedBreaks.filter(b => !b.endedAt);
       for (const b of active) await tx.update(breaks).set({ endedAt: end, updatedAt: now }).where(and(eq(breaks.tenantId, actor.tenantId), eq(breaks.id, b.id)));
       const [saved] = await tx.update(shifts).set({ status: "clocked_out", clockOutAt: end, notes: body.reason, updatedAt: now }).where(and(eq(shifts.tenantId, actor.tenantId), eq(shifts.id, id))).returning();
       await tx.insert(timeEntries).values({ tenantId: actor.tenantId, membershipId: shift.membershipId, shiftId: id, source: "office_correction", startsAt: shift.clockInAt, endsAt: end, durationSeconds: Math.round((end.getTime()-shift.clockInAt.getTime())/1000), approvalStatus: "pending", note: body.reason });
