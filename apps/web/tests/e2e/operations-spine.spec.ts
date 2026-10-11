@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
+import { parseCsv } from "@modular-crm/domain";
 import { chooseStaffRecord } from "./staff-picker";
 import { businessDate } from "../../lib/dates";
 import { closeDatabase, createDatabase, schema } from "@modular-crm/db";
@@ -100,7 +101,7 @@ test("office fixes a forgotten clock-out, approves the hours, calculates and exp
   await page.getByRole("button", { name: "Approve", exact: true }).click(); await expect(page.getByText("Pay period approved.")).toBeVisible();
   const download = page.waitForEvent("download"); await page.getByRole("button", { name: "Export CSV" }).click(); const exported = await download; expect(exported.suggestedFilename()).toMatch(/^payroll-/);
   const content = await readFile((await exported.path())!, "utf8");
-  const [header, line] = content.trim().split(/\r?\n/).map(row => row.replace(/^\uFEFF/, "").split(","));
+  const [header, line] = parseCsv(content);
   expect(line![header!.indexOf("staff_name")]).toBe(name);
   expect(Number(line![header!.indexOf("regular_minutes")])).toBeGreaterThan(0);
   expect(Number(line![header!.indexOf("gross_minor")])).toBeGreaterThan(0);
