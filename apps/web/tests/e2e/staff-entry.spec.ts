@@ -89,11 +89,18 @@ test("staff search by contact details, select saved addresses and create real jo
     await dialog.getByRole("combobox", { name: "Service", exact: true }).fill("Yard cleanup");
     await dialog.getByRole("option", { name: "Yard cleanup", exact: true }).click();
     if (resource === "service-plans") await dialog.getByLabel("Frequency").selectOption("weekly");
-    else await dialog.getByLabel("Service day", { exact: true }).fill("2026-10-06");
+    else {
+      await dialog.getByLabel("Service day", { exact: true }).fill("2026-10-06");
+      const price = dialog.getByLabel("Visit price", { exact: true });
+      await expect(price).toHaveAttribute("required", "");
+      await price.fill("32.50");
+    }
     const request = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/${resource}` && response.request().method() === "POST");
     await dialog.getByRole("button", { name: `Create ${title}`, exact: true }).click();
     const response = await request; expect(response.status()).toBe(201);
-    expect((await response.json()).item).toMatchObject({ customerId: customer.id, serviceLocationId: saved.locations[0].id });
+    const { item } = await response.json();
+    expect(item).toMatchObject({ customerId: customer.id, serviceLocationId: saved.locations[0].id });
+    if (resource === "jobs") expect(item.priceSnapshot).toMatchObject({ amountMinor: 3250, currency: "USD", source: "office" });
   }
   await page.goto("/app/invoices?new=1");
   const invoiceDialog = page.getByRole("dialog", { name: "New invoice" });

@@ -50,11 +50,11 @@ test("Morgan's operational destinations work without owner administration", asyn
   }
 
   const navigation = page.getByRole("navigation", { name: "Business navigation" });
-  for (const name of ["My capabilities", "Developer", "Pay & time", "Franchise"]) {
+  for (const name of ["My capabilities", "Developer", "Payroll", "Franchise"]) {
     await expect(navigation.getByRole("link", { name, exact: true })).toHaveCount(0);
   }
-  for (const [link, heading] of [["Schedule", "Schedule"], ["Jobs", "Jobs"], ["Routes", "Routes"], ["Get paid", "Get paid"], ["Staff", "Staff"], ["Connections", "Connections"], ["Settings", "Settings"], ["Locations", "Locations"]]) {
-    const endpoint = ({ Schedule: "schedule", Jobs: "jobs", Routes: "routes", Staff: "staff", Connections: "connections", Settings: "settings", Locations: "organization" } as Record<string, string>)[link];
+  for (const [link, heading] of [["Schedule", "Schedule"], ["Jobs", "Jobs"], ["Routes", "Routes"], ["Get paid", "Get paid"], ["Staff", "Staff"], ["Review work time", "Review work time"], ["Connections", "Connections"], ["Settings", "Settings"], ["Locations", "Locations"]]) {
+    const endpoint = ({ Schedule: "schedule", Jobs: "jobs", Routes: "routes", Staff: "staff", "Review work time": "time", Connections: "connections", Settings: "settings", Locations: "organization" } as Record<string, string>)[link];
     const response = endpoint ? page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/${endpoint}` && response.request().method() === "GET") : null;
     await navigation.getByRole("link", { name: link, exact: true }).click();
     await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
@@ -89,13 +89,17 @@ test("Morgan's operational destinations work without owner administration", asyn
 test("owner retains operational and administrative workspace access", async ({ page }) => {
   await signIn(page, "owner@happyyards.test");
   const navigation = page.getByRole("navigation", { name: "Business navigation" });
-  for (const name of ["Schedule", "Jobs", "Routes", "Get paid", "My capabilities", "Developer", "Pay & time", "Franchise"]) {
+  for (const name of ["Schedule", "Jobs", "Routes", "Get paid", "My capabilities", "Developer", "Payroll", "Review work time", "Franchise"]) {
     await expect(navigation.getByRole("link", { name, exact: true })).toBeVisible();
   }
   await navigation.getByRole("link", { name: "My capabilities", exact: true }).click();
   await expect(page.getByRole("button", { name: "Save my capabilities" })).toBeEnabled();
   await navigation.getByRole("link", { name: "Developer", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Developer tools", exact: true })).toBeVisible();
+  await navigation.getByRole("link", { name: "Payroll", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Payroll", exact: true })).toBeVisible();
+  await navigation.getByRole("link", { name: "Review work time", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Review work time", exact: true })).toBeVisible();
   await navigation.getByRole("link", { name: "Locations", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Locations", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "New location", exact: true })).toBeEnabled();
@@ -111,15 +115,15 @@ test("enabled tools without staff permissions are hidden from links and direct r
   await page.route("**/api/v1/auth/me", async (route) => {
     const response = await route.fetch();
     const identity = await response.json();
-    identity.user.permissions = identity.user.permissions.filter((permission: string) => !["jobs.read", "routes.read", "customers.create"].includes(permission));
+    identity.user.permissions = identity.user.permissions.filter((permission: string) => !["jobs.read", "routes.read", "customers.create", "time.all_read"].includes(permission));
     await route.fulfill({ response, json: identity });
   });
   await page.goto("/app/dashboard");
   await expect(page.getByRole("heading", { name: /Good morning/ })).toBeVisible();
   const navigation = page.getByRole("navigation", { name: "Business navigation" });
-  for (const name of ["Jobs", "Schedule", "Routes"]) await expect(navigation.getByRole("link", { name, exact: true })).toHaveCount(0);
+  for (const name of ["Jobs", "Schedule", "Routes", "Review work time"]) await expect(navigation.getByRole("link", { name, exact: true })).toHaveCount(0);
   for (const name of ["New job", "Open schedule", "See all jobs", "Plan a route", "Add a customer"]) await expect(page.getByRole("link", { name: new RegExp(`^${name}(?:$|\\s)`) })).toHaveCount(0);
-  for (const route of ["jobs", "schedule", "routes"]) {
+  for (const route of ["jobs", "schedule", "routes", "time"]) {
     await page.goto(`/app/${route}`);
     await expect(page.getByRole("heading", { name: "You don’t have access to this tool" })).toBeVisible();
   }
