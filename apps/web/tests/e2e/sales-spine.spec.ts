@@ -63,6 +63,32 @@ test("office turns a website message into a two-line biweekly estimate on the se
   } finally { expect((await owner.request.post("/api/v1/connections/mock-communication/connect", { data: {} })).ok()).toBe(true); await owner.close(); await customerLink.close(); }
 });
 
+test("a completed customer record keeps properties, contacts and approved work usable on a phone", async ({ page }, info) => {
+  await signIn(page, "owner@happyyards.test");
+  const unique = crypto.randomUUID(), name = `Sales prospect ${unique}`, email = `sales-${unique}@example.test`;
+  const created = await page.request.post("/api/v1/customers", { data: { name, email } }); expect(created.status()).toBe(201); const customer = (await created.json()).item;
+  const properties = [];
+  for (const [name, addressLine1] of [["First property", "101 First Lane"], ["Second property", "202 Second Lane"]]) {
+    const response = await page.request.post(`/api/v1/customers/${customer.id}/properties`, { data: { name, addressLine1, city: "Augusta", region: "GA", postalCode: "30901", countryCode: "US" } }); expect(response.status()).toBe(201); properties.push((await response.json()).item);
+  }
+  expect((await page.request.post(`/api/v1/customers/${customer.id}/contacts`, { data: { firstName: name, lastName: "", email, billingContact: true } })).status()).toBe(201);
+  expect((await page.request.post(`/api/v1/customers/${customer.id}/notes`, { data: { body: "Call before the first visit" } })).status()).toBe(201);
+  const quoteResponse = await page.request.post("/api/v1/estimates", { data: { customerId: customer.id, serviceLocationId: properties[1].id, title: `Biweekly quote ${unique}`, frequency: "every_two_weeks", lines: [{ serviceId: seedIds.weeklyService, description: "Regular visit", quantity: "1", unitAmountMinor: 2500, charge: "every_visit" }, { description: "Custom setup work", quantity: "1", unitAmountMinor: 1000, charge: "once" }] } }); expect(quoteResponse.status()).toBe(201); const quote = (await quoteResponse.json()).item;
+  expect((await page.request.post(`/api/v1/estimates/${quote.id}/send`, { data: {} })).status()).toBe(200);
+  expect((await page.request.post(`/api/v1/estimates/${quote.id}/approve`, { data: { acceptedOptionalIds: [] } })).status()).toBe(200);
+  await page.goto(`/app/customers/${customer.id}`); await expect(page.getByRole("region", { name: "Estimates", exact: true })).toContainText("Approved"); await expect(page.getByRole("region", { name: "Service plans", exact: true })).toContainText("Active");
+  for (const width of [390, 320]) {
+    await page.setViewportSize({ width, height: 844 });
+    const layout = await page.evaluate(() => ({ width: document.documentElement.scrollWidth, viewport: innerWidth, overflowing: [...document.querySelectorAll("main *")].filter(element => element.getBoundingClientRect().right > innerWidth).map(element => ({ tag: element.tagName, className: element.className, right: element.getBoundingClientRect().right, text: element.textContent?.slice(0, 80) })).slice(0, 20) }));
+    await page.screenshot({ path: info.outputPath(`customer-${width}.png`), fullPage: true });
+    expect(layout.width, JSON.stringify(layout.overflowing)).toBeLessThanOrEqual(layout.viewport);
+    const editor = page.getByRole("region", { name: "Manage customer details", exact: true });
+    await expect(editor.getByRole("button", { name: "Edit property", exact: true })).toHaveCount(2);
+    await editor.getByRole("button", { name: "Edit property", exact: true }).nth(1).click();
+    const dialog = page.getByRole("dialog", { name: "Edit service property", exact: true }); await expect(dialog.getByLabel("Street address", { exact: true })).toHaveValue("202 Second Lane"); await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  }
+});
+
 test("office adds an address to an addressless customer and schedules a priced job using it", async ({ page }) => {
   await signIn(page, "manager@happyyards.test"); const name = `Addressless ${crypto.randomUUID()}`;
   const response = await page.request.post("/api/v1/customers", { data: { name } }); expect(response.status()).toBe(201); const customer = (await response.json()).item;
