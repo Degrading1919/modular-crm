@@ -21,6 +21,10 @@ const { handlePaymentReads } = await import("../lib/api/payment-reads");
 const { handleTicketThread } = await import("../lib/api/ticket-thread");
 const { handlePortal } = await import("../lib/api/portal");
 const { decryptServiceAccessInstructions } = await import("../lib/api/service-access");
+const { handleEstimateProperty } = await import("../lib/api/estimate-property");
+const { handleSecureEstimateLink } = await import("../lib/api/secure-estimate-links");
+const { generateRecurringJobs } = await import("../../worker/src/recurring-db");
+const { addCalendarDays } = await import("../../worker/src/recurrence");
 let pg: PGlite, db: Database;
 const owner: SessionActor = { kind: "staff", userId: "demo-happy-owner", tenantId: seedIds.happyTenant, tenantName: "Happy Yards", packKey: "pet-waste-removal", email: "owner@happyyards.test", name: "Owner", role: "owner", permissions: permissionsForRole("owner"), allLocations: true, locationIds: new Set([seedIds.augusta]), membershipId: seedIds.oliviaMembership, organizationId: seedIds.happyOrganization, defaultLocationId: seedIds.augusta };
 const office: SessionActor = { ...owner, role: "office", permissions: permissionsForRole("office"), allLocations: false };
@@ -73,12 +77,98 @@ it("honors the chosen nondefault property and biweekly frequency for every accep
   const quote = await create("estimates", { customerId: customer.id, serviceLocationId: property.id, title: "Multi-line quote", frequency: "every_two_weeks", lines: [{ description: "Catalog recurring", quantity: "1", unitAmountMinor: 2500, serviceId: seedIds.weeklyService }, { description: "Custom recurring", quantity: "1", unitAmountMinor: 700, charge: "every_visit" }, { description: "Setup", quantity: "1", unitAmountMinor: 500, charge: "once" }, { description: "Declined optional", quantity: "1", unitAmountMinor: 999, charge: "once", optional: true }] });
   await action(quote.id, "send"); await action(quote.id, "approve", { acceptedOptionalIds: [] }); await action(quote.id, "approve", { acceptedOptionalIds: [] });
   const plans = await db.select().from(schema.servicePlans).where(eq(schema.servicePlans.customerId, customer.id)), jobs = await db.select().from(schema.jobs).where(eq(schema.jobs.customerId, customer.id));
-  expect(plans).toHaveLength(2); expect(jobs).toHaveLength(1); expect(jobs[0]).toMatchObject({ serviceLocationId: property.id, billable: false, priceSnapshot: { totalMinor: 500, billingIncludedInFirstVisit: true } });
+  expect(plans).toHaveLength(1); expect(jobs).toHaveLength(1); expect(jobs[0]).toMatchObject({ serviceLocationId: property.id, billable: true, priceSnapshot: { totalMinor: 500 } });
+  expect(jobs[0]!.priceSnapshot).not.toHaveProperty("billingIncludedInFirstVisit");
+  expect(plans[0]!.pricingSnapshot).toMatchObject({ totalMinor: 3200, items: [{ description: "Catalog recurring" }, { description: "Custom recurring" }] });
   for (const plan of plans) { expect(plan.serviceLocationId).toBe(property.id); expect((await db.select().from(schema.recurrenceRules).where(eq(schema.recurrenceRules.id, plan.recurrenceRuleId!)))[0]).toMatchObject({ frequencyType: "weekly", interval: 2 }); }
-  expect(plans.filter(plan => Number((plan.billingConfiguration.oneTimePricingSnapshot as { totalMinor?: number })?.totalMinor) === 500)).toHaveLength(1);
+  expect(plans[0]!.billingConfiguration).not.toHaveProperty("oneTimePricingSnapshot");
+  expect((await db.select().from(schema.services)).filter(service => service.configuration.estimateRevisionId === plans[0]!.pricingSnapshot.estimateRevisionId)).toHaveLength(1); // Only the once-only setup needs a hidden identity.
+  expect(await generateRecurringJobs(db, { planId: plans[0]!.id, through: addCalendarDays(plans[0]!.effectiveFrom, 14) })).toMatchObject({ created: 2, invalid: [] });
+  expect(await generateRecurringJobs(db, { planId: plans[0]!.id, through: addCalendarDays(plans[0]!.effectiveFrom, 14) })).toMatchObject({ created: 0 });
+  const visits = await db.select().from(schema.jobs).where(eq(schema.jobs.servicePlanId, plans[0]!.id));
+  expect(visits).toHaveLength(2); expect(new Set(visits.map(visit => visit.scheduledDate)).size).toBe(2);
+  expect(visits.every(visit => visit.priceSnapshot?.totalMinor === 3200 && (visit.priceSnapshot.items as unknown[]).length === 2)).toBe(true);
   expect(await db.select().from(schema.estimateApprovals).where(eq(schema.estimateApprovals.estimateId, quote.id))).toHaveLength(1);
-  const details = await (await handleRecordDetails(request(""), ["customers", customer.id, "detail"], office))!.json(); expect(details.related.estimates.map((item: { id: string }) => item.id)).toContain(quote.id); expect(details.related.plans).toHaveLength(2);
+  const details = await (await handleRecordDetails(request(""), ["customers", customer.id, "detail"], office))!.json(); expect(details.related.estimates.map((item: { id: string }) => item.id)).toContain(quote.id); expect(details.related.plans).toHaveLength(1);
   const catalog = await (await handleRecords(request(""), ["services"], office))!.json(); expect(catalog.items.some((item: { name: string }) => item.name === "Custom recurring" || item.name === "Setup")).toBe(false);
+});
+
+it("uses one hidden identity for an entirely free-form recurring agreement", async () => {
+  const quote = await create("estimates", { customerId: seedIds.carter, title: "Custom recurring agreement", frequency: "monthly", lines: [{ description: "Mowing", quantity: "1", unitAmountMinor: 1200, charge: "every_visit" }, { description: "Edging", quantity: "1", unitAmountMinor: 300, charge: "every_visit" }] });
+  await action(quote.id, "send"); await action(quote.id, "approve");
+  const plans = (await db.select().from(schema.servicePlans)).filter(plan => plan.pricingSnapshot.estimateId === quote.id);
+  expect(plans).toHaveLength(1); expect(plans[0]!.pricingSnapshot).toMatchObject({ totalMinor: 1500, items: [{ description: "Mowing" }, { description: "Edging" }] });
+  const identities = (await db.select().from(schema.services)).filter(service => service.configuration.estimateRevisionId === plans[0]!.pricingSnapshot.estimateRevisionId);
+  expect(identities).toHaveLength(1); expect(identities[0]).toMatchObject({ id: plans[0]!.serviceId, active: false, serviceType: "recurring" });
+});
+
+it("blocks addressless lead send and verbal approval, repairs inline with scoped/versioned writes, and converts through the emailed link", async () => {
+  const lead = await create("leads", { name: "Website addressless", email: "addressless@example.test" });
+  await db.update(schema.leads).set({ owningLocationId: null, customFields: { websiteMessage: "Please quote my yard" } }).where(eq(schema.leads.id, lead.id));
+  const quote = await create("estimates", { leadId: lead.id, title: "Website quote", totalCents: 900 });
+  const call = (name: string) => handleWorkflow(request("", {}), ["estimates", quote.id, name], owner);
+  await expect(call("send")).rejects.toMatchObject({ status: 422, message: expect.stringContaining("Add a complete service address") });
+  expect(await db.select().from(schema.secureEstimateTokens).where(eq(schema.secureEstimateTokens.estimateId, quote.id))).toHaveLength(0);
+  expect((await db.select().from(schema.leads).where(eq(schema.leads.id, lead.id)))[0]!.customerId).toBeNull();
+  // A pre-guard sent estimate must offer staff the same repair, not convert and fail later.
+  await db.update(schema.estimates).set({ status: "sent" }).where(eq(schema.estimates.id, quote.id));
+  await expect(call("approve")).rejects.toMatchObject({ status: 422, message: expect.stringContaining("Add a complete service address") });
+  expect(await db.select().from(schema.estimateApprovals).where(eq(schema.estimateApprovals.estimateId, quote.id))).toHaveLength(0);
+  const path = ["estimates", quote.id, "service-address"];
+  const source = (await (await handleEstimateProperty(request(""), path, owner))!.json()).item;
+  expect(source).toMatchObject({ ready: false }); expect(JSON.stringify(source)).not.toContain("websiteMessage");
+  const [current] = await db.select().from(schema.estimates).where(eq(schema.estimates.id, quote.id));
+  const input = { address: { line1: "42 Website Lane", city: "Augusta", region: "GA", postalCode: "30901", countryCode: "US" }, expectedUpdatedAt: current!.updatedAt.toISOString(), sourceUpdatedAt: source.sourceUpdatedAt };
+  await expect(handleEstimateProperty(request("", input), path, { ...owner, tenantId: seedIds.cleanTenant })).rejects.toMatchObject({ status: 404 });
+  await expect(handleEstimateProperty(request("", input), path, { ...office, locationIds: new Set([seedIds.northAugusta]) })).rejects.toMatchObject({ status: 404 });
+  await expect(handleEstimateProperty(request("", input), path, { ...owner, permissions: new Set(["estimates.read", "estimates.update_draft"]) })).rejects.toMatchObject({ status: 403 });
+  await expect(handleEstimateProperty(request("", { ...input, sourceUpdatedAt: "2020-01-01T00:00:00Z" }), path, owner)).rejects.toMatchObject({ status: 409 });
+  const [prior] = await db.select().from(schema.estimateRevisions).where(eq(schema.estimateRevisions.estimateId, quote.id));
+  expect((await handleEstimateProperty(request("", input), path, owner))!.status).toBe(200);
+  expect((await db.select().from(schema.estimateRevisions).where(eq(schema.estimateRevisions.id, prior!.id)))[0]).toEqual(prior);
+  await expect(handleEstimateProperty(request("", input), path, owner)).rejects.toMatchObject({ status: 409 });
+  const sent = await (await call("send"))!.json(); const token = sent.actionUrl.split("/").at(-1)!;
+  expect(sendEmail.mock.calls.at(-1)?.[0].body).toContain(sent.actionUrl);
+  const publicPath = ["public", "estimate-links", token, "approve"];
+  expect((await handleSecureEstimateLink(request("", { acceptedOptionalIds: [] }), publicPath))!.status).toBe(200);
+  expect((await (await handleSecureEstimateLink(request("", { acceptedOptionalIds: [] }), publicPath))!.json()).duplicate).toBe(true);
+  const [converted] = await db.select().from(schema.leads).where(eq(schema.leads.id, lead.id));
+  const locations = await db.select().from(schema.serviceLocations).where(eq(schema.serviceLocations.customerId, converted!.customerId!));
+  expect(locations).toHaveLength(1); expect(locations[0]).toMatchObject({ addressLine1: "42 Website Lane", city: "Augusta", region: "GA", postalCode: "30901", organizationLocationId: seedIds.augusta });
+  const work = await db.select().from(schema.jobs).where(eq(schema.jobs.customerId, converted!.customerId!));
+  expect(work).toHaveLength(1); expect(work[0]!.serviceLocationId).toBe(locations[0]!.id);
+  expect(await db.select().from(schema.estimateApprovals).where(eq(schema.estimateApprovals.estimateId, quote.id))).toHaveLength(1);
+});
+
+it("repairs a selected customer property without losing private fields, preserves sent revisions and invalidates old links", async () => {
+  const customer = await create("customers", { name: "Imported property address", email: "repair@example.test" });
+  const property = (await (await handleCustomerRecords(request("", { ...address, locationFields: { yard_size: "large", gate_code: "repair-private-9912" } }), ["customers", customer.id, "properties"], office))!.json()).item;
+  const quote = await create("estimates", { customerId: customer.id, serviceLocationId: property.id, title: "Property repair quote", totalCents: 1100 });
+  const sent = await action(quote.id, "send"), oldToken = sent.actionUrl.split("/").at(-1)!;
+  const [prior] = await db.select().from(schema.estimateRevisions).where(eq(schema.estimateRevisions.estimateId, quote.id));
+  await db.update(schema.serviceLocations).set({ city: "" }).where(eq(schema.serviceLocations.id, property.id));
+  await expect(action(quote.id, "approve")).rejects.toMatchObject({ status: 422 });
+  const path = ["estimates", quote.id, "service-address"], source = (await (await handleEstimateProperty(request(""), path, office))!.json()).item;
+  expect(source.ready).toBe(false); expect(JSON.stringify(source)).not.toContain("private");
+  const [current] = await db.select().from(schema.estimates).where(eq(schema.estimates.id, quote.id));
+  const [before] = await db.select().from(schema.serviceLocations).where(eq(schema.serviceLocations.id, property.id));
+  await handleEstimateProperty(request("", { address: { line1: address.addressLine1, city: "Augusta", region: "GA", postalCode: "30901", countryCode: "US" }, expectedUpdatedAt: current!.updatedAt.toISOString(), sourceUpdatedAt: source.sourceUpdatedAt }), path, office);
+  const [after] = await db.select().from(schema.serviceLocations).where(eq(schema.serviceLocations.id, property.id));
+  expect(after!.customFields).toEqual(before!.customFields); expect(after!.accessInstructionsEncrypted).toBe(before!.accessInstructionsEncrypted);
+  expect((await db.select().from(schema.estimateRevisions).where(eq(schema.estimateRevisions.id, prior!.id)))[0]).toEqual(prior);
+  await expect(handleSecureEstimateLink(request(""), ["public", "estimate-links", oldToken])).rejects.toMatchObject({ status: 409 });
+  const resent = await action(quote.id, "send"); expect(resent.actionUrl).not.toBe(sent.actionUrl);
+  await action(quote.id, "approve"); expect((await db.select().from(schema.estimates).where(eq(schema.estimates.id, quote.id)))[0]!.serviceLocationId).toBe(property.id);
+});
+
+it("accepts a complete unassigned lead address and assigns its converted property to the estimate branch", async () => {
+  const lead = await create("leads", { name: "Complete unassigned lead", email: "complete@example.test", address: "8 Lead Lane", city: "Augusta", region: "GA", postalCode: "30901" });
+  await db.update(schema.leads).set({ owningLocationId: null }).where(eq(schema.leads.id, lead.id));
+  const quote = await create("estimates", { leadId: lead.id, title: "Complete lead quote", totalCents: 100 });
+  await handleWorkflow(request("", {}), ["estimates", quote.id, "send"], owner);
+  await handleWorkflow(request("", {}), ["estimates", quote.id, "approve"], owner);
+  const [saved] = await db.select().from(schema.estimates).where(eq(schema.estimates.id, quote.id));
+  expect((await db.select().from(schema.serviceLocations).where(eq(schema.serviceLocations.id, saved!.serviceLocationId!)))[0]).toMatchObject({ organizationLocationId: seedIds.augusta, addressLine1: "8 Lead Lane" });
 });
 
 it("creates work for all-free one-time estimates and keeps each frozen invoice line linked to its own job", async () => {

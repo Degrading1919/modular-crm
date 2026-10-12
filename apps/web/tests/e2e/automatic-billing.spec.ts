@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { closeDatabase, createDatabase, schema, seedIds } from "@modular-crm/db";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, lte, sql } from "drizzle-orm";
 import { priceDocument } from "@modular-crm/domain";
 import { generateRecurringJobs } from "../../../worker/src/recurring-db";
 import { addCalendarDays } from "../../../worker/src/recurrence";
@@ -10,14 +10,14 @@ import { chooseStaffRecord } from "./staff-picker";
 async function signIn(page: Page, email = "owner@happyyards.test") {
   await page.goto("/login"); await page.getByLabel("Email address").fill(email); await page.getByLabel("Password").fill("Demo12345!"); await page.getByRole("button", { name: "Sign in", exact: true }).click(); await expect(page).toHaveURL(email.startsWith("tech") ? /\/field\/today$/ : /\/app\/dashboard$/);
 }
-test("recurring estimate setup charge is billed once across two legally completed field visits", async ({ page, browser }, testInfo) => {
+test("itemized recurring visits and independently completed setup each bill exactly once", async ({ page, browser }, testInfo) => {
   test.setTimeout(150_000);
   const db = createDatabase(process.env.DATABASE_URL!), field = await browser.newPage(); let planId: string | undefined; const routes: string[] = [];
   await signIn(page);
   const settings = (await (await page.request.get("/api/v1/settings")).json()).item;
   try {
     const customerName = `Automatic billing customer ${crypto.randomUUID()}`;
-    const customer = await page.request.post("/api/v1/customers", { data: { name: customerName, address: "123 Billing Lane" } }); expect(customer.status(), await customer.text()).toBe(201);
+    const customer = await page.request.post("/api/v1/customers", { data: { name: customerName, address: "123 Billing Lane", city: "Augusta", region: "GA", postalCode: "30901" } }); expect(customer.status(), await customer.text()).toBe(201);
     expect((await page.request.patch("/api/v1/settings", { data: { defaultTaxRateBasisPoints: 0 } })).ok()).toBe(true);
     const catalog = (await (await page.request.get("/api/v1/services")).json()).items;
     const service = catalog.find((item: { serviceType: string }) => item.serviceType === "recurring"); expect(service).toBeTruthy();
@@ -27,31 +27,45 @@ test("recurring estimate setup charge is billed once across two legally complete
     await dialog.getByRole("button", { name: "Add a line", exact: true }).click();
     await chooseStaffRecord(page, "Catalog service 2", service.name);
     const weekly = dialog.getByRole("group", { name: "Line 2", exact: true }); await weekly.getByLabel("Unit price").fill("25"); await expect(weekly.getByLabel("Charge", { exact: true })).toHaveValue("every_visit"); await expect(setup.getByLabel("Charge", { exact: true })).toHaveValue("once");
+    await dialog.getByRole("button", { name: "Add a line", exact: true }).click();
+    const edging = dialog.getByRole("group", { name: "Line 3", exact: true }); await edging.getByLabel("Line description").fill("Every-visit edging"); await edging.getByLabel("Unit price").fill("5"); await edging.getByLabel("Charge", { exact: true }).selectOption("every_visit");
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath("recurring-charges-phone.png"), fullPage: true });
     const created = page.waitForResponse(response => response.url().endsWith("/api/v1/estimates") && response.request().method() === "POST"); await dialog.getByRole("button", { name: "Create estimate", exact: true }).click(); const create = await created; expect(create.status(), await create.text()).toBe(201); const estimateId = (await create.json()).item.id;
     expect((await page.request.post(`/api/v1/estimates/${estimateId}/send`, { data: {} })).ok()).toBe(true);
     expect((await page.request.post(`/api/v1/estimates/${estimateId}/approve`, { data: {} })).ok()).toBe(true);
     const [plan] = await db.select().from(schema.servicePlans).where(and(eq(schema.servicePlans.tenantId, seedIds.happyTenant), sql`${schema.servicePlans.pricingSnapshot}->>'estimateId' = ${estimateId}`)); planId = plan!.id;
-    expect(plan!.pricingSnapshot).toMatchObject({ totalMinor: 2500, items: [{ charge: "every_visit" }] });
+    expect(plan!.pricingSnapshot).toMatchObject({ totalMinor: 3000, items: [{ charge: "every_visit" }, { description: "Every-visit edging", charge: "every_visit" }] });
+    expect(await db.select().from(schema.servicePlans).where(sql`${schema.servicePlans.pricingSnapshot}->>'estimateId' = ${estimateId}`)).toHaveLength(1);
+    expect(plan!.billingConfiguration).not.toHaveProperty("oneTimePricingSnapshot");
     expect((await page.request.post(`/api/v1/estimates/${estimateId}/invoice`, { data: {} })).status()).toBe(409);
     const generated = await generateRecurringJobs(db, { tenantId: seedIds.happyTenant, planId, through: addCalendarDays(plan!.effectiveFrom, 7) }); expect(generated.invalid).toHaveLength(0);
-    const work = await db.select().from(schema.jobs).where(eq(schema.jobs.servicePlanId, planId)).orderBy(schema.jobs.scheduledDate); expect(work.length).toBeGreaterThanOrEqual(2);
-    for (const job of work.slice(0, 2)) {
-      expect((await page.request.post(`/api/v1/jobs/${job.id}/assign`, { data: { technicianId: seedIds.terryMembership, scheduledDate: job.scheduledDate } })).ok()).toBe(true);
-      const createdRoute = await page.request.post("/api/v1/routes", { data: { date: job.scheduledDate, technicianId: seedIds.terryMembership } }); expect(createdRoute.status(), await createdRoute.text()).toBe(201); const route = (await createdRoute.json()).item; routes.push(route.id);
+    // The worker may book beyond this window; within two weekly cycles there
+    // must be exactly two visits, not one per accepted recurring line.
+    const work = await db.select().from(schema.jobs).where(and(eq(schema.jobs.servicePlanId, planId), lte(schema.jobs.scheduledDate, addCalendarDays(plan!.effectiveFrom, 7)))).orderBy(schema.jobs.scheduledDate); expect(work).toHaveLength(2); expect(new Set(work.map(job => job.scheduledDate)).size).toBe(2);
+    const [setupJob] = await db.select().from(schema.jobs).where(and(sql`${schema.jobs.priceSnapshot}->>'estimateId' = ${estimateId}`, sql`${schema.jobs.servicePlanId} is null`)); expect(setupJob).toMatchObject({ billable: true, priceSnapshot: { totalMinor: 5000 } });
+    const allWork = [{ ...setupJob!, scheduledDate: plan!.effectiveFrom }, ...work];
+    for (const job of allWork) expect((await page.request.post(`/api/v1/jobs/${job.id}/assign`, { data: { technicianId: seedIds.terryMembership, scheduledDate: job.scheduledDate } })).ok()).toBe(true);
+    for (const date of new Set(allWork.map(job => job.scheduledDate))) {
+      const createdRoute = await page.request.post("/api/v1/routes", { data: { date, technicianId: seedIds.terryMembership } }); expect(createdRoute.status(), await createdRoute.text()).toBe(201); const route = (await createdRoute.json()).item; routes.push(route.id);
       expect((await page.request.post(`/api/v1/routes/${route.id}/publish`, { data: {} })).ok()).toBe(true);
     }
     await signIn(field, "tech@happyyards.test");
-    for (const [index, job] of work.slice(0, 2).entries()) {
+    const invoiceIds: string[] = [];
+    for (const job of allWork) {
       await field.goto(`/field/job/${job.id}`); await field.getByRole("button", { name: "On my way", exact: true }).click(); await expect(field.getByText("En Route", { exact: true })).toBeVisible(); await field.getByRole("button", { name: "Start job", exact: true }).click(); await expect(field.getByText("In Progress", { exact: true })).toBeVisible();
       await field.getByLabel(/I confirmed the correct property/).check(); await field.getByLabel(/I left gates and access points secure/).check();
       const synced = field.waitForResponse(response => response.url().endsWith(`/api/v1/field/jobs/${job.id}/complete`) && response.request().method() === "POST");
       await field.getByRole("button", { name: "Complete job", exact: true }).click(); const completion = await synced; expect(completion.ok(), await completion.text()).toBe(true); await expect(field.getByText("Completed", { exact: true })).toBeVisible();
+      if (!job.servicePlanId) { await page.goto(`/app/jobs/${job.id}`); await page.getByRole("button", { name: "Create invoice", exact: true }).click(); await expect(page).toHaveURL(/\/app\/invoices\//); }
       const [link] = await db.select().from(schema.jobInvoiceLinks).where(eq(schema.jobInvoiceLinks.jobId, job.id)); expect(link).toBeTruthy();
-      await page.goto(`/app/invoices/${link!.invoiceId}`); await expect(page.getByRole("region", { name: "Price breakdown", exact: true })).toContainText(index === 0 ? "$75.00" : "$25.00");
-      const lines = page.getByRole("region", { name: "Invoice lines", exact: true }); if (index === 0) await expect(lines).toContainText("Initial cleanup"); else await expect(lines).not.toContainText("Initial cleanup");
+      invoiceIds.push(link!.invoiceId);
+      await page.goto(`/app/invoices/${link!.invoiceId}`); await expect(page.getByRole("region", { name: "Price breakdown", exact: true })).toContainText(job.servicePlanId ? "$30.00" : "$50.00");
+      const lines = page.getByRole("region", { name: "Invoice lines", exact: true }); if (!job.servicePlanId) await expect(lines).toContainText("Initial cleanup"); else { await expect(lines).not.toContainText("Initial cleanup"); await expect(lines).toContainText("Every-visit edging"); }
+      const replay = await page.request.post(`/api/v1/jobs/${job.id}/invoice`, { data: {} }); expect(replay.ok(), await replay.text()).toBe(true); expect((await replay.json()).item.id).toBe(link!.invoiceId);
+      expect(await db.select().from(schema.jobInvoiceLinks).where(eq(schema.jobInvoiceLinks.jobId, job.id))).toHaveLength(1);
     }
+    expect(new Set(invoiceIds).size).toBe(3);
   } finally {
     if (planId) await db.update(schema.servicePlans).set({ status: "canceled" }).where(eq(schema.servicePlans.id, planId));
     for (const routeId of routes) await db.transaction(async tx => { await tx.delete(schema.routeStops).where(eq(schema.routeStops.routePlanId, routeId)); await tx.update(schema.jobs).set({ assignedRouteId: null }).where(eq(schema.jobs.assignedRouteId, routeId)); await tx.delete(schema.routePlans).where(eq(schema.routePlans.id, routeId)); });

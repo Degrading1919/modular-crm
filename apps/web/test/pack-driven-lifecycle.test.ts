@@ -23,6 +23,7 @@ const { handleWorkflow, estimateAction } = await import("../lib/api/workflows.ts
 const { handleV1 } = await import("../lib/api/handler.ts");
 const { apiError } = await import("../lib/api/http.ts");
 const { decryptServiceAccessInstructions } = await import("../lib/api/service-access.ts");
+const { handleEstimateProperty } = await import("../lib/api/estimate-property.ts");
 let pglite: PGlite;
 let db: Database;
 const owner: SessionActor = { kind: "staff", userId: seedUserIds.houseOwner, tenantId: seedIds.houseTenant, tenantName: "Tidy Home", packKey: "house-cleaning", email: "owner@tidyhome.test", name: "Robin", role: "owner", permissions: permissionsForRole("owner"), locationIds: new Set([seedIds.houseBranch]), allLocations: true, membershipId: seedIds.houseOwnerMembership, organizationId: seedIds.houseOrganization, defaultLocationId: seedIds.houseBranch };
@@ -211,6 +212,13 @@ it.each([
     const [estimate] = await db.insert(estimates).values({ tenantId: staff.tenantId, leadId: lead!.id, organizationLocationId: lead!.owningLocationId, status: "draft", currentRevision: 1, totalMinor: 7500n, createdByMembershipId: staff.membershipId }).returning();
     const [revision] = await db.insert(estimateRevisions).values({ tenantId: staff.tenantId, estimateId: estimate!.id, revisionNumber: 1, subtotalMinor: 7500n, totalMinor: 7500n, termsText: "Service terms", snapshot: { title: "Requested service" } }).returning();
     await db.insert(estimateItems).values({ tenantId: staff.tenantId, estimateRevisionId: revision!.id, serviceId, description: "Requested service", quantity: "1", unitAmountMinor: 7500n, totalMinor: 7500n });
+    // Quote-review signup captures street/zip, not a complete service address.
+    // Use the same office repair as a real estimate without disturbing private pack details.
+    await expect(estimateAction(request("", {}), staff, estimate!.id, "send")).rejects.toMatchObject({ status: 422 });
+    const addressPath = ["estimates", estimate!.id, "service-address"];
+    const source = (await (await handleEstimateProperty(request(""), addressPath, staff))!.json()).item;
+    expect((await handleEstimateProperty(request("", { address: { line1: "98 Review Street", city: "Augusta", region: "GA", postalCode: house ? "30909" : "30901", countryCode: "US" }, expectedUpdatedAt: estimate!.updatedAt.toISOString(), sourceUpdatedAt: source.sourceUpdatedAt }), addressPath, staff))!.status).toBe(200);
+    expect((await db.select().from(estimateRevisions).where(eq(estimateRevisions.id, revision!.id)))[0]).toEqual(revision);
     const sent = await estimateAction(request(`estimates/${estimate!.id}/send`, {}), staff, estimate!.id, "send");
     expect(sent.status).toBe(200);
     const token = (await sent.json()).actionUrl.split("/").at(-1);

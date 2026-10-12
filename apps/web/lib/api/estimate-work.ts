@@ -1,6 +1,6 @@
 import { and, asc, eq, sql } from "drizzle-orm";
 import { customers, estimates, estimateRevisions, hasUsableFeature, jobs, loadTenantCapabilities, recurrenceRules, serviceLocations, servicePlans, services, tenants, type Database } from "@modular-crm/db";
-import { documentCharges, DomainError, frozenDocument, normalizeRecurrenceFrequency, type DocumentPricing } from "@modular-crm/domain";
+import { DomainError, frozenDocument, normalizeRecurrenceFrequency, type DocumentPricing } from "@modular-crm/domain";
 import { businessDate } from "../dates";
 
 type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
@@ -16,38 +16,38 @@ export async function createEstimateWork(tx: Tx, tenantId: string, estimate: typ
   const capabilities = await loadTenantCapabilities(tx as unknown as Database, tenantId);
   const resolved = [];
   for (const line of pricing.items) {
-    let service = line.serviceId ? (await tx.select().from(services).where(and(eq(services.tenantId, tenantId), eq(services.organizationId, customer.organizationId), eq(services.id, line.serviceId))).limit(1))[0] : undefined;
+    const service = line.serviceId ? (await tx.select().from(services).where(and(eq(services.tenantId, tenantId), eq(services.organizationId, customer.organizationId), eq(services.id, line.serviceId))).limit(1))[0] : undefined;
     if (line.serviceId && !service) throw new DomainError("NOT_FOUND", "An estimated service is no longer available in this business.", 404);
-    if (!service) {
-      // Work needs a service identity for checklists/routes. This estimate-only
-      // definition is not offered as a reusable catalog choice.
-      [service] = await tx.insert(services).values({ tenantId, organizationId: customer.organizationId, key: `estimate-${revision.id}-${line.sortOrder}`, name: line.description, serviceType: line.charge === "every_visit" ? "recurring" : "one_time", active: false, configuration: { estimateOnly: true, estimateRevisionId: revision.id } }).returning();
-    }
     // Historical revisions predate charge metadata. Infer only when absent;
     // an explicit customer-agreed charge always wins over the catalog default.
-    const charge = line.charge ?? (service!.serviceType === "recurring" ? "every_visit" : "once");
-    resolved.push({ line: { ...line, charge }, service: service!, recurring: charge === "every_visit" });
+    const charge = line.charge ?? (service?.serviceType === "recurring" ? "every_visit" : "once");
+    resolved.push({ line: { ...line, charge }, service, recurring: charge === "every_visit" });
   }
-  const hasRecurring = resolved.some(item => item.recurring);
-  const once = documentCharges({ ...pricing, items: resolved.map(item => item.line) }, "once");
-  let ownsSetup = true;
-  for (const { line, service, recurring } of resolved) {
-    const feature = recurring ? "recurring_service_management" : "service_scheduling";
-    if (!hasUsableFeature(capabilities, feature)) throw new DomainError("CAPABILITY_UNAVAILABLE", "Enable service scheduling for this work in your business setup.", 403);
+  async function workService(name: string, key: string, recurring: boolean) {
+    const [service] = await tx.insert(services).values({ tenantId, organizationId: customer!.organizationId, key: `estimate-${revision.id}-${key}`, name, serviceType: recurring ? "recurring" : "one_time", active: false, configuration: { estimateOnly: true, estimateRevisionId: revision.id } }).returning();
+    return service!;
+  }
+  const recurring = resolved.filter(item => item.recurring);
+  if (recurring.length) {
+    if (!hasUsableFeature(capabilities, "recurring_service_management")) throw new DomainError("CAPABILITY_UNAVAILABLE", "Enable recurring services in your business setup.", 403);
+    // One agreement means one visit per cycle. All accepted recurring lines
+    // remain itemized on that visit; free-form additions need no service rows.
+    const service = recurring.find(item => item.service)?.service ?? await workService(String(revision.snapshot.title ?? "Estimated recurring service"), "recurring", true);
+    const portion = frozenDocument(recurring.map(item => item.line), pricing.taxRateBasisPoints);
+    const frequency = normalizeRecurrenceFrequency(String(revision.snapshot.frequency ?? "weekly"));
+    const zone = location.timezone ?? tenant?.defaultTimezone ?? "UTC";
+    const [rule] = await tx.insert(recurrenceRules).values({ tenantId, ...frequency, timezone: zone }).returning();
+    await tx.insert(servicePlans).values({ tenantId, customerId, serviceLocationId: location.id, organizationLocationId: location.organizationLocationId, serviceId: service.id, recurrenceRuleId: rule!.id, effectiveFrom: businessDate(new Date(), zone), status: "active", pricingSnapshot: { ...portion, currency: estimate.currency, amountMinor: portion.totalMinor, estimateId: estimate.id, estimateRevisionId: revision.id }, billingConfiguration: { type: "per_job" } });
+  }
+  for (const item of resolved.filter(item => !item.recurring)) {
+    if (!hasUsableFeature(capabilities, "service_scheduling")) throw new DomainError("CAPABILITY_UNAVAILABLE", "Enable service scheduling for this work in your business setup.", 403);
+    const { line } = item;
+    const service = item.service ?? await workService(line.description, String(line.sortOrder), false);
     const portion = frozenDocument([line], pricing.taxRateBasisPoints);
     const snapshot = { ...portion, currency: estimate.currency, amountMinor: portion.totalMinor, estimateId: estimate.id, estimateRevisionId: revision.id, estimateLineOrder: line.sortOrder };
-    if (recurring) {
-      const frequency = normalizeRecurrenceFrequency(String(revision.snapshot.frequency ?? "weekly"));
-      const zone = location.timezone ?? tenant?.defaultTimezone ?? "UTC";
-      const [rule] = await tx.insert(recurrenceRules).values({ tenantId, ...frequency, timezone: zone }).returning();
-      await tx.insert(servicePlans).values({ tenantId, customerId, serviceLocationId: location.id, organizationLocationId: location.organizationLocationId, serviceId: service.id, recurrenceRuleId: rule!.id, effectiveFrom: businessDate(new Date(), zone), status: "active", pricingSnapshot: snapshot, billingConfiguration: { type: "per_job", ...(ownsSetup ? { oneTimePricingSnapshot: once } : {}) } });
-      ownsSetup = false;
-    } else {
-      // Existing recurring contracts bill setup with the first visit. The work
-      // still has its own schedulable job, but is never billed a second time.
-      const setup = hasRecurring && line.charge === "once";
-      await tx.insert(jobs).values({ tenantId, organizationId: customer.organizationId, organizationLocationId: location.organizationLocationId, customerId, serviceLocationId: location.id, serviceId: service.id, status: "unscheduled", billable: !setup, customerSummary: line.description, priceSnapshot: { ...snapshot, ...(setup ? { billingIncludedInFirstVisit: true } : {}) } });
-    }
+    // Setup has its own durable billing claim, independent of whether a plan
+    // ever reaches its first visit. Historical plan setup snapshots still work.
+    await tx.insert(jobs).values({ tenantId, organizationId: customer.organizationId, organizationLocationId: location.organizationLocationId, customerId, serviceLocationId: location.id, serviceId: service.id, status: "unscheduled", billable: true, customerSummary: line.description, priceSnapshot: snapshot });
   }
   await tx.update(estimates).set({ serviceLocationId: location.id }).where(and(eq(estimates.tenantId, tenantId), eq(estimates.id, estimate.id)));
 }

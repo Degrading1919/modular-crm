@@ -38,25 +38,62 @@ async function approvedQuote(recurring: boolean) {
   const [revision] = await db.select().from(schema.estimateRevisions).where(eq(schema.estimateRevisions.estimateId, id));
   return { id, revision: revision! };
 }
-it("bills setup once on the first completed visit, freezes only recurring lines and refuses estimate double billing", async () => {
+it("bills setup independently exactly once, bills each completed visit without setup, and refuses estimate double billing", async () => {
   const { id, revision } = await approvedQuote(true);
   const [plan] = await db.select().from(schema.servicePlans).where(and(eq(schema.servicePlans.tenantId, owner.tenantId), eq(schema.servicePlans.serviceId, (revision.snapshot.pricingSnapshot as { items: { serviceId: string }[] }).items[0]!.serviceId)));
   expect(plan!.pricingSnapshot).toMatchObject({ totalMinor: 2500, items: [{ description: "Weekly service", charge: "every_visit" }] });
-  expect(plan!.billingConfiguration).toMatchObject({ oneTimePricingSnapshot: { totalMinor: 5000 } });
+  expect(plan!.billingConfiguration).not.toHaveProperty("oneTimePricingSnapshot");
+  const setup = (await db.select().from(schema.jobs)).find(job => job.priceSnapshot?.estimateId === id)!;
+  expect(setup).toMatchObject({ billable: true, servicePlanId: null, priceSnapshot: { totalMinor: 5000 } });
+  await transitionJob(owner, setup.id, "scheduled"); await transitionJob(owner, setup.id, "dispatched"); await transitionJob(owner, setup.id, "en_route"); await transitionJob(owner, setup.id, "in_progress"); await transitionJob(owner, setup.id, "completed", { completedChecklist: true });
+  const setupInvoice = (await (await jobInvoice(owner, setup.id)).json()).item;
+  expect(setupInvoice.totalMinor).toBe(5000); expect((await (await jobInvoice(owner, setup.id)).json()).item.id).toBe(setupInvoice.id);
+  expect(await db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, setupInvoice.id))).toEqual([expect.objectContaining({ description: "Initial cleanup", jobId: setup.id, totalMinor: 5000n })]);
+  expect(await db.select().from(schema.jobInvoiceLinks).where(eq(schema.jobInvoiceLinks.jobId, setup.id))).toHaveLength(1);
   await expect(handleWorkflow(request(`estimates/${id}/invoice`), ["estimates", id, "invoice"], owner)).rejects.toMatchObject({ status: 409, message: expect.stringContaining("billed automatically") });
   const invoiceIds = [];
   for (let visit = 0; visit < 2; visit++) {
     const [job] = await db.insert(schema.jobs).values({ tenantId: owner.tenantId, organizationId: owner.organizationId!, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, serviceId: plan!.serviceId, servicePlanId: plan!.id, status: "in_progress", priceSnapshot: plan!.pricingSnapshot }).returning();
     const response = await transitionJob(owner, job!.id, "completed", { completedChecklist: true }); const invoiceId = (await response.json()).invoice.id; invoiceIds.push(invoiceId);
     const [invoice] = await db.select().from(schema.invoices).where(eq(schema.invoices.id, invoiceId));
-    expect(invoice!.totalMinor).toBe(visit === 0 ? 7500n : 2500n);
+    expect(invoice!.totalMinor).toBe(2500n);
     expect(invoice!.dueAt).toEqual(invoice!.issuedAt);
     const lines = await db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, invoiceId));
-    expect(lines.filter(line => line.description === "Initial cleanup")).toHaveLength(visit === 0 ? 1 : 0);
+    expect(lines.filter(line => line.description === "Initial cleanup")).toHaveLength(0);
     expect(lines.every(line => line.jobId === job!.id)).toBe(true);
     const replay = await transitionJob(owner, job!.id, "completed", { completedChecklist: true }); expect((await replay.json()).invoice.id).toBe(invoiceId);
   }
-  expect((await db.select().from(schema.servicePlans).where(eq(schema.servicePlans.id, plan!.id)))[0]!.billingConfiguration.oneTimeInvoiceId).toBe(invoiceIds[0]);
+  expect(new Set([...invoiceIds, setupInvoice.id]).size).toBe(3);
+  expect((await db.select().from(schema.servicePlans).where(eq(schema.servicePlans.id, plan!.id)))[0]!.billingConfiguration).not.toHaveProperty("oneTimeInvoiceId");
+});
+
+it("keeps completed setup billable exactly once when the plan is canceled before its first visit", async () => {
+  const { id, revision } = await approvedQuote(true);
+  const [plan] = await db.select().from(schema.servicePlans).where(eq(schema.servicePlans.serviceId, (revision.snapshot.pricingSnapshot as { items: { serviceId: string }[] }).items[0]!.serviceId));
+  const setup = (await db.select().from(schema.jobs)).find(job => job.priceSnapshot?.estimateId === id)!;
+  for (const status of ["scheduled", "dispatched", "en_route", "in_progress"]) await transitionJob(owner, setup.id, status);
+  await transitionJob(owner, setup.id, "completed", { completedChecklist: true });
+  expect((await handleWorkflow(request(""), ["service-plans", plan!.id, "cancel"], owner))!.status).toBe(200);
+  expect(await db.select().from(schema.jobs).where(eq(schema.jobs.servicePlanId, plan!.id))).toHaveLength(0);
+  const invoice = (await (await jobInvoice(owner, setup.id)).json()).item;
+  expect(invoice.totalMinor).toBe(5000); expect((await (await jobInvoice(owner, setup.id)).json()).item.id).toBe(invoice.id);
+  expect(await db.select().from(schema.jobInvoiceLinks).where(eq(schema.jobInvoiceLinks.jobId, setup.id))).toHaveLength(1);
+  expect((await db.select().from(schema.servicePlans).where(eq(schema.servicePlans.id, plan!.id)))[0]!.status).toBe("canceled");
+});
+
+it("preserves historical setup-on-first-visit snapshots and their exactly-once completion claim", async () => {
+  const { revision } = await approvedQuote(true);
+  const [plan] = await db.select().from(schema.servicePlans).where(eq(schema.servicePlans.serviceId, (revision.snapshot.pricingSnapshot as { items: { serviceId: string }[] }).items[0]!.serviceId));
+  const legacy = { ...priceDocument([{ description: "Historical setup", quantity: "1", unitAmountMinor: 5000 }]), currency: "USD" };
+  await db.update(schema.servicePlans).set({ billingConfiguration: { ...plan!.billingConfiguration, oneTimePricingSnapshot: legacy } }).where(eq(schema.servicePlans.id, plan!.id));
+  for (let visit = 0; visit < 2; visit++) {
+    const [job] = await db.insert(schema.jobs).values({ tenantId: owner.tenantId, organizationId: owner.organizationId!, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, serviceId: plan!.serviceId, servicePlanId: plan!.id, status: "in_progress", priceSnapshot: plan!.pricingSnapshot }).returning();
+    const response = await transitionJob(owner, job!.id, "completed", { completedChecklist: true }); const invoiceId = (await response.json()).invoice.id;
+    expect((await db.select().from(schema.invoices).where(eq(schema.invoices.id, invoiceId)))[0]!.totalMinor).toBe(visit === 0 ? 7500n : 2500n);
+    expect((await db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, invoiceId))).filter(line => line.description === "Historical setup")).toHaveLength(visit === 0 ? 1 : 0);
+    expect((await (await transitionJob(owner, job!.id, "completed", { completedChecklist: true })).json()).invoice.id).toBe(invoiceId);
+    if (!visit) expect((await db.select().from(schema.servicePlans).where(eq(schema.servicePlans.id, plan!.id)))[0]!.billingConfiguration.oneTimeInvoiceId).toBe(invoiceId);
+  }
 });
 it("creates an itemized one-time job invoice once and preserves its job links through draft edits", async () => {
   const job = await completed();
@@ -166,10 +203,10 @@ it("voids an unpaid invoice atomically, preserves history, and permits one repla
   await expect(voidInvoice(owner, replacement.id)).rejects.toMatchObject({ status: 409, message: expect.stringContaining("recorded payments") });
   expect(await db.select().from(schema.jobInvoiceLinks).where(eq(schema.jobInvoiceLinks.jobId, job.id))).toHaveLength(1);
 });
-it("batch claims an unbilled plan setup once under its lock, and releases that claim on void", async () => {
+it("batch claims a historical unbilled plan setup once under its lock, and releases that claim on void", async () => {
   const { revision } = await approvedQuote(true);
   const [plan] = await db.select().from(schema.servicePlans).where(eq(schema.servicePlans.serviceId, (revision.snapshot.pricingSnapshot as { items: { serviceId: string }[] }).items[0]!.serviceId));
-  await db.update(schema.servicePlans).set({ billingConfiguration: { ...plan!.billingConfiguration, type: "monthly" } }).where(eq(schema.servicePlans.id, plan!.id));
+  await db.update(schema.servicePlans).set({ billingConfiguration: { ...plan!.billingConfiguration, type: "monthly", oneTimePricingSnapshot: { ...priceDocument([{ description: "Initial cleanup", quantity: "1", unitAmountMinor: 5000 }]), currency: "USD" } } }).where(eq(schema.servicePlans.id, plan!.id));
   for (let i = 0; i < 2; i++) await db.insert(schema.jobs).values({ tenantId: owner.tenantId, organizationId: owner.organizationId!, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, serviceId: plan!.serviceId, servicePlanId: plan!.id, status: "completed", actualCompletedAt: new Date("2028-03-15T12:00:00Z"), priceSnapshot: plan!.pricingSnapshot });
   const range = { from: "2028-03-01", through: "2028-03-31", customerId: seedIds.carter, idempotencyKey: crypto.randomUUID() };
   expect((await (await finishedWork(request("billing/finished-work?from=2028-03-01&through=2028-03-31", {}, "GET"), owner)).json()).items).toEqual([expect.objectContaining({ visits: 2, totals: { USD: 10000 } })]);

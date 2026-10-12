@@ -54,13 +54,49 @@ test("office turns a website message into a two-line biweekly estimate on the se
     page.once("dialog", dialog => dialog.accept()); await page.getByRole("button", { name: "Record verbal approval", exact: true }).click(); await expect(page.getByText("Customer decision recorded.", { exact: true })).toBeVisible();
     const db = createDatabase(process.env.DATABASE_URL!);
     try {
-      const plans = await db.select().from(schema.servicePlans).where(eq(schema.servicePlans.customerId, customer.id)), work = await db.select().from(schema.jobs).where(eq(schema.jobs.customerId, customer.id)); expect(plans).toHaveLength(1); expect(work).toHaveLength(1); expect(plans[0]!.serviceLocationId).toBe(second.id); expect(work[0]).toMatchObject({ serviceLocationId: second.id, billable: false, priceSnapshot: { totalMinor: 1000, billingIncludedInFirstVisit: true } });
+      const plans = await db.select().from(schema.servicePlans).where(eq(schema.servicePlans.customerId, customer.id)), work = await db.select().from(schema.jobs).where(eq(schema.jobs.customerId, customer.id)); expect(plans).toHaveLength(1); expect(work).toHaveLength(1); expect(plans[0]!.serviceLocationId).toBe(second.id); expect(work[0]).toMatchObject({ serviceLocationId: second.id, billable: true, priceSnapshot: { totalMinor: 1000 } }); expect(plans[0]!.billingConfiguration).not.toHaveProperty("oneTimePricingSnapshot");
       expect((await db.select().from(schema.recurrenceRules).where(eq(schema.recurrenceRules.id, plans[0]!.recurrenceRuleId!)))[0]).toMatchObject({ frequencyType: "weekly", interval: 2 });
       const replay = await page.request.post(`/api/v1/estimates/${quote.id}/approve`, { data: { acceptedOptionalIds: [] } }); expect(replay.status()).toBe(200); expect(await db.select().from(schema.servicePlans).where(eq(schema.servicePlans.customerId, customer.id))).toHaveLength(1);
     } finally { await closeDatabase(db); }
     await page.goto(`/app/customers/${customer.id}`); await expect(page.getByRole("region", { name: "Estimates", exact: true })).toContainText("Approved"); await expect(page.getByRole("region", { name: "Service plans", exact: true })).toContainText("Active");
     await page.setViewportSize({ width: 390, height: 844 }); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true); await page.screenshot({ path: testInfo.outputPath("sales-customer-phone.png"), fullPage: true });
   } finally { expect((await owner.request.post("/api/v1/connections/mock-communication/connect", { data: {} })).ok()).toBe(true); await owner.close(); await customerLink.close(); }
+});
+
+test("website lead gets an address on its estimate and the customer approves the emailed link into work at that property", async ({ page, browser }, info) => {
+  test.setTimeout(150_000);
+  const unique = crypto.randomUUID(), name = `Website approval ${unique}`, email = `approval-${unique}@example.test`;
+  await page.goto("/site/happy-yards"); await page.getByLabel("Your name", { exact: true }).fill(name); await page.getByLabel("Email", { exact: true }).fill(email); await page.getByLabel("Your message", { exact: true }).fill("Please quote my weekly yard visit.");
+  await page.getByRole("button", { name: "Send message", exact: true }).click(); await expect(page.getByText("Thanks! Your message was sent. We’ll be in touch soon.")).toBeVisible();
+  await signIn(page, "owner@happyyards.test");
+  const lead = (await (await page.request.get(`/api/v1/leads?search=${encodeURIComponent(email)}`)).json()).items[0]; expect(lead.name).toBe(name); expect(lead.customerId).toBeFalsy();
+  await page.goto(`/app/leads/${lead.id}`); await page.getByRole("button", { name: "Create estimate from lead", exact: true }).click();
+  const editor = page.getByRole("dialog", { name: "New estimate", exact: true }); await editor.getByLabel("What is included?", { exact: true }).fill(`Website estimate ${unique}`); await editor.getByRole("group", { name: "Line 1", exact: true }).getByLabel("Line description").fill("Weekly yard visit"); await editor.getByRole("group", { name: "Line 1", exact: true }).getByLabel("Unit price").fill("25"); await editor.getByRole("group", { name: "Line 1", exact: true }).getByLabel("Charge", { exact: true }).selectOption("every_visit");
+  const created = page.waitForResponse(response => response.url().endsWith("/api/v1/estimates") && response.request().method() === "POST"); await editor.getByRole("button", { name: "Create estimate", exact: true }).click(); const response = await created; expect(response.status(), await response.text()).toBe(201); const quote = (await response.json()).item;
+  await expect(page).toHaveURL(new RegExp(`/app/estimates/${quote.id}$`));
+  const addressForm = page.getByRole("region", { name: "Estimate service address", exact: true }); await expect(addressForm).toContainText("Add a complete service address here before sending or approving");
+  page.once("dialog", dialog => dialog.accept()); const refused = page.waitForResponse(response => response.url().endsWith(`/estimates/${quote.id}/send`)); await page.getByRole("button", { name: "Send estimate", exact: true }).click(); expect((await refused).status()).toBe(422); await expect(page.getByText("Add a complete service address below before sending or approving this estimate.", { exact: true })).toBeVisible();
+  for (const [label, value] of [["Street address", "404 Website Lane"], ["City", "Augusta"], ["State or region", "GA"], ["Postal code", "30901"]]) await addressForm.getByLabel(label!, { exact: true }).fill(value!);
+  await page.setViewportSize({ width: 390, height: 844 }); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true); await page.screenshot({ path: info.outputPath("estimate-address-repair-phone.png"), fullPage: true });
+  const addressSaved = page.waitForResponse(response => response.url().includes(`/estimates/${quote.id}/service-address`) && response.request().method() === "POST");
+  await addressForm.getByRole("button", { name: "Save service address", exact: true }).click(); expect((await addressSaved).status()).toBe(200); await expect(addressForm).toContainText("404 Website Lane"); await expect(addressForm.getByRole("button", { name: "Save service address", exact: true })).toHaveCount(0);
+  const customerLink = await browser.newPage();
+  try {
+    expect((await page.request.post("/api/v1/connections/mock-communication/disconnect", { data: {} })).ok()).toBe(true);
+    page.once("dialog", dialog => dialog.accept()); const sent = page.waitForResponse(response => response.url().endsWith(`/estimates/${quote.id}/send`)); await page.getByRole("button", { name: "Send estimate", exact: true }).click(); const sentResponse = await sent; expect(sentResponse.status(), await sentResponse.text()).toBe(200); const delivery = await sentResponse.json(); expect(delivery.delivery.status).toBe("sent");
+    const mailbox = process.env.MAILPIT_API_URL ?? "http://127.0.0.1:8025";
+    const messages = (await (await page.request.get(`${mailbox}/api/v1/messages`)).json()).messages;
+    const message = messages.find((mail: { To: Array<{ Address: string }> }) => mail.To.some(to => to.Address === email)); expect(message).toBeTruthy();
+    const mail = await (await page.request.get(`${mailbox}/api/v1/message/${message.ID}`)).json(); expect(mail.Text).toContain(delivery.actionUrl); const link = mail.Text.match(/https?:\/\/[^\s]+\/estimate\/[A-Za-z0-9_-]+/)?.[0]; expect(link).toBeTruthy();
+    await customerLink.goto(link!); await customerLink.getByRole("checkbox", { name: "I have reviewed this estimate and agree to its terms.", exact: true }).check(); await customerLink.getByRole("button", { name: "Approve estimate", exact: true }).click(); await expect(customerLink.getByText("Thank you. Your estimate is approved.", { exact: true })).toBeVisible();
+    const db = createDatabase(process.env.DATABASE_URL!);
+    try {
+      const [converted] = await db.select().from(schema.leads).where(eq(schema.leads.id, lead.id)); expect(converted!.customerId).toBeTruthy();
+      const locations = await db.select().from(schema.serviceLocations).where(eq(schema.serviceLocations.customerId, converted!.customerId!)); expect(locations).toHaveLength(1); expect(locations[0]).toMatchObject({ addressLine1: "404 Website Lane", city: "Augusta", region: "GA", postalCode: "30901", organizationLocationId: seedIds.augusta });
+      const plans = await db.select().from(schema.servicePlans).where(eq(schema.servicePlans.customerId, converted!.customerId!)); expect(plans).toHaveLength(1); expect(plans[0]).toMatchObject({ serviceLocationId: locations[0]!.id, pricingSnapshot: { totalMinor: 2500 } });
+      expect(await db.select().from(schema.estimateApprovals).where(eq(schema.estimateApprovals.estimateId, quote.id))).toEqual([expect.objectContaining({ actorType: "secure_estimate_link" })]);
+    } finally { await closeDatabase(db); }
+  } finally { expect((await page.request.post("/api/v1/connections/mock-communication/connect", { data: {} })).ok()).toBe(true); await customerLink.close(); }
 });
 
 test("a completed customer record keeps properties, contacts and approved work usable on a phone", async ({ page }, info) => {

@@ -1,6 +1,7 @@
 import { handleOperationsSettings } from "./operations-settings";
 import { handleTimeReview } from "./time-review";
 import { handleCustomerRecords } from "./customer-records";
+import { handleEstimateProperty } from "./estimate-property";
 import { handleTicketThread } from "./ticket-thread";
 import { observeRequest, identifyTenant } from "@modular-crm/config/observability";
 import { DomainError } from "@modular-crm/domain";
@@ -126,6 +127,8 @@ async function dispatchV1(request: Request, path: string[]): Promise<Response> {
     if (planning) return planning;
     const workflow = await handleWorkflow(request, path, actor);
     if (workflow) return workflow;
+    const estimateProperty = await handleEstimateProperty(request, path, actor);
+    if (estimateProperty) return estimateProperty;
     const routesField = await handleRoutesField(request, path, actor);
     if (routesField) return routesField;
     const ticketThread = await handleTicketThread(request, path, actor);
