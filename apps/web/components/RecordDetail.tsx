@@ -1,5 +1,7 @@
 "use client";
 import ServiceDetails from "./ServiceDetails";
+import CustomerRecordEditor from "./CustomerRecordEditor";
+import LeadPipeline from "./LeadPipeline";
 import { PackDetails } from "./PackFields";
 
 import { useRef, useState, type ReactNode } from "react";
@@ -94,7 +96,7 @@ export default function RecordDetail({ resource, id }: { resource: string; id: s
       {resource === "customers" && <Link className="btn btn-secondary" href={`/app/documents/statement/${id}`}>Create account statement</Link>}
       {resource === "jobs" && !item.servicePlanId && !item.priceSnapshot?.estimateRevisionId && may("jobs.update") && (!item.actualStartedAt || !item.priceSnapshot) && <button className="btn btn-secondary" onClick={() => open("price")}>Set visit price</button>}
       {resource === "jobs" && item.status === "completed" && <Link className="btn btn-secondary" href={`/app/documents/completion/${id}`}>View completion report</Link>}
-      {resource === "jobs" && item.status === "completed" && !item.servicePlanId && canUseAction(access,"invoices",["invoices.create","invoices.read"]) && <button className="btn btn-primary" disabled={saving} onClick={()=>void primary("invoice")}>Create invoice</button>}
+      {resource === "jobs" && item.status === "completed" && item.billable !== false && !item.servicePlanId && canUseAction(access,"invoices",["invoices.create","invoices.read"]) && <button className="btn btn-primary" disabled={saving} onClick={()=>void primary("invoice")}>Create invoice</button>}
       {resource === "jobs" && plannable && may("jobs.assign", "service_scheduling") && <button className="btn btn-primary" onClick={() => open("reschedule")}>Reschedule</button>}
       {resource === "jobs" && plannable && may("jobs.assign", "service_scheduling") && access.permissions.includes("staff.read") && <button className="btn btn-secondary" onClick={() => open("reassign")}>Reassign</button>}
       {resource === "jobs" && allowedTransitions("job", item.status).includes("canceled") && may("jobs.cancel", "service_scheduling") && <button className="btn btn-secondary" onClick={() => open("cancel")}>Cancel job</button>}
@@ -106,7 +108,12 @@ export default function RecordDetail({ resource, id }: { resource: string; id: s
     </div></section>
     {resource === "invoices" && <InvoicePaymentAttention amountCents={Number(item.overpaymentCents)} currency={item.currency} canRefund={access.role === "owner" && may("payments.refund", "payment_collection")}/>}
     <div className="record-detail-grid"><main className="stack">
+      {resource === "leads" && <LeadPipeline lead={item} canUpdate={may("leads.update")} canEstimate={canUseAction(access, "estimates", ["estimates.create"])} onDone={detail.reload}/>}
       {resource === "customers" && <>
+        {may("customers.update") && <CustomerRecordEditor customer={item} onDone={detail.reload}/>}
+        <Section title="Customer notes"><Collection items={related.notes} empty="No office notes recorded." render={row => <p>{row.body}</p>}/></Section>
+        {related.estimates && <Section title="Estimates"><Collection items={related.estimates} empty="No estimates in your business locations." render={row => <Link href={`/app/estimates/${row.id}`}>Estimate · {money(row.totalCents, row.currency)} <Badge status={row.status}/></Link>}/></Section>}
+        {related.plans && <Section title="Service plans"><Collection items={related.plans} empty="No service plans in your business locations." render={row => <Link href={`/app/service-plans/${row.id}`}>{row.serviceName} <Badge status={row.status}/></Link>}/></Section>}
         <Section title="Properties"><Collection items={item.locations} empty="No service properties recorded." render={(row) => <div><strong>{row.name || "Service property"}</strong><p>{[row.addressLine1, row.city, row.region, row.postalCode].filter(Boolean).join(", ")}</p></div>}/></Section>
         <Section title="Contacts"><Collection items={item.contacts} empty="No additional contacts recorded." render={(row) => <div><strong>{[row.firstName,row.lastName].filter(Boolean).join(" ") || "Contact"}</strong><p>{[row.email,row.phone].filter(Boolean).join(" · ") || "No contact details recorded"}</p></div>}/></Section>
         <Section title="Service details"><ServiceDetails items={item.assets}/>{item.locations?.map((location: Record<string, any>) => <PackDetails key={location.id} fields={location.fields ?? []} values={location.fieldValues ?? {}}/>)}</Section>

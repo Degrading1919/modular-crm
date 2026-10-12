@@ -2,6 +2,23 @@
 
 Compact history of accepted and superseded Modular CRM decisions.
 
+## 2026-10-12 — Reachable lead approval and independent setup billing
+
+- **Status:** Accepted
+- **Area:** Product / UX / Implementation
+- **Decision:** Sending and verbal approval require a complete service property or convertible lead address, with an authorized address-repair form on the estimate and immutable prior revisions. All accepted every-visit lines of one estimate form one itemized plan and one visit per cycle; new once-only setup jobs are independently billable exactly once and excluded from recurring invoices, including cancellation before the first visit. Preserve historical plan setup snapshots and their billing claims unchanged.
+- **Rationale:** Trusted Claude review [6113716527](https://github.com/Degrading1919/modular-crm/pull/32#issuecomment-6113716527) identified an unreachable website-lead approval path, duplicate recurring visits and setup work that could remain unbilled.
+- **Authoritative doc:** docs/PRODUCT_SCOPE.md
+- **Supersedes:** Individual recurring plans per line in 2026-10-11 office sales spine; setup-on-first-visit for new approvals in Automatic billing and unpaid-invoice reminders. Historical agreements retain their frozen contract.
+
+## 2026-10-11 — Complete the office sales spine and pending-time review
+
+- **Status:** Accepted
+- **Area:** Product / UX / Implementation
+- **Decision:** Staff manage customer properties, contacts and notes, advance leads, and prepare property-bound estimates with an explicit recurring frequency. Email secure approval links without persisting raw tokens, record verbal decisions, and create distinct work for every accepted line while retaining once-only setup billing. Provide truthful portal ticket replies/closure and server search/paging; prioritize pending time and reject clock-out before any recorded break.
+- **Rationale:** Owner-authorized W1d handoff [6111376494](https://github.com/Degrading1919/modular-crm/pull/31#issuecomment-6111376494) and [6111426148](https://github.com/Degrading1919/modular-crm/pull/31#issuecomment-6111426148) follow the approved, frozen operations slice. Tenant/location isolation, frozen pricing, hashes-only bearer-token storage and idempotent billing remain authoritative.
+- **Authoritative doc:** docs/PRODUCT_SCOPE.md
+
 ## 2026-10-11 — Usable operations for solo owners and office field workers
 
 - **Status:** Accepted

@@ -24,17 +24,21 @@ export async function estimateInvoice(actor: SessionActor, id: string) {
     if (!pricing?.items?.length) throw new DomainError("CONFLICT","This historical estimate has no approved line snapshot. Create an invoice with its recorded details.",409);
     const [plan] = await tx.select().from(servicePlans).where(and(eq(servicePlans.tenantId, actor.tenantId), sql`${servicePlans.pricingSnapshot}->>'estimateRevisionId' = ${approval!.estimateRevisionId}`)).limit(1);
     if (plan && (plan.billingConfiguration.timing === "on_completion" || plan.billingConfiguration.timing === undefined && ["per_job", "manual_invoice"].includes(String(plan.billingConfiguration.type)))) throw new DomainError("CONFLICT", "Visits on this plan are billed automatically. Complete the visits instead of billing the estimate again.", 409);
-    const [job] = await tx.select().from(jobs).where(and(eq(jobs.tenantId, actor.tenantId), sql`${jobs.priceSnapshot}->>'estimateRevisionId' = ${approval!.estimateRevisionId}`)).orderBy(jobs.id).for("update");
-    if (job) {
+    const work = await tx.select().from(jobs).where(and(eq(jobs.tenantId, actor.tenantId), sql`${jobs.priceSnapshot}->>'estimateRevisionId' = ${approval!.estimateRevisionId}`)).orderBy(jobs.id).for("update");
+    for (const job of work) {
       if (!actor.allLocations && (!job.organizationLocationId || !actor.locationIds.has(job.organizationLocationId))) throw new DomainError("NOT_FOUND", "Job not found.", 404);
       const billed = await existingJobInvoice(tx, actor.tenantId, job.id);
-      if (billed) { requireInvoiceLocation(actor, billed); return { item: billed, duplicate: true }; }
+      if (billed) {
+        requireInvoiceLocation(actor, billed);
+        if (work.length === 1) return { item: billed, duplicate: true };
+        throw new DomainError("CONFLICT", "Some work on this estimate has already been billed. Bill its remaining completed jobs instead.", 409);
+      }
     }
     const [customer] = await tx.select().from(customers).where(and(eq(customers.tenantId,actor.tenantId),eq(customers.id,estimate.customerId))).limit(1);
     if (!customer) throw new DomainError("NOT_FOUND","Customer not found.",404);
     const [invoice] = await tx.insert(invoices).values({tenantId:actor.tenantId,organizationId:customer.organizationId,organizationLocationId:estimate.organizationLocationId,customerId:customer.id,status:"draft",invoiceNumber:`INV-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0,8).toUpperCase()}`,currency:estimate.currency,subtotalMinor:BigInt(pricing.subtotalMinor),discountMinor:BigInt(pricing.discountMinor),taxMinor:BigInt(pricing.taxMinor),totalMinor:BigInt(pricing.totalMinor),balanceMinor:BigInt(pricing.totalMinor),billingSnapshot:{...pricing,estimateId:id,serviceLocationId:estimate.serviceLocationId,estimateRevisionId:approval!.estimateRevisionId,businessName:actor.tenantName,customerName:customer.displayName}}).returning();
-    await tx.insert(invoiceItems).values(pricing.items.map(line=>({tenantId:actor.tenantId,invoiceId:invoice!.id,jobId:job?.id ?? null,...storedLine(line)})));
-    if (job) await tx.insert(jobInvoiceLinks).values({ tenantId: actor.tenantId, customerId: job.customerId, jobId: job.id, invoiceId: invoice!.id });
+    await tx.insert(invoiceItems).values(pricing.items.map(line=>({tenantId:actor.tenantId,invoiceId:invoice!.id,jobId:work.find(job => job.priceSnapshot?.estimateLineOrder === line.sortOrder)?.id ?? (work.length === 1 ? work[0]!.id : null),...storedLine(line)})));
+    if (work.length) await tx.insert(jobInvoiceLinks).values(work.map(job => ({ tenantId: actor.tenantId, customerId: job.customerId, jobId: job.id, invoiceId: invoice!.id })));
     await recordEvent(actor,{type:"invoice.created",entityType:"invoice",entityId:invoice!.id,auditAction:"invoice.create_from_estimate",payload:{estimateId:id,totalMinor:pricing.totalMinor},locationId:estimate.organizationLocationId},tx);
     return {item:invoice,duplicate:false};
   });

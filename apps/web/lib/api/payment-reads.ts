@@ -12,7 +12,11 @@ export async function handlePaymentReads(request: Request, path: string[], actor
   if (path.length !== 1 || path[0] !== "payments" || request.method !== "GET") return null;
   requireStaff(actor);
   requirePermission(actor, "payments.read");
-  const customerId = new URL(request.url).searchParams.get("customerId");
+  const params = new URL(request.url).searchParams;
+  const customerId = params.get("customerId");
+  const search = z.string().trim().max(120).parse(params.get("search") ?? "");
+  const status = z.string().max(50).parse(params.get("status") ?? "");
+  const page = params.has("page") ? z.coerce.number().int().min(0).max(1_000_000).parse(params.get("page")) : undefined;
   if (customerId) z.uuid().parse(customerId);
 
   // Use the invoice-list location model: every allocated invoice's business
@@ -40,7 +44,9 @@ export async function handlePaymentReads(request: Request, path: string[], actor
     status: payments.status, createdAt: payments.createdAt,
   }).from(payments)
     .innerJoin(customers, and(eq(customers.id, payments.customerId), eq(customers.tenantId, payments.tenantId)))
-    .where(and(eq(payments.tenantId, actor.tenantId), customerId ? eq(payments.customerId, customerId) : undefined, invalidAllocation, locationScope))
-    .orderBy(desc(payments.createdAt), desc(payments.id)).limit(200);
-  return json({ items: normalized(items) });
+    .where(and(eq(payments.tenantId, actor.tenantId), customerId ? eq(payments.customerId, customerId) : undefined, invalidAllocation, locationScope,
+      search ? sql`position(lower(${search}) in lower(concat_ws(' ',${customers.displayName},${payments.reference},${payments.recordedMethod},${payments.amountMinor}::text))) > 0` : undefined,
+      status ? eq(payments.status, status) : undefined))
+    .orderBy(desc(payments.createdAt), desc(payments.id)).limit(page === undefined ? 200 : 51).offset(page === undefined ? 0 : page * 50);
+  return json({ items: normalized(page === undefined ? items : items.slice(0, 50)), ...(page === undefined ? {} : { page, hasMore: items.length > 50 }) });
 }

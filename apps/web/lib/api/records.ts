@@ -45,7 +45,7 @@ function assertLocationAccess(actor: SessionActor, locationId: string | null): v
   }
 }
 
-async function assertTicketAccess(actor: SessionActor, id: string): Promise<void> {
+export async function assertTicketAccess(actor: SessionActor, id: string): Promise<void> {
   requireStaff(actor);
   if (actor.role === "technician") {
     // Technicians may change only the tickets their field ticket list shows them.
@@ -60,7 +60,7 @@ async function assertTicketAccess(actor: SessionActor, id: string): Promise<void
       and ${locationSql(actor, sql`coalesce(sl.organization_location_id, j.organization_location_id, c.owning_location_id)`)} limit 1`));
 }
 
-function viewQuery(resource: RecordResource, actor: SessionActor, id?: string, search = "", openOnly = false): SQL {
+function viewQuery(resource: RecordResource, actor: SessionActor, id?: string, search = "", openOnly = false, page?: number, status = ""): SQL {
   // Literal, parameterized substring search: '%' and '_' are not wildcard grants.
   const contains = (column: SQL) => sql`position(lower(${search}) in lower(coalesce(${column}, ''))) > 0`;
   const customerSearch = search ? sql`and (${contains(sql`c.display_name`)} or ${contains(sql`c.billing_email`)} or ${contains(sql`c.billing_phone`)}
@@ -70,16 +70,17 @@ function viewQuery(resource: RecordResource, actor: SessionActor, id?: string, s
     or exists (select 1 from service_locations sls where sls.tenant_id=c.tenant_id and sls.customer_id=c.id and sls.active=true
       and ${locationSql(actor, sql`sls.organization_location_id`)} and ${contains(sql`concat_ws(' ', sls.name, sls.address_line1, sls.address_line2, sls.city, sls.region, sls.postal_code)`)}))` : sql``;
   const byId = id ? sql`and ${sql.raw(`${resource === "service-plans" ? "sp" : resource === "customers" ? "c" : resource === "leads" ? "l" : resource === "jobs" ? "j" : resource === "estimates" ? "e" : resource === "invoices" ? "i" : resource === "tickets" ? "t" : "s"}.id`)} = ${id}` : sql``;
-  const limit = id ? 1 : 200;
+  const limit = id ? 1 : page === undefined ? 200 : 51;
+  const offset = page === undefined || id ? 0 : page * 50;
   switch (resource) {
     case "leads": return sql`select l.*, trim(concat_ws(' ', l.first_name, l.last_name)) as name, l.source_detail as source
-      from leads l where l.tenant_id = ${actor.tenantId} and ${locationSql(actor, sql`l.owning_location_id`)} ${byId} order by l.created_at desc limit ${limit}`;
+      from leads l where l.tenant_id = ${actor.tenantId} and ${locationSql(actor, sql`l.owning_location_id`)} ${byId} ${search ? sql`and ${contains(sql`concat_ws(' ',l.first_name,l.last_name,l.email,l.phone)`)} ` : sql``} order by l.created_at desc,l.id limit ${limit}`;
     case "customers": return sql`select c.*, c.display_name as name, c.billing_email as email, c.billing_phone as phone,
       coalesce(c.billing_address->>'line1', sl.address_line1, '') as address,
       (select min(j.scheduled_date) from jobs j where j.tenant_id=c.tenant_id and j.customer_id=c.id
         and j.organization_id=c.organization_id and ${locationSql(actor, sql`j.organization_location_id`)} and ${upcomingJob()}) as next_service
       from customers c left join lateral (select slv.address_line1 from service_locations slv where slv.tenant_id = c.tenant_id and slv.customer_id = c.id and slv.active=true and ${locationSql(actor, sql`slv.organization_location_id`)} order by slv.created_at, slv.id limit 1) sl on true
-      where c.tenant_id = ${actor.tenantId} and ${locationSql(actor, sql`c.owning_location_id`)} ${byId} ${customerSearch} order by c.created_at desc, c.id limit ${limit}`;
+      where c.tenant_id = ${actor.tenantId} and ${locationSql(actor, sql`c.owning_location_id`)} ${byId} ${customerSearch} ${status ? sql`and c.status=${status}` : sql``} order by c.created_at desc, c.id limit ${limit} offset ${offset}`;
     case "jobs": return sql`select j.*, c.display_name as customer_name, s.name as service_name, sl.address_line1 as address,
       u.name as technician_name
       from jobs j join customers c on c.id=j.customer_id and c.tenant_id=j.tenant_id
@@ -107,7 +108,7 @@ function viewQuery(resource: RecordResource, actor: SessionActor, id?: string, s
       where i.tenant_id=${actor.tenantId} and ${locationSql(actor, sql`i.organization_location_id`)} ${byId}
       ${openOnly ? sql`and ${openInvoiceBalance()} > 0` : sql``}
       ${search ? sql`and (${contains(sql`i.invoice_number`)} or ${contains(sql`c.display_name`)} or ${contains(sql`ol.name`)})` : sql``}
-      order by i.created_at desc limit ${limit}`;
+      ${status ? sql`and i.status=${status}` : sql``} order by i.created_at desc,i.id limit ${limit} offset ${offset}`;
     case "service-plans": return sql`select sp.*, c.display_name as customer_name, s.name as service_name,
       coalesce((select case
            when v->>'frequencyType'='weekly' and case when jsonb_typeof(v->'daysOfWeek')='array' then jsonb_array_length(v->'daysOfWeek') else 0 end > 1 then 'twice_weekly'
@@ -138,16 +139,16 @@ function viewQuery(resource: RecordResource, actor: SessionActor, id?: string, s
       where t.tenant_id=${actor.tenantId} and ${locationSql(actor, sql`coalesce(sl.organization_location_id, j.organization_location_id, c.owning_location_id)`)} ${byId} order by t.created_at desc limit ${limit}`;
     case "services": return sql`select s.*, s.default_duration_minutes as duration_minutes,
       (select pr.effects->>'amountMinor' from price_rules pr where pr.tenant_id=s.tenant_id and pr.conditions->>'serviceId'=s.id::text and pr.active=true order by pr.priority desc limit 1) as base_price_cents
-      from services s where s.tenant_id=${actor.tenantId} ${byId}
+      from services s where s.tenant_id=${actor.tenantId} ${byId} and coalesce(s.configuration->>'estimateOnly','false') <> 'true'
       ${search ? sql`and (${contains(sql`s.name`)} or ${contains(sql`s.description`)})` : sql``} order by s.name, s.id limit ${limit}`;
   }
 }
 
-async function readResource(resource: RecordResource, actor: SessionActor, id?: string, search = "", openOnly = false): Promise<Response> {
+async function readResource(resource: RecordResource, actor: SessionActor, id?: string, search = "", openOnly = false, page?: number, status = ""): Promise<Response> {
   requirePermission(actor, readPermissions[resource]);
   requireStaff(actor);
   if (actor.role === "technician") throw new DomainError("FORBIDDEN", "Use your assigned work view.", 403);
-  const result = await rows(viewQuery(resource, actor, id, search, openOnly));
+  const result = await rows(viewQuery(resource, actor, id, search, openOnly, page, status));
   if (id) {
     const item = normalized(first(result)) as Record<string, unknown>;
     if (resource === "estimates") {
@@ -180,6 +181,7 @@ async function readResource(resource: RecordResource, actor: SessionActor, id?: 
           serviceId: items[0]?.serviceId ?? null,
           items,
           pricing: snapshot.pricingSnapshot,
+          frequency: snapshot.frequency ?? "weekly",
         });
         const history = await getDb().select({
           revisionNumber: estimateRevisions.revisionNumber,
@@ -199,7 +201,7 @@ async function readResource(resource: RecordResource, actor: SessionActor, id?: 
     if (resource === "customers") {
       const [contacts, locations, assets] = await Promise.all([
         rows(sql`select * from customer_contacts where tenant_id=${actor.tenantId} and customer_id=${id}`),
-        rows(sql`select id,name,address_line1,city,region,postal_code,custom_fields from service_locations where tenant_id=${actor.tenantId} and customer_id=${id} and active=true and ${locationSql(actor, sql`organization_location_id`)} order by created_at,id`),
+        rows(sql`select id,name,address_line1,address_line2,city,region,postal_code,country_code,updated_at,custom_fields from service_locations where tenant_id=${actor.tenantId} and customer_id=${id} and active=true and ${locationSql(actor, sql`organization_location_id`)} order by created_at,id`),
         rows(sql`select ca.id,ca.name,ca.asset_type_key,ca.custom_fields from customer_assets ca where ca.tenant_id=${actor.tenantId} and ca.customer_id=${id} and ca.archived_at is null and (ca.service_location_id is null or exists(select 1 from service_locations sl where sl.tenant_id=ca.tenant_id and sl.id=ca.service_location_id and ${locationSql(actor, sql`sl.organization_location_id`)}))`),
       ]);
       const pack = await tenantIndustryPack(actor.tenantId);
@@ -211,14 +213,16 @@ async function readResource(resource: RecordResource, actor: SessionActor, id?: 
     }
     return json({ item });
   }
-  return json({ items: normalized(result) });
+  return json({ items: normalized(page === undefined ? result : result.slice(0, 50)), ...(page === undefined ? {} : { page, hasMore: result.length > 50 }) });
 }
 
-const customerSchema = z.object({ name: z.string().min(2), email: z.email().optional().or(z.literal("")), phone: z.string().optional(), address: z.string().optional(), customerType: z.enum(["residential", "commercial"]).default("residential") });
-const leadSchema = z.object({ name: z.string().min(2), email: z.email().optional().or(z.literal("")), phone: z.string().optional(), source: z.string().optional(), address: z.string().optional(), notes: z.string().optional() });
+const addressParts = { city: z.string().trim().max(200).optional(), region: z.string().trim().max(200).optional(), postalCode: z.string().trim().max(200).optional() };
+const customerSchema = z.object({ name: z.string().min(2), email: z.email().optional().or(z.literal("")), phone: z.string().optional(), address: z.string().optional(), ...addressParts, customerType: z.enum(["residential", "commercial"]).default("residential") });
+const leadSchema = z.object({ name: z.string().min(2), email: z.email().optional().or(z.literal("")), phone: z.string().optional(), source: z.string().optional(), address: z.string().optional(), ...addressParts, notes: z.string().optional() });
 const jobSchema = z.object({ customerId: z.uuid(), serviceLocationId: z.uuid().optional(), serviceId: z.uuid().optional(), serviceName: z.string().optional(), address: z.string().optional(), scheduledDate: z.iso.date().optional(), priceCents: z.number().int().min(0).max(100_000_000).optional(), notes: z.string().optional() });
 const estimateSchema = z.object({
   customerId: z.uuid().optional(), leadId: z.uuid().optional(), serviceId: z.uuid().optional(),
+  serviceLocationId: z.uuid().optional(), frequency: z.enum(["weekly", "every_two_weeks", "every_four_weeks", "monthly"]).optional(),
   title: z.string().min(1), totalCents: z.number().int().nonnegative().optional(), notes: z.string().optional(), ...pricingFields,
 }).refine((body) => Boolean(body.customerId) !== Boolean(body.leadId), {
   message: "Choose either a customer or a lead.", path: ["customerId"],
@@ -253,11 +257,11 @@ async function createResource(resource: RecordResource, request: Request, actor:
     requirePermission(actor, "customers.create");
     const body = await readBody(request, customerSchema);
     const created = await db.transaction(async (tx) => {
-      const [customer] = await tx.insert(customers).values({ tenantId: actor.tenantId, organizationId, owningLocationId: locationId, displayName: body.name, billingEmail: body.email || null, billingPhone: body.phone || null, billingAddress: body.address ? { line1: body.address } : null, customerType: body.customerType, status: "active" }).returning();
+      const [customer] = await tx.insert(customers).values({ tenantId: actor.tenantId, organizationId, owningLocationId: locationId, displayName: body.name, billingEmail: body.email || null, billingPhone: body.phone || null, billingAddress: body.address ? { line1: body.address, city: body.city ?? "", region: body.region ?? "", postalCode: body.postalCode ?? "" } : null, customerType: body.customerType, status: "active" }).returning();
       if (!customer) throw new Error("Could not create customer");
       const parts = body.name.trim().split(/\s+/);
       await tx.insert(customerContacts).values({ tenantId: actor.tenantId, customerId: customer.id, firstName: parts[0] ?? body.name, lastName: parts.slice(1).join(" "), email: body.email || null, phone: body.phone || null, isPrimary: true, serviceContact: true, billingContact: true });
-      if (body.address) await tx.insert(serviceLocations).values({ tenantId: actor.tenantId, customerId: customer.id, organizationLocationId: locationId, name: "Primary address", addressLine1: body.address, city: "", region: "", postalCode: "", geocodeStatus: "pending" });
+      if (body.address) await tx.insert(serviceLocations).values({ tenantId: actor.tenantId, customerId: customer.id, organizationLocationId: locationId, name: "Primary address", addressLine1: body.address, city: body.city ?? "", region: body.region ?? "", postalCode: body.postalCode ?? "", geocodeStatus: "pending" });
       await recordEvent(actor, { type: "customer.created", entityType: "customer", entityId: customer.id, payload: { name: body.name }, auditAction: "customer.create", after: { name: body.name } }, tx);
       return customer;
     });
@@ -268,7 +272,7 @@ async function createResource(resource: RecordResource, request: Request, actor:
     const body = await readBody(request, leadSchema);
     const parts = body.name.trim().split(/\s+/);
     const lead = await db.transaction(async (tx) => {
-      const [created] = await tx.insert(leads).values({ tenantId: actor.tenantId, organizationId, owningLocationId: locationId, status: "new", firstName: parts[0], lastName: parts.slice(1).join(" "), email: body.email || null, phone: body.phone || null, sourceDetail: body.source || null, address: body.address ? { line1: body.address } : null, customFields: body.notes ? { notes: body.notes } : {} }).returning();
+      const [created] = await tx.insert(leads).values({ tenantId: actor.tenantId, organizationId, owningLocationId: locationId, status: "new", firstName: parts[0], lastName: parts.slice(1).join(" "), email: body.email || null, phone: body.phone || null, sourceDetail: body.source || null, address: body.address ? { line1: body.address, city: body.city ?? "", region: body.region ?? "", postalCode: body.postalCode ?? "" } : null, customFields: body.notes ? { notes: body.notes } : {} }).returning();
       if (!created) throw new Error("Could not create lead");
       await recordEvent(actor, { type: "lead.created", entityType: "lead", entityId: created.id, payload: { source: body.source }, auditAction: "lead.create" }, tx);
       return created;
@@ -335,15 +339,18 @@ async function createResource(resource: RecordResource, request: Request, actor:
     const contactName = customer?.displayName ?? leadName;
     if (!body.lines && body.totalCents === undefined) throw new DomainError("VALIDATION_ERROR","Add estimate lines.",422);
     const pricing = await documentPricing(db,actor.tenantId,documentOrganizationId,body,true);
+    const property = customer ? await chosenServiceLocation(actor, customer.id, body.serviceLocationId) : null;
+    if (!customer && body.serviceLocationId) throw new DomainError("VALIDATION_ERROR", "Convert the lead to choose a customer property.", 422);
     const snapshot = {
       title: body.title,
+      frequency: body.frequency ?? "weekly",
       organizationId:documentOrganizationId,
       customerName: customer?.displayName ?? null,
       leadName: lead ? leadName : null,
       contactName,
       contactEmail: customer?.billingEmail ?? lead?.email ?? null,
       contactPhone: customer?.billingPhone ?? lead?.phone ?? null,
-      serviceAddress: lead?.address ?? null,
+      serviceAddress: property ? { line1: property.addressLine1, city: property.city, region: property.region, postalCode: property.postalCode } : lead?.address ?? null,
       serviceId: service?.id ?? null,
       serviceName: service?.name ?? null,
       totalCents: pricing.totalMinor,
@@ -352,7 +359,7 @@ async function createResource(resource: RecordResource, request: Request, actor:
     const created = await db.transaction(async (tx) => {
       const [estimate] = await tx.insert(estimates).values({
         tenantId: actor.tenantId, customerId: customer?.id ?? null, leadId: lead?.id ?? null,
-        organizationLocationId: owningLocationId, status: "draft", totalMinor: BigInt(pricing.totalMinor), createdByMembershipId: actor.membershipId,
+        organizationLocationId: property ? property.organizationLocationId : owningLocationId, serviceLocationId: property?.id ?? null, status: "draft", totalMinor: BigInt(pricing.totalMinor), createdByMembershipId: actor.membershipId,
       }).returning();
       if (!estimate) throw new Error("Could not create estimate");
       const [revision] = await tx.insert(estimateRevisions).values({ tenantId: actor.tenantId, estimateId: estimate.id, revisionNumber: 1, subtotalMinor: BigInt(pricing.subtotalMinor), discountMinor: BigInt(pricing.discountMinor),taxMinor: BigInt(pricing.taxMinor),totalMinor: BigInt(pricing.totalMinor), notes: body.notes, snapshot }).returning();
@@ -559,7 +566,9 @@ export async function handleRecords(request: Request, path: string[], actor: Ses
   if (request.method === "GET") {
     const params = new URL(request.url).searchParams;
     const search = z.string().trim().max(120).parse(params.get("search") ?? "");
-    return readResource(resource, actor, id, id ? "" : search, !id && params.get("open") === "1");
+    const page = !id && ["customers", "invoices"].includes(resource) && params.has("page") ? z.coerce.number().int().min(0).max(1_000_000).parse(params.get("page")) : undefined;
+    const status = !id ? z.string().max(50).parse(params.get("status") ?? "") : "";
+    return readResource(resource, actor, id, id ? "" : search, !id && params.get("open") === "1", page, status);
   }
   if (request.method === "POST" && !id) return createResource(resource, request, actor);
   if (request.method === "PATCH" && id) {

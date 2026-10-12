@@ -97,6 +97,10 @@ Implementations are original; no vendor/server source was copied. Proprietary pr
 
 Offline IAM review: `uvx iam-policy-autopilot@latest generate-policies packages/connectors/src/website-cloudfront.ts --service-hints cloudfront --pretty` (0.3.0). Generated actions were narrowed to this account/stage tag and distribution-tenant resource type; the optional VPC-origin dependency is unnecessary for our HTTPS custom origin. [CloudFront service authorization](https://docs.aws.amazon.com/service-authorization/latest/reference/list_cloudfront.html) requires wildcard Resource for create; mandatory RequestTag/TagKeys restrict it, existing-tenant mutations require ResourceTag, and application binding checks enforce the configured parent/group. IAM does not expose parent-distribution condition keys for that create action. There are no ACM-admin, DNS-zone or general-distribution permissions on app roles.
 
+### Sales-spine research (2026-10-11)
+
+[Jobber quote approvals](https://help.getjobber.com/en/articles/quote-approvals/) and [properties](https://help.getjobber.com/en/articles/properties/) inform the distinction between a customer's online decision and staff-recorded verbal approval, and property-specific quotes/work for a multi-property customer. [Nodemailer SMTP transport](https://nodemailer.com/smtp) and [SMTP connection results](https://nodemailer.com/extras/smtp-connection) inform truthful accepted/rejected send results; acceptance is not proof of final inbox delivery. These are workflow/API references only; implementation is original, no vendor source is copied and no dependency is added.
+
 ## Research rule
 
 For every major integration or subsystem:

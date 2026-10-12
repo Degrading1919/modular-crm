@@ -1,22 +1,25 @@
+import { createEstimateWork } from "./estimate-work";
+import { requireEstimateProperty } from "./estimate-property";
+import { sendEstimateEmail } from "./estimate-email";
+import type { DocumentPricing } from "@modular-crm/domain";
 import { withdrawPlanVisits } from "./plan-withdrawal";
 import { clientAddress } from "./client-address";
 import { createHash, randomBytes } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
-  auditEvents, completionProofs, connectorInstallations, customerAssets, customerContacts, customers, domainEvents, estimateApprovals, estimateRevisions, estimates, hasUsableFeature, invoiceItems, invoices, jobAssignments, jobStatusEvents,
-  jobs, jobInvoiceLinks, leads, loadTenantCapabilities, paymentAllocations, payments, recurrenceRules, serviceLocations, servicePlans, services, tenants,
+  auditEvents, completionProofs, connectorInstallations, customerAssets, customerContacts, customers, domainEvents, estimateApprovals, estimateRevisions, estimates, invoiceItems, invoices, jobAssignments, jobStatusEvents,
+  jobs, jobInvoiceLinks, leads, paymentAllocations, payments, serviceLocations, servicePlans, services, tenants,
   secureEstimateTokens, organizations, organizationLocations,
 } from "@modular-crm/db";
-import { assertTransition, documentCharges, frozenDocument, invoiceDueDate, DomainError, manualPaymentMethods, requirePermission, type Permission } from "@modular-crm/domain";
+import { assertTransition, frozenDocument, invoiceDueDate, DomainError, manualPaymentMethods, requirePermission, type Permission } from "@modular-crm/domain";
 import { updateInvoiceFinancialPosition } from "./invoice-payment-ledger";
 import { expireExcessHostedPages } from "./hosted-page-expiry";
 import { getCapability } from "../connectors";
 import { getDb } from "../db";
 import { requireMocks } from "../mock-policy";
-import type { Database } from "@modular-crm/db";
 import { requireTenantFeature } from "./capability-enforcement";
-import { assertCustomerDocumentAccess, requireStaff, type SessionActor } from "./actor";
+import { assertCustomerDocumentAccess, assertCustomerServiceLocationAccess, requireStaff, type SessionActor } from "./actor";
 import { recordEvent } from "./events";
 import { json, readBody } from "./http";
 import { normalized } from "./sql";
@@ -29,7 +32,6 @@ import { estimateInvoice } from "./estimate-invoice";
 import { finishedWork, jobInvoice } from "./job-billing";
 import { voidInvoice } from "./invoice-void";
 import { storedLine } from "./document-lines";
-import type { DocumentPricing } from "@modular-crm/domain";
 import { getIndustryPack, NEUTRAL_SERVICE_PACK } from "@modular-crm/industry-packs";
 import { savedSignupDetails } from "./pack-fields";
 
@@ -51,7 +53,7 @@ type DbTransaction = Parameters<Parameters<ReturnType<typeof getDb>["transaction
 
 type LeadConversionSource = { actor: SessionActor & { kind: "staff" } } | { secureTokenId: string; ipAddress: string | null; userAgent: string | null };
 
-async function convertLeadCoreInTransaction(tenantId: string, leadId: string, tx: DbTransaction, source: LeadConversionSource) {
+async function convertLeadCoreInTransaction(tenantId: string, leadId: string, tx: DbTransaction, source: LeadConversionSource, estimateLocationId?: string | null) {
   await tx.execute(sql`SELECT id FROM leads WHERE tenant_id = ${tenantId} AND id = ${leadId} FOR UPDATE`);
   const [lead] = await tx.select().from(leads).where(and(eq(leads.id, leadId), eq(leads.tenantId, tenantId))).limit(1);
   if (!lead) throw new DomainError("NOT_FOUND", "Lead not found.", 404);
@@ -66,13 +68,14 @@ async function convertLeadCoreInTransaction(tenantId: string, leadId: string, tx
   // Transfer the envelope byte-for-byte. Conversion never decrypts customer instructions.
   const accessInstructionsEncrypted = typeof envelope === "string" ? envelope : null;
   const name = lead.companyName || [lead.firstName, lead.lastName].filter(Boolean).join(" ") || "New customer";
-  const [customer] = await tx.insert(customers).values({ tenantId, organizationId: lead.organizationId, owningLocationId: lead.owningLocationId, displayName: name, companyName: lead.companyName, customerType: lead.companyName ? "commercial" : "residential", billingEmail: lead.email, billingPhone: lead.phone, status: "active" }).returning();
+  const owningLocationId = lead.owningLocationId ?? estimateLocationId ?? null;
+  const [customer] = await tx.insert(customers).values({ tenantId, organizationId: lead.organizationId, owningLocationId, displayName: name, companyName: lead.companyName, customerType: lead.companyName ? "commercial" : "residential", billingEmail: lead.email, billingPhone: lead.phone, status: "active" }).returning();
   if (!customer) throw new Error("Could not convert lead");
   await tx.insert(customerContacts).values({ tenantId, customerId: customer.id, firstName: lead.firstName || name, lastName: lead.lastName || "", email: lead.email, phone: lead.phone, isPrimary: true });
   const address = lead.address as Record<string, unknown> | null;
   let serviceLocationId: string | null = null;
   if (address?.line1) {
-    const [location] = await tx.insert(serviceLocations).values({ tenantId, customerId: customer.id, organizationLocationId: lead.owningLocationId, name: "Primary address", addressLine1: String(address.line1), city: String(address.city ?? ""), region: String(address.region ?? ""), postalCode: String(address.postalCode ?? ""), customFields: signup.customFields, accessInstructionsEncrypted }).returning();
+    const [location] = await tx.insert(serviceLocations).values({ tenantId, customerId: customer.id, organizationLocationId: owningLocationId, name: "Primary address", addressLine1: String(address.line1), addressLine2: typeof address.line2 === "string" ? address.line2 : null, city: String(address.city ?? ""), region: String(address.region ?? ""), postalCode: String(address.postalCode ?? ""), countryCode: typeof address.countryCode === "string" ? address.countryCode : "US", customFields: signup.customFields, accessInstructionsEncrypted }).returning();
     serviceLocationId = location?.id ?? null;
   }
   if (!serviceLocationId && (signup.assets.length || Object.keys(signup.customFields).length || accessInstructionsEncrypted)) throw new DomainError("VALIDATION_ERROR", "Add a service address before converting this request so its service details can be kept.", 422);
@@ -87,47 +90,16 @@ async function convertLeadCoreInTransaction(tenantId: string, leadId: string, tx
   return { lead, customerId: customer.id, serviceLocationId, alreadyConverted: false };
 }
 
-async function convertLeadInTransaction(actor: SessionActor, leadId: string, tx: DbTransaction) {
+async function convertLeadInTransaction(actor: SessionActor, leadId: string, tx: DbTransaction, estimateLocationId?: string | null) {
   requireStaff(actor);
   requirePermission(actor, "leads.convert");
-  return convertLeadCoreInTransaction(actor.tenantId, leadId, tx, { actor });
+  return convertLeadCoreInTransaction(actor.tenantId, leadId, tx, { actor }, estimateLocationId);
 }
 
 async function convertLead(actor: SessionActor, leadId: string) {
   return getDb().transaction((tx) => convertLeadInTransaction(actor, leadId, tx));
 }
 
-async function createEstimateDownstreamInTransaction(
-  tx: DbTransaction,
-  tenantId: string,
-  current: typeof estimates.$inferSelect,
-  revision: typeof estimateRevisions.$inferSelect,
-  customerId: string,
-  convertedLocationId: string | null,
-  pricing: DocumentPricing,
-): Promise<void> {
-  const line = pricing.items.find(item => item.serviceId);
-  if (!line?.serviceId) return;
-  const [service] = await tx.select().from(services).where(and(eq(services.tenantId, tenantId), eq(services.id, line.serviceId))).limit(1);
-  const [customer] = await tx.select().from(customers).where(and(eq(customers.tenantId, tenantId), eq(customers.id, customerId))).limit(1);
-  const [location] = await tx.select().from(serviceLocations).where(and(eq(serviceLocations.tenantId, tenantId), eq(serviceLocations.customerId, customerId),
-    current.serviceLocationId ? eq(serviceLocations.id, current.serviceLocationId) : convertedLocationId ? eq(serviceLocations.id, convertedLocationId) : current.organizationLocationId ? eq(serviceLocations.organizationLocationId, current.organizationLocationId) : sql`true`)).limit(1);
-  if (!service || !customer || !location) throw new DomainError("VALIDATION_ERROR", "Add a service address before approving this work.", 422);
-  const capabilities = await loadTenantCapabilities(tx as unknown as Database, tenantId);
-  const requiredFeature = service.serviceType === "recurring" ? "recurring_service_management" : "service_scheduling";
-  if (!hasUsableFeature(capabilities, requiredFeature)) {
-    throw new DomainError("CAPABILITY_UNAVAILABLE", "Add or enable this capability in your business setup to continue.", 403);
-  }
-  if (service.serviceType === "recurring") {
-    const [tenant] = await tx.select({ timezone: tenants.defaultTimezone }).from(tenants).where(eq(tenants.id, tenantId)).limit(1);
-    const [rule] = await tx.insert(recurrenceRules).values({ tenantId, frequencyType: "weekly", timezone: location.timezone ?? tenant?.timezone ?? "UTC" }).returning();
-    if (!rule) throw new Error("Could not create the service schedule.");
-    const visits = documentCharges(pricing, "every_visit"), once = documentCharges(pricing, "once");
-    await tx.insert(servicePlans).values({ tenantId, customerId, serviceLocationId: location.id, organizationLocationId: location.organizationLocationId, serviceId: service.id, recurrenceRuleId: rule.id, effectiveFrom: businessDate(new Date(), location.timezone ?? tenant?.timezone ?? "UTC"), status: "active", pricingSnapshot: { ...visits,currency:current.currency,amountMinor:visits.totalMinor,estimateId:current.id,estimateRevisionId: revision.id }, billingConfiguration: { type: "per_job", oneTimePricingSnapshot: once } });
-  } else {
-    await tx.insert(jobs).values({ tenantId, organizationId: customer.organizationId, organizationLocationId: location.organizationLocationId, customerId, serviceLocationId: location.id, serviceId: service.id, status: "unscheduled", priceSnapshot: { ...pricing,currency:current.currency,amountMinor:pricing.totalMinor,estimateId:current.id,estimateRevisionId: revision.id } });
-  }
-}
 
 async function estimateAction(request: Request, actor: SessionActor, estimateId: string, action: string): Promise<Response> {
   const decision = action === "approve" ? await readBody(request,z.object({acceptedOptionalIds:z.array(z.uuid()).max(100).optional()}).strict()) : {};
@@ -140,7 +112,12 @@ async function estimateAction(request: Request, actor: SessionActor, estimateId:
     requirePermission(actor, action === "send" ? "estimates.send" : "estimates.update_draft");
   } else {
     if (action !== "approve" && action !== "decline") throw new DomainError("FORBIDDEN", "Customer access is limited to deciding an estimate.", 403);
-    await assertCustomerDocumentAccess(actor, estimate.customerId, estimate.organizationLocationId);
+    if (estimate.serviceLocationId) {
+      await assertCustomerServiceLocationAccess(actor, estimate.customerId, estimate.serviceLocationId);
+      const [property] = await db.select().from(serviceLocations).where(and(eq(serviceLocations.tenantId, actor.tenantId), eq(serviceLocations.id, estimate.serviceLocationId))).limit(1);
+      if (!property || property.customerId !== estimate.customerId || estimate.organizationLocationId && property.organizationLocationId !== estimate.organizationLocationId) throw new DomainError("NOT_FOUND", "Estimate not found.", 404);
+    }
+    else await assertCustomerDocumentAccess(actor, estimate.customerId, estimate.organizationLocationId);
   }
   const to = action === "send" ? "sent" : action === "approve" ? "approved" : action === "decline" ? "declined" : "";
   if (!to) throw new DomainError("NOT_FOUND", "Endpoint not found.", 404);
@@ -150,20 +127,26 @@ async function estimateAction(request: Request, actor: SessionActor, estimateId:
     await tx.execute(sql`SELECT id FROM estimates WHERE tenant_id = ${actor.tenantId} AND id = ${estimateId} FOR UPDATE`);
     const [current] = await tx.select().from(estimates).where(and(eq(estimates.id, estimateId), eq(estimates.tenantId, actor.tenantId))).limit(1);
     if (!current) throw new DomainError("NOT_FOUND", "Estimate not found.", 404);
-    assertTransition("estimate", current.status, to);
+    if (current.status === to && ["approved", "declined"].includes(to)) {
+      const [prior] = await tx.select().from(estimateApprovals).where(and(eq(estimateApprovals.tenantId, actor.tenantId), eq(estimateApprovals.estimateId, current.id), eq(estimateApprovals.decision, to))).limit(1);
+      if (!prior || to === "approved" && JSON.stringify([...(prior.pricingSnapshot.acceptedOptionalIds as string[] ?? [])].sort()) !== JSON.stringify([...(decision.acceptedOptionalIds ?? [])].sort())) throw new DomainError("CONFLICT", "This estimate already has a different recorded decision.", 409);
+      return current;
+    }
+    if (!(to === "sent" && ["sent", "viewed"].includes(current.status))) assertTransition("estimate", current.status, to);
     if (to === "approved" && current.expiresAt && current.expiresAt < new Date()) throw new DomainError("INVALID_TRANSITION", "This estimate has expired.", 409);
+    if (to === "sent" || to === "approved") await requireEstimateProperty(tx, actor.tenantId, current);
     const [revision] = await tx.select().from(estimateRevisions).where(and(eq(estimateRevisions.tenantId, actor.tenantId), eq(estimateRevisions.estimateId, current.id), eq(estimateRevisions.revisionNumber, current.currentRevision))).limit(1);
     if (!revision) throw new DomainError("CONFLICT", "Estimate revision is missing.", 409);
     let customerId = current.customerId;
     let convertedLocationId: string | null = null;
     if (to === "approved" && !customerId && current.leadId && actor.kind === "staff") {
-      const converted = await convertLeadInTransaction(actor, current.leadId, tx);
+      const converted = await convertLeadInTransaction(actor, current.leadId, tx, current.organizationLocationId);
       customerId = converted.customerId;
       convertedLocationId = converted.serviceLocationId;
     }
     if (to === "approved" && !customerId) throw new DomainError("VALIDATION_ERROR", "A customer is needed before this estimate can be approved.", 422);
     const pricing = to === "approved" ? await approvedPricing(tx,actor.tenantId,revision,decision.acceptedOptionalIds) : undefined;
-    if (pricing && customerId) await createEstimateDownstreamInTransaction(tx, actor.tenantId, current, revision, customerId, convertedLocationId,pricing);
+    if (pricing && customerId) await createEstimateWork(tx, actor.tenantId, current, revision, customerId, convertedLocationId,pricing);
     const [saved] = await tx.update(estimates).set({ status: to, customerId,totalMinor:pricing ? BigInt(pricing.totalMinor) : undefined, approvedAt: to === "approved" ? new Date() : undefined, declinedAt: to === "declined" ? new Date() : undefined, updatedAt: new Date() }).where(and(eq(estimates.id, current.id), eq(estimates.tenantId, actor.tenantId))).returning();
     if (to === "sent") await tx.update(estimateRevisions).set({ sentAt: new Date(), updatedAt: new Date() }).where(and(eq(estimateRevisions.id, revision.id), eq(estimateRevisions.tenantId, actor.tenantId)));
     if (to === "approved" || to === "declined") await tx.insert(estimateApprovals).values({ tenantId: actor.tenantId, estimateId: current.id, estimateRevisionId: revision.id, decision: to,pricingSnapshot:pricing ? {...pricing,acceptedOptionalIds:decision.acceptedOptionalIds ?? []} : {}, actorType: actor.kind, actorUserId: actor.userId, termsVersion: revision.termsVersion ?? "demo-v1", userAgent: request.headers.get("user-agent") });
@@ -176,7 +159,8 @@ async function estimateAction(request: Request, actor: SessionActor, estimateId:
     await recordEvent(actor, { type: `estimate.${to}`, entityType: "estimate", entityId: current.id, auditAction: `estimate.${to}`, before: { status: current.status }, after: { status: to, customerId,revisionId:revision.id,totalMinor:pricing?.totalMinor }, payload:{customerId, estimate: { status: to, currentRevision: current.currentRevision }, revisionId:revision.id,totalMinor:pricing?.totalMinor}, locationId: current.organizationLocationId }, tx);
     return saved;
   });
-  return json({ item: normalized(result), ...(rawActionToken ? { actionUrl: `/estimate/${rawActionToken}` } : {}) });
+  const delivery = rawActionToken ? await sendEstimateEmail(actor, result!, `/estimate/${rawActionToken}`) : undefined;
+  return json({ item: normalized(result), ...(rawActionToken ? { actionUrl: `/estimate/${rawActionToken}`, delivery } : {}) });
 }
 
 export async function applySecureEstimateDecisionInTransaction(
@@ -191,6 +175,7 @@ export async function applySecureEstimateDecisionInTransaction(
   assertTransition("estimate", current.status, to);
   const now = new Date();
   if (to === "approved" && current.expiresAt && current.expiresAt < now) throw new DomainError("INVALID_TRANSITION", "This estimate has expired.", 409);
+  if (to === "approved") await requireEstimateProperty(tx, tenantId, current);
   const [revision] = await tx.select().from(estimateRevisions).where(and(eq(estimateRevisions.tenantId, tenantId), eq(estimateRevisions.estimateId, current.id), eq(estimateRevisions.revisionNumber, current.currentRevision))).limit(1);
   if (!revision) throw new DomainError("CONFLICT", "Estimate revision is missing.", 409);
   let customerId = current.customerId;
@@ -199,13 +184,13 @@ export async function applySecureEstimateDecisionInTransaction(
   const ipAddress = address === "local" ? null : address;
   const userAgent = request.headers.get("user-agent")?.slice(0, 500) ?? null;
   if (to === "approved" && !customerId && current.leadId) {
-    const converted = await convertLeadCoreInTransaction(tenantId, current.leadId, tx, { secureTokenId: tokenId, ipAddress, userAgent });
+    const converted = await convertLeadCoreInTransaction(tenantId, current.leadId, tx, { secureTokenId: tokenId, ipAddress, userAgent }, current.organizationLocationId);
     customerId = converted.customerId;
     convertedLocationId = converted.serviceLocationId;
   }
   if (to === "approved" && !customerId) throw new DomainError("VALIDATION_ERROR", "A customer is needed before this estimate can be approved.", 422);
   const pricing = to === "approved" ? await approvedPricing(tx,tenantId,revision,input.acceptedOptionalIds) : undefined;
-  if (pricing && customerId) await createEstimateDownstreamInTransaction(tx, tenantId, current, revision, customerId, convertedLocationId,pricing);
+  if (pricing && customerId) await createEstimateWork(tx, tenantId, current, revision, customerId, convertedLocationId,pricing);
   const [saved] = await tx.update(estimates).set({ status: to, customerId,totalMinor:pricing ? BigInt(pricing.totalMinor) : undefined, approvedAt: to === "approved" ? now : undefined, declinedAt: to === "declined" ? now : undefined, updatedAt: now }).where(and(eq(estimates.id, current.id), eq(estimates.tenantId, tenantId))).returning();
   if (!saved) throw new Error("Could not save estimate decision.");
   await tx.insert(estimateApprovals).values({ tenantId, estimateId: current.id, estimateRevisionId: revision.id, decision: to,pricingSnapshot:pricing ? {...pricing,acceptedOptionalIds:input.acceptedOptionalIds ?? []} : {}, actorType: "secure_estimate_link", actorUserId: null, secureTokenId: tokenId, ipAddress, userAgent, termsVersion: revision.termsVersion ?? "demo-v1", comment });
@@ -527,6 +512,21 @@ export async function handleWorkflow(request: Request, path: string[], actor: Se
   if (request.method !== "POST" || path.length !== 3) return null;
   const [resource, id, action] = path;
   if (!id || !action) return null;
+  if (resource === "leads" && action === "status") {
+    requireStaff(actor); requirePermission(actor, "leads.update");
+    const input = await readBody(request, z.object({ status: z.enum(["new", "contacted", "qualified", "quoted", "lost", "disqualified"]), reason: z.string().trim().min(1).max(500).optional(), expectedUpdatedAt: z.iso.datetime({ offset: true }) }).strict());
+    const saved = await getDb().transaction(async tx => {
+      const [lead] = await tx.select().from(leads).where(and(eq(leads.tenantId, actor.tenantId), eq(leads.organizationId, actor.organizationId!), eq(leads.id, id))).for("update");
+      if (!lead || !actor.allLocations && (!lead.owningLocationId || !actor.locationIds.has(lead.owningLocationId))) throw new DomainError("NOT_FOUND", "Lead not found.", 404);
+      if (lead.updatedAt.toISOString() !== input.expectedUpdatedAt) throw new DomainError("CONFLICT", "This lead changed. Refresh before updating it.", 409);
+      assertTransition("lead", lead.status, input.status);
+      if (["lost", "disqualified"].includes(input.status) && !input.reason) throw new DomainError("VALIDATION_ERROR", "Record why this lead was closed.", 422);
+      const [item] = await tx.update(leads).set({ status: input.status, lostReason: input.reason ?? null, updatedAt: new Date() }).where(and(eq(leads.tenantId, actor.tenantId), eq(leads.id, id))).returning();
+      await recordEvent(actor, { type: `lead.${input.status}`, entityType: "lead", entityId: id, locationId: lead.owningLocationId, auditAction: "lead.status", before: { status: lead.status }, after: { status: input.status }, payload: { reason: input.reason } }, tx);
+      return item;
+    });
+    return json({ item: normalized(saved) });
+  }
   if (resource === "leads" && action === "convert") return json({ item: normalized(await convertLead(actor, id)) });
   if (resource === "estimates" && action === "invoice" && request.method === "POST") return estimateInvoice(actor,id);
   if (resource === "estimates" && ["send", "approve", "decline"].includes(action)) return estimateAction(request, actor, id, action);

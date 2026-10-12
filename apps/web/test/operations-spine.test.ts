@@ -26,6 +26,28 @@ const today = businessDate(new Date(), "America/New_York");
 const request = (data?: unknown) => new Request("http://localhost", data ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(data) } : {});
 beforeAll(async () => { pg = new PGlite(); const d = drizzle(pg, { schema }); await migrate(d, { migrationsFolder: fileURLToPath(new URL("../../../packages/db/drizzle", import.meta.url)) }); db = d as unknown as Database; getDbMock.mockReturnValue(db); await seedDevelopment(db); }, 120_000);
 afterAll(async () => { await pg?.close(); });
+it("prioritizes older pending time and pages through more than 200 approved entries", async () => {
+  const start = new Date("2025-01-01T10:00:00Z"), end = new Date("2025-01-01T11:00:00Z");
+  const [pending] = await db.insert(schema.timeEntries).values({ tenantId: owner.tenantId, membershipId: owner.membershipId!, source: "office_correction", startsAt: start, endsAt: end, durationSeconds: 3600, approvalStatus: "pending" }).returning();
+  await db.insert(schema.timeEntries).values(Array.from({ length: 205 }, (_, index) => ({ tenantId: owner.tenantId, membershipId: owner.membershipId!, source: "office_correction", startsAt: new Date(start.getTime() + (index + 1) * 86_400_000), endsAt: new Date(end.getTime() + (index + 1) * 86_400_000), durationSeconds: 3600, approvalStatus: "approved" })));
+  const first = await (await handleTimeReview(request(), ["time"], office))!.json();
+  expect(first.entries[0].id).toBe(pending!.id); expect(first.entries).toHaveLength(50); expect(first.hasMore).toBe(true);
+  const seen = new Set<string>();
+  for (let page = 0; page < 5; page++) {
+    const data = await (await handleTimeReview(new Request(`http://localhost/time?page=${page}`), ["time"], office))!.json();
+    for (const entry of data.entries) { expect(seen.has(entry.id)).toBe(false); seen.add(entry.id); }
+    if (page === 4) expect(data.hasMore).toBe(false);
+  }
+  expect(seen.size).toBeGreaterThanOrEqual(206);
+});
+it("rejects office clock-out before the end of any recorded break without changing the shift", async () => {
+  const start = new Date(Date.now() - 7_200_000);
+  const [shift] = await db.insert(schema.shifts).values({ tenantId: owner.tenantId, membershipId: owner.membershipId!, organizationLocationId: seedIds.augusta, status: "clocked_in", clockInAt: start }).returning();
+  await db.insert(schema.breaks).values({ tenantId: owner.tenantId, shiftId: shift!.id, startedAt: new Date(start.getTime() + 60_000), endedAt: new Date(start.getTime() + 1_800_000), breakType: "meal", paid: false });
+  await expect(handleTimeReview(request({ endsAt: new Date(start.getTime() + 900_000).toISOString(), reason: "Correction", expectedUpdatedAt: shift!.updatedAt.toISOString() }), ["time", "shifts", shift!.id, "clock-out"], office)).rejects.toMatchObject({ status: 422 });
+  expect((await db.select().from(schema.shifts).where(eq(schema.shifts.id, shift!.id)))[0]?.status).toBe("clocked_in");
+  expect(await db.select().from(schema.timeEntries).where(eq(schema.timeEntries.shiftId, shift!.id))).toHaveLength(0);
+});
 async function job(extra: Partial<typeof schema.jobs.$inferInsert> = {}) {
   const [created] = await db.insert(schema.jobs).values({ tenantId: owner.tenantId, organizationId: seedIds.happyOrganization, organizationLocationId: seedIds.augusta, customerId: seedIds.carter, serviceLocationId: seedIds.carterLocation, serviceId: seedIds.weeklyService, status: "scheduled", scheduledDate: today, ...extra }).returning(); return created!;
 }

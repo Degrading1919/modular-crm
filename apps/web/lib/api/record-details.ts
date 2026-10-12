@@ -27,6 +27,9 @@ export async function handleRecordDetails(request: Request, path: string[], acto
   const scope = (column: string) => actor.allLocations ? sql`true` : sql`${sql.raw(column)} = any(${uuidArray(actor.locationIds)})`;
   const related: Record<string, unknown> = {};
   if (resource === "customers") {
+    related.notes = normalized(await rows(sql`select id,body,created_at from notes where tenant_id=${tenant} and entity_type='customer' and entity_id=${id} order by created_at desc,id limit 100`));
+    if (actor.permissions.has("estimates.read")) related.estimates = normalized(await rows(sql`select id,status,total_minor as total_cents,currency from estimates where tenant_id=${tenant} and customer_id=${id} and ${scope("organization_location_id")} order by created_at desc,id limit 100`));
+    if (actor.permissions.has("service_plans.read")) related.plans = normalized(await rows(sql`select sp.id,sp.status,s.name as service_name from service_plans sp join services s on s.tenant_id=sp.tenant_id and s.id=sp.service_id where sp.tenant_id=${tenant} and sp.customer_id=${id} and ${scope("sp.organization_location_id")} order by sp.created_at desc,sp.id limit 100`));
     if (actor.permissions.has("jobs.read")) related.jobs = normalized(await rows(sql`select j.id,j.status,j.scheduled_date,s.name as service_name from jobs j join services s on s.tenant_id=j.tenant_id and s.id=j.service_id where j.tenant_id=${tenant} and j.customer_id=${id} and ${scope("j.organization_location_id")} order by j.scheduled_date desc nulls last,j.id limit 100`));
     if (actor.permissions.has("invoices.read")) related.invoices = normalized(await rows(sql`select id,invoice_number as number,status,currency,total_minor as total_cents,balance_minor as balance_cents from invoices where tenant_id=${tenant} and customer_id=${id} and ${scope("organization_location_id")} order by created_at desc,id limit 100`));
     if (actor.permissions.has("payments.read")) {
@@ -49,8 +52,8 @@ export async function handleRecordDetails(request: Request, path: string[], acto
       related.refunds = normalized(await rows(sql`select r.id,r.amount_minor as amount_cents,r.currency,r.status,r.reason,r.created_at from refunds r where r.tenant_id=${tenant} and exists(select 1 from payment_allocations pa where pa.tenant_id=r.tenant_id and pa.payment_id=r.payment_id and pa.invoice_id=${id}) order by r.created_at desc,r.id limit 100`));
     }
   }
-  if (resource === "leads" && actor.permissions.has("customers.read") && item.convertedCustomerId) {
-    related.customer = normalized(await rows(sql`select id,display_name as name from customers where tenant_id=${tenant} and id=${String(item.convertedCustomerId)} and ${scope("owning_location_id")}`));
+  if (resource === "leads" && actor.permissions.has("customers.read") && item.customerId) {
+    related.customer = normalized(await rows(sql`select id,display_name as name from customers where tenant_id=${tenant} and id=${String(item.customerId)} and ${scope("owning_location_id")}`));
   }
   const history = await rows(sql`select id,event_type,occurred_at,payload from domain_events where tenant_id=${tenant} and entity_type=${resource!.slice(0,-1)} and entity_id=${id} and (location_id is null or ${scope("location_id")}) order by occurred_at desc,id limit 100`);
   const timeline = history.map((event) => {
